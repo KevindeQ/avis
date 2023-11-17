@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -34,6 +35,7 @@ using namespace std::chrono_literals;
 #include "avis/core/assertions.h"
 #include "avis/core/exceptions.h"
 #include "avis/core/helper_functions.h"
+#include "avis/core/string_functions.h"
 #include "avis/core/unique_handle.h"
 
 #endif

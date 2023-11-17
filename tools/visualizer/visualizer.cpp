@@ -1,4 +1,6 @@
 #include "avis/middleware/basic_app.h"
+#include "avis/middleware/data_formats/ply/ply_parser.h"
+#include "avis/middleware/geometry/data_store.h"
 #include "avis/middleware/input/input_context.h"
 #include "avis/middleware/input/input_dispatcher.h"
 #include "avis/middleware/runtime.h"
@@ -8,13 +10,13 @@
 #include "avis/runtime/io/io_context.h"
 #include "avis/runtime/parallel/thread_pool.h"
 
-struct file_output
-{};
-
-struct file_parser
-{
-    file_output operator()(const streams::memory_stream& data);
-};
+// struct file_output
+//{};
+//
+// struct file_parser
+//{
+//     file_output operator()(const streams::memory_stream& data);
+// };
 
 class sample_app : public basic_app
 {
@@ -33,28 +35,28 @@ private:
 private:
     window render_window_;
 
-    parallel::thread_pool threads_;
-    io::io_context file_context_;
-    io::io_service file_load_service_;
+    parallel::thread_pool threads;
+    io::io_context file_context;
+    io::io_service file_load_service;
 
-    input::input_dispatcher input_dispatcher_;
-    input::input_context global_input_context_;
-    input::input_context movement_input_context_;
+    input::input_dispatcher input_dispatcher;
+    input::input_context global_input_context;
+    input::input_context movement_input_context;
 };
 
 sample_app::sample_app(basic_app_config& config) :
     basic_app(config),
 
-    render_window_{{L"D3D12 Demo", 800, 800}},
+    render_window_{ { L"D3D12 Demo", 800, 800 } },
 
-    threads_{3},
-    file_load_service_{threads_, 3}
+    threads{ 3 },
+    file_load_service{ threads, 3 }
 {
     render_window_.on_message(
         WM_INPUT,
         [this](WPARAM wparam, LPARAM lparam)
         {
-            input_dispatcher_.handle_raw_input(wparam, lparam);
+            input_dispatcher.handle_raw_input(wparam, lparam);
             return 0;
         });
 
@@ -64,13 +66,13 @@ sample_app::sample_app(basic_app_config& config) :
 
 void sample_app::on_update()
 {
-    input_dispatcher_.dispatch_input();
+    input_dispatcher.dispatch_input();
 }
 
 void sample_app::on_render()
 {
     graphics::resource_graph resources;
-    graphics::render_pipeline pipeline{resources};
+    graphics::render_pipeline pipeline{ resources };
     /*auto resource_data1 = pipeline.add_graphics_pass<pass_data>(
         "test 1",
         [&](graphics::render_pass_builder& builder, pass_data& data)
@@ -110,26 +112,38 @@ void sample_app::on_render()
 
 void sample_app::load_content()
 {
-    io::file_descriptor test_file =
-        file_context_.create_descriptor("E:\\Projects\\D3D12TechDemo\\data\\models\\buddha\\buddha.obj");
-    /*std::future<file_output> test_file_contents = file_load_service_.async_read_file<file_output>(
+    /*io::file_descriptor test_file =
+        file_context.create_descriptor("E:\\Projects\\D3D12TechDemo\\data\\models\\buddha\\buddha.obj");*/
+    /*std::future<file_output> test_file_contents = file_load_service.async_read_file<file_output>(
         test_file, [](const streams::memory_stream & data) { return file_output{}; });*/
-    std::future<file_output> test_file_contents =
-        file_load_service_.async_read_file<file_output>(test_file, file_parser{});
+    /*std::future<file_output> test_file_contents =
+        file_load_service.async_read_file<file_output>(test_file, file_parser{});*/
+
+    io::file_descriptor ply_file =
+        file_context.create_descriptor("E:\\Data\\KITTI-360\\data_3d_semantics\\train\\2013_05_28_drive_0000_"
+                                       "sync\\dynamic\\0000000002_0000000385.ply");
+    std::future<geometry::data_store> test_file_contents = file_load_service.async_read_file<geometry::data_store>(
+        ply_file,
+        [](const streams::memory_stream& data)
+        {
+            data_formats::ply::ply_parser parser;
+            return parser.parse(data);
+        });
+    geometry::data_store geometry_data = test_file_contents.get();
 }
 
 void sample_app::configure_input()
 {
-    global_input_context_.add_mapping();
-    global_input_context_.add_mapping();
-    global_input_context_.add_mapping();
-    input_dispatcher_.push_context(global_input_context_);
+    global_input_context.add_mapping();
+    global_input_context.add_mapping();
+    global_input_context.add_mapping();
+    input_dispatcher.push_context(global_input_context);
 
-    movement_input_context_.add_mapping();
-    movement_input_context_.add_mapping();
-    movement_input_context_.add_mapping();
-    movement_input_context_.add_mapping();
-    input_dispatcher_.push_context(movement_input_context_);
+    movement_input_context.add_mapping();
+    movement_input_context.add_mapping();
+    movement_input_context.add_mapping();
+    movement_input_context.add_mapping();
+    input_dispatcher.push_context(movement_input_context);
 }
 
 int __stdcall wWinMain(
@@ -139,9 +153,9 @@ int __stdcall wWinMain(
     engine_builder.configure_engine(
         [](configuration_builder& builder)
         {
-            builder.use_root_path("");
-            builder.configure_from_json("E:\\Projects\\D3D12TechDemo\\build\\bin\\Debug\\test.txt");
-            builder.configure_from_ini("");
+            // builder.use_root_path("");
+            // builder.configure_from_json("E:\\Projects\\D3D12TechDemo\\build\\bin\\Debug\\test.txt");
+            // builder.configure_from_ini("");
             // builder.configure_from_commandline();
         });
     engine_builder.configure_logging(
@@ -158,7 +172,7 @@ int __stdcall wWinMain(
     return engine.execute<sample_app>(configuration);
 }
 
-file_output file_parser::operator()(const streams::memory_stream& data)
-{
-    return file_output{};
-}
+// file_output file_parser::operator()(const streams::memory_stream& data)
+//{
+//     return file_output{};
+// }

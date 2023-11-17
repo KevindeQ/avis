@@ -1,6 +1,6 @@
-#include "avis/core/text/json/json_tokenizer.h"
+#include "avis/middleware/data_formats/json/json_tokenizer.h"
 
-namespace text::json
+namespace data_formats::json
 {
     json_tokenizer::json_tokenizer(const std::string source, const bool skip_whitespace) :
         source_{source},

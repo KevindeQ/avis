@@ -37,12 +37,15 @@ target_sources(AVIS_LIB
 		core/streams/binary_stream.cpp
 		core/streams/memory_stream.cpp
 		core/streams/text_stream.cpp
-		core/text/json/json_parser.cpp
-		core/text/json/json_tokenizer.cpp
 		core/unique_handle.cpp
 
 		middleware/configuration/configuration_parser.cpp
 		middleware/configuration/ini_parser.cpp
+		middleware/data_formats/json/json_parser.cpp
+		middleware/data_formats/json/json_tokenizer.cpp
+		middleware/data_formats/ply/ply_parser.cpp
+		middleware/geometry/data_layout.cpp
+		middleware/geometry/data_store.cpp
 		middleware/input/input_context.cpp
 		middleware/input/input_dispatcher.cpp
 		middleware/platform/basic_window.cpp
@@ -66,5 +69,4 @@ target_sources(AVIS_LIB
 		runtime/io/io_request.cpp
 		runtime/io/io_service.cpp
 		runtime/io/operation_context.cpp
-		runtime/parallel/thread_pool.cpp
-)
+		runtime/parallel/thread_pool.cpp "middleware/geometry/data_layout.cpp")

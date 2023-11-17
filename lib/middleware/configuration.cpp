@@ -6,8 +6,8 @@
 
 configuration_builder::configuration_builder() :
     // TODO: Think about making number of threads configurable
-    threads_{max_thread_count_},
-    file_load_service_{threads_, max_thread_count_}
+    threads{max_thread_count},
+    file_load_service{threads, max_thread_count}
 {}
 
 void configuration_builder::use_root_path(const std::filesystem::path& root_path)
@@ -17,16 +17,16 @@ void configuration_builder::use_root_path(const std::filesystem::path& root_path
 
 void configuration_builder::configure_from_json(const std::filesystem::path& config_file)
 {
-    io::file_descriptor new_descriptor = file_context_.create_descriptor(config_file);
-    std::future<engine_configuration> file_view = file_load_service_.async_read_file<engine_configuration>(
+    io::file_descriptor new_descriptor = file_context.create_descriptor(config_file);
+    std::future<engine_configuration> file_view = file_load_service.async_read_file<engine_configuration>(
         new_descriptor, [this](const streams::memory_stream& stream) { return parse_json_configuration(stream); });
     config_files_.push_back(std::move(file_view));
 }
 
 void configuration_builder::configure_from_ini(const std::filesystem::path& config_file)
 {
-    io::file_descriptor new_descriptor = file_context_.create_descriptor(config_file);
-    std::future<engine_configuration> file_view = file_load_service_.async_read_file<engine_configuration>(
+    io::file_descriptor new_descriptor = file_context.create_descriptor(config_file);
+    std::future<engine_configuration> file_view = file_load_service.async_read_file<engine_configuration>(
         new_descriptor, [this](const streams::memory_stream& stream) { return parse_ini_configuration(stream); });
     config_files_.push_back(std::move(file_view));
 }

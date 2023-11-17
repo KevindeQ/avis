@@ -32,11 +32,11 @@ private:
     std::filesystem::path root_path_;
     std::vector<std::future<engine_configuration>> config_files_;
 
-    parallel::thread_pool threads_;
-    io::io_context file_context_;
-    io::io_service file_load_service_;
+    parallel::thread_pool threads;
+    io::io_context file_context;
+    io::io_service file_load_service;
 
-    static constexpr std::size_t max_thread_count_ = 2;
+    static constexpr std::size_t max_thread_count = 2;
 };
 
 #endif

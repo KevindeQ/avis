@@ -1,9 +1,9 @@
-#ifndef CORE_TEXT_JSON_JSON_PARSER_H
-#define CORE_TEXT_JSON_JSON_PARSER_H
+#ifndef MIDDLEWARE_DATA_FORMATS_JSON_JSON_PARSER_H
+#define MIDDLEWARE_DATA_FORMATS_JSON_JSON_PARSER_H
 
 #include "avis/core/common.h"
 
-namespace text::json
+namespace data_formats::json
 {
     class json_parser
     {
