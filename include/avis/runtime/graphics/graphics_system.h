@@ -13,8 +13,7 @@ namespace graphics
         ~graphics_system();
 
     private:
-        static std::optional<graphics_device> device_;
-        static std::once_flag device_init_flag_;
+        graphics_device device;
     };
 } // namespace graphics
 
