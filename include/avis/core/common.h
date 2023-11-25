@@ -33,6 +33,7 @@
 using namespace std::chrono_literals;
 
 #include "avis/core/assertions.h"
+#include "avis/core/com_ptr.h"
 #include "avis/core/exceptions.h"
 #include "avis/core/helper_functions.h"
 #include "avis/core/string_functions.h"
