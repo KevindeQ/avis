@@ -144,7 +144,7 @@ namespace data_formats::ply
 
             std::vector<unsigned char>& block_data = new_data_store.block_data(mapping.block_index);
             block_data.clear();
-            block_data.insert(block_data.end(), line_start_it, line_start_it + byte_count - 1);
+            block_data.insert(block_data.end(), line_start_it, line_start_it + byte_count);
 
             line_start_it += byte_count;
         }

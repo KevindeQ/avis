@@ -19,6 +19,8 @@ namespace data_formats::ply
     class ply_parser
     {
     public:
+        // The implementation made use of the format description at the following website:
+        // https://paulbourke.net/dataformats/ply/.
         geometry::data_store parse(const streams::memory_stream& contents) const;
 
     private:
