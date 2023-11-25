@@ -4,7 +4,7 @@
 template<typename T>
 void safe_delete(T*& pointer)
 {
-    if (pointer)
+    if (pointer != nullptr)
     {
         delete pointer;
         pointer = nullptr;
@@ -14,7 +14,7 @@ void safe_delete(T*& pointer)
 template<typename T>
 void safe_release(T*& pointer)
 {
-    if (pointer)
+    if (pointer != nullptr)
     {
         pointer->Release();
         pointer = nullptr;
