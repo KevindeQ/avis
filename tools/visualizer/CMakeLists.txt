@@ -33,3 +33,12 @@ target_sources(AVIS_VISUALIZER
 	PRIVATE
 		visualizer.cpp
 )
+
+# Copy the assets to the output directory
+add_custom_command(
+	TARGET AVIS_VISUALIZER POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+		${PROJECT_SOURCE_DIR}/assets
+		$<TARGET_FILE_DIR:AVIS_VISUALIZER>/assets
+	COMMENT "Copy assets to the folder \"$<TARGET_FILE_DIR:AVIS_VISUALIZER>/assets\""
+)
