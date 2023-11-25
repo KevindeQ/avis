@@ -30,9 +30,6 @@ target_include_directories(AVIS_LIB
 )
 
 target_sources(AVIS_LIB
-	PUBLIC
-		
-
 	PRIVATE
 		core/streams/binary_stream.cpp
 		core/streams/memory_stream.cpp
@@ -69,4 +66,4 @@ target_sources(AVIS_LIB
 		runtime/io/io_request.cpp
 		runtime/io/io_service.cpp
 		runtime/io/operation_context.cpp
-		runtime/parallel/thread_pool.cpp "middleware/geometry/data_layout.cpp")
+		runtime/parallel/thread_pool.cpp)
