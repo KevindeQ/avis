@@ -5,6 +5,7 @@
 #include "avis/middleware/input/input_dispatcher.h"
 #include "avis/middleware/runtime.h"
 #include "avis/middleware/window.h"
+#include "avis/runtime/data/point_cloud.h"
 #include "avis/runtime/graphics/render_pass.h"
 #include "avis/runtime/graphics/render_pipeline.h"
 #include "avis/runtime/io/io_context.h"
@@ -52,16 +53,9 @@ sample_app::sample_app(basic_app_config& config) :
     threads{ 3 },
     file_load_service{ threads, 3 }
 {
-    render_window_.on_message(
-        WM_INPUT,
-        [this](WPARAM wparam, LPARAM lparam)
-        {
-            input_dispatcher.handle_raw_input(wparam, lparam);
-            return 0;
-        });
+    configure_input();
 
     load_content();
-    configure_input();
 }
 
 void sample_app::on_update()
@@ -130,10 +124,23 @@ void sample_app::load_content()
             return parser.parse(data);
         });
     geometry::data_store geometry_data = test_file_contents.get();
+
+    io::basic_file_descriptor database_file{ "E:\\Projects\\avis\\assets\\maps\\point_cloud.adf" };
+    io::basic_file_descriptor index_file{ "E:\\Projects\\avis\\assets\\maps\\point_cloud.aif" };
+    data::point_cloud database{ index_file, database_file };
+    database.fetch_data(Eigen::Vector3f{});
 }
 
 void sample_app::configure_input()
 {
+    render_window_.on_message(
+        WM_INPUT,
+        [this](WPARAM wparam, LPARAM lparam)
+        {
+            input_dispatcher.handle_raw_input(wparam, lparam);
+            return 0;
+        });
+
     global_input_context.add_mapping();
     global_input_context.add_mapping();
     global_input_context.add_mapping();

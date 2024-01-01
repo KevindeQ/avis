@@ -33,11 +33,13 @@ namespace io
         basic_file_descriptor(basic_file_descriptor&& other) noexcept;
         ~basic_file_descriptor();
 
-        ENGINE_API std::span<unsigned char> acquire_view(std::size_t offset, std::size_t size);
+        std::span<unsigned char> acquire_view(std::size_t offset, std::size_t size);
         void release_view(const std::span<unsigned char>& view);
         void release_all_views();
 
         void release();
+
+        std::size_t file_size() const;
 
         void swap(basic_file_descriptor& other);
 
@@ -60,8 +62,6 @@ namespace io
         void store_view(file_view&& view);
 
         void check_range_against_file_size(std::size_t file_byte_size, std::size_t offset, std::size_t size);
-
-        std::size_t file_size() const;
 
     private:
         std::filesystem::path file_path_;

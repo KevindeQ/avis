@@ -27,6 +27,12 @@ target_compile_definitions(AVIS_LIB
 target_include_directories(AVIS_LIB
 	PUBLIC
 		${AVIS_INCLUDE_DIR}
+		Eigen3::Eigen
+)
+
+target_link_libraries(AVIS_LIB
+	PUBLIC
+		Eigen3::Eigen
 )
 
 target_sources(AVIS_LIB
@@ -51,6 +57,10 @@ target_sources(AVIS_LIB
 		middleware/runtime.cpp
 		middleware/window.cpp
 
+		runtime/data/data_provider.cpp
+		runtime/data/page_controller.cpp
+		runtime/data/page_view.cpp
+		runtime/data/point_cloud.cpp
 		runtime/graphics/command_context.cpp
 		runtime/graphics/command_queue.cpp
 		runtime/graphics/graphics_device.cpp
