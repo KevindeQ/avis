@@ -87,6 +87,7 @@ option(AVIS_INCLUDE_TESTS "Generate build targets for the Avis unit tests." ON)
 
 Include(FetchContent)
 
+add_subdirectory(extern)
 add_subdirectory(lib)
 
 if(AVIS_INCLUDE_TOOLS)
