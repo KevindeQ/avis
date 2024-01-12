@@ -77,3 +77,9 @@ target_sources(AVIS_LIB
 		runtime/io/io_service.cpp
 		runtime/io/operation_context.cpp
 		runtime/parallel/thread_pool.cpp)
+
+# Build HLSL shaders
+enable_build_shaders(AVIS_LIB)
+
+set(COMPUTE_SHADERS ${AVIS_DATA_DIR}/shaders/basic_compute_11.hlsl)
+build_shaders(COMPUTE_SHADERS cs_6_5)

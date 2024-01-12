@@ -70,8 +70,12 @@ if (CMAKE_BUILD_TYPE AND
 endif()
 
 set(AVIS_SRC_DIR     ${CMAKE_CURRENT_SOURCE_DIR})
-set(AVIS_LIB_DIR     ${AVIS_SRC_DIR}/lib)
-set(AVIS_INCLUDE_DIR ${AVIS_SRC_DIR}/include)
+set(AVIS_LIB_DIR     ${AVIS_SRC_DIR}/lib/)
+set(AVIS_INCLUDE_DIR ${AVIS_SRC_DIR}/include/)
+set(AVIS_DATA_DIR    ${AVIS_SRC_DIR}/data/)
+
+# Include additional support CMake files
+include(AVIS_SRC_DIR/cmake/ShaderSupport.cmake)
 
 # Define options to control the inclusion and default build behavior for components which may
 # not strictly be necessary (tools, tests).
