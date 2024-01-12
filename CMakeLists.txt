@@ -77,9 +77,9 @@ set(AVIS_INCLUDE_DIR ${AVIS_SRC_DIR}/include)
 # not strictly be necessary (tools, tests).
 #
 # This is primarily to support building smaller or faster project files.
-option(AVIS_INCLUDE_TOOLS "Generate build targets for the Avis tools." ON)
-option(AVIS_BUILD_TOOLS
-  "Build the Avis tools. If OFF, just generate build targets." ON)
+option(AVIS_INCLUDE_APPS "Generate build targets for the Avis applications." ON)
+option(AVIS_BUILD_APPS
+  "Build the Avis applications. If OFF, just generate build targets." ON)
 
 option(AVIS_BUILD_TESTS
   "Build Avis unit tests. If OFF, just generate build targets." OFF)
@@ -90,8 +90,8 @@ Include(FetchContent)
 add_subdirectory(extern)
 add_subdirectory(lib)
 
-if(AVIS_INCLUDE_TOOLS)
-  add_subdirectory(tools)
+if(AVIS_INCLUDE_APPS)
+  add_subdirectory(apps)
 endif()
 
 if(AVIS_INCLUDE_TESTS)
