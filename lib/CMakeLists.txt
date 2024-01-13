@@ -81,5 +81,5 @@ target_sources(AVIS_LIB
 # Build HLSL shaders
 enable_build_shaders(AVIS_LIB)
 
-set(COMPUTE_SHADERS ${AVIS_DATA_DIR}/shaders/basic_compute_11.hlsl)
-build_shaders(COMPUTE_SHADERS cs_6_5)
+set(COMPUTE_SHADERS ${AVIS_ASSETS_DIR}/shaders/cs_compute11.hlsl)
+build_shaders(${COMPUTE_SHADERS} cs_6_5 ${AVIS_ASSETS_DIR}/cso)
