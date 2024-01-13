@@ -28,11 +28,15 @@ target_include_directories(AVIS_LIB
 	PUBLIC
 		${AVIS_INCLUDE_DIR}
 		Eigen3::Eigen
+	PRIVATE
+		xxHash::xxhash
 )
 
 target_link_libraries(AVIS_LIB
 	PUBLIC
 		Eigen3::Eigen
+	PRIVATE
+		xxHash::xxhash
 )
 
 target_sources(AVIS_LIB
