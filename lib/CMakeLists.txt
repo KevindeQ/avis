@@ -69,12 +69,15 @@ target_sources(AVIS_LIB
 		runtime/graphics/command_queue.cpp
 		runtime/graphics/graphics_device.cpp
 		runtime/graphics/graphics_system.cpp
+		runtime/graphics/pipeline_state.cpp
 		runtime/graphics/render_pass.cpp
 		runtime/graphics/render_pass_builder.cpp
 		runtime/graphics/render_pipeline.cpp
 		runtime/graphics/resource.cpp
 		runtime/graphics/resource_graph.cpp
 		runtime/graphics/root_descriptor.cpp
+		runtime/graphics/root_signature.cpp
+		runtime/graphics/shaders.cpp
 		runtime/io/file_descriptor.cpp
 		runtime/io/io_context.cpp
 		runtime/io/io_request.cpp
