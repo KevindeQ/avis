@@ -10,6 +10,7 @@ namespace graphics
     class root_signature
     {
     public:
+        root_signature();
         root_signature(const com_ptr<ID3D12RootSignature>& rs);
 
         com_ptr<ID3D12RootSignature> native_ptr() const;
@@ -81,7 +82,7 @@ namespace graphics
             std::uint32_t register_space,
             shader_visibility shader_vis);
 
-        root_signature_builder& with_flags(const std::underlying_type_t<root_signature_flags> flags);
+        root_signature_builder& with_flags(const flags<root_signature_flags> flags);
 
         root_signature build(graphics_device& device);
 

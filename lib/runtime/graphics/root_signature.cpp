@@ -2,6 +2,8 @@
 
 namespace graphics
 {
+    root_signature::root_signature() : root_sig{} {}
+
     root_signature::root_signature(const com_ptr<ID3D12RootSignature>& rs) : root_sig{ rs } {}
 
     com_ptr<ID3D12RootSignature> root_signature::native_ptr() const
@@ -197,9 +199,9 @@ namespace graphics
         return *this;
     }
 
-    root_signature_builder& root_signature_builder::with_flags(const std::underlying_type_t<root_signature_flags> flags)
+    root_signature_builder& root_signature_builder::with_flags(const flags<root_signature_flags> flags)
     {
-        descriptor.Flags = static_cast<D3D12_ROOT_SIGNATURE_FLAGS>(flags);
+        descriptor.Flags = static_cast<D3D12_ROOT_SIGNATURE_FLAGS>(flags.underlying_value());
         return *this;
     }
 
