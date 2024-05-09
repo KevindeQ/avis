@@ -6,7 +6,7 @@
 
 namespace graphics
 {
-    class resource_graph
+    /*class resource_graph
     {
     public:
         resource_graph() = default;
@@ -14,10 +14,10 @@ namespace graphics
         resource_graph(resource_graph&&) = delete;
         ~resource_graph() = default;
 
-        resource create_resource();
+        virtual_resource create_resource();
 
-        void allocate_resource(resource handle);
-        void deallocate_resource(resource handle);
+        void allocate_resource(virtual_resource handle);
+        void deallocate_resource(virtual_resource handle);
 
         resource_graph& operator=(const resource_graph&) = delete;
         resource_graph& operator=(resource_graph&&) = delete;
@@ -25,7 +25,7 @@ namespace graphics
     private:
         std::vector<resource_descriptor> descriptors_;
         std::mutex descriptors_mutex_;
-    };
+    };*/
 } // namespace graphics
 
 #endif

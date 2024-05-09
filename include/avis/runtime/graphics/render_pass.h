@@ -58,7 +58,7 @@ namespace graphics
             exec_callback_(resources);
         }
 
-        void reference_resource(resource handle);
+        void reference_resource(virtual_resource handle);
 
         void add_ref();
         void release();
@@ -89,7 +89,7 @@ namespace graphics
         internal_exec_callback_type exec_callback_;
 
         std::size_t reference_count_;
-        std::vector<resource> resources_;
+        std::vector<virtual_resource> resources_;
     };
 
     template<typename render_pass_data>

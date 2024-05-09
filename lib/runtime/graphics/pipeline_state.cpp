@@ -2,6 +2,8 @@
 
 namespace graphics
 {
+    pipeline_state::pipeline_state() : native_pipeline_state{} {}
+
     pipeline_state::pipeline_state(com_ptr<ID3D12PipelineState> state) : native_pipeline_state{ state } {}
 
     graphics_pipeline_state_builder::graphics_pipeline_state_builder() : descriptor{}

@@ -2,7 +2,7 @@
 
 namespace graphics
 {
-    void render_pass::reference_resource(resource handle)
+    void render_pass::reference_resource(virtual_resource handle)
     {
         resources_.push_back(handle);
     }

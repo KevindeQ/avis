@@ -106,7 +106,7 @@ namespace graphics
         cbv_srv_uav_heap_directly_indexed = 0x400,
         sampler_heap_directly_indexed = 0x800
     };
-    DECLARE_ENUM_FLAGS(root_signature_flags);
+    ALLOW_FLAGS_FOR_ENUM(root_signature_flags);
 
     // Implementation of root_signature_builder assumes that root_signature_flags exactly matches the implementation of
     // D3D12_FILL_MODE. This includes the values for the different choices matcning the D3D12 equivalent.

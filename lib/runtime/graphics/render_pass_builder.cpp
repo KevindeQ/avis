@@ -9,29 +9,29 @@ namespace graphics
         resource_graph_{res_graph}
     {}
 
-    resource render_pass_builder::create_texture()
+    virtual_resource render_pass_builder::create_texture()
     {
         return resource_graph_.create_resource();
     }
 
-    resource render_pass_builder::create_buffer()
+    virtual_resource render_pass_builder::create_buffer()
     {
         return resource_graph_.create_resource();
     }
 
-    resource render_pass_builder::read(resource& handle)
+    virtual_resource render_pass_builder::read(virtual_resource& handle)
     {
         handle.add_ref();
         render_pass_.reference_resource(handle);
 
-        return resource{handle};
+        return virtual_resource{handle};
     }
 
-    resource render_pass_builder::write(resource& handle)
+    virtual_resource render_pass_builder::write(virtual_resource& handle)
     {
         render_pass_.add_ref();
         render_pass_.reference_resource(handle);
 
-        return resource{handle};
+        return virtual_resource{handle};
     }
 } // namespace graphics

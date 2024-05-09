@@ -53,7 +53,7 @@ std::int32_t runtime::execute(basic_app_config& config)
         while (dispatch_system_messages())
         {
             app.on_update();
-            app.on_render();
+            app.on_render_frame();
         }
 
         app.on_close();

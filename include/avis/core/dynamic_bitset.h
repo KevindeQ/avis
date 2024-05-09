@@ -12,7 +12,7 @@ bool operator==(const dynamic_bitset<block_t>& lhs, const dynamic_bitset<block_t
 template<typename block_t>
 bool operator!=(const dynamic_bitset<block_t>& lhs, const dynamic_bitset<block_t>& rhs);
 
-template<typename block_t>
+template<typename block_t = std::uint64_t>
 class dynamic_bitset
 {
 public:

@@ -100,6 +100,7 @@ namespace graphics
     class pipeline_state
     {
     public:
+        pipeline_state();
         pipeline_state(com_ptr<ID3D12PipelineState> state);
 
     private:

@@ -4,12 +4,12 @@
 
 namespace graphics
 {
-    resource resource_graph::create_resource()
+    /*virtual_resource resource_graph::create_resource()
     {
-        return resource(0);
+        return virtual_resource(0);
     }
 
-    void resource_graph::allocate_resource(resource handle) {}
+    void resource_graph::allocate_resource(virtual_resource handle) {}
 
-    void resource_graph::deallocate_resource(resource handle) {}
+    void resource_graph::deallocate_resource(virtual_resource handle) {}*/
 } // namespace graphics

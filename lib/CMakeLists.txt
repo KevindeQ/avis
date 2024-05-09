@@ -46,6 +46,8 @@ target_sources(AVIS_LIB
 		core/streams/text_stream.cpp
 		core/unique_handle.cpp
 
+		middleware/basic_app.cpp
+		middleware/configuration.cpp
 		middleware/configuration/configuration_parser.cpp
 		middleware/configuration/ini_parser.cpp
 		middleware/data_formats/json/json_parser.cpp
@@ -57,8 +59,9 @@ target_sources(AVIS_LIB
 		middleware/input/input_dispatcher.cpp
 		middleware/platform/basic_window.cpp
 		middleware/platform/basic_window_messages.cpp
-		middleware/configuration.cpp
 		middleware/runtime.cpp
+		middleware/scene/scene_graph.cpp
+		middleware/visual_app.cpp
 		middleware/window.cpp
 
 		runtime/data/data_provider.cpp
@@ -67,6 +70,7 @@ target_sources(AVIS_LIB
 		runtime/data/point_cloud.cpp
 		runtime/graphics/command_context.cpp
 		runtime/graphics/command_queue.cpp
+		runtime/graphics/descriptors.cpp
 		runtime/graphics/graphics_device.cpp
 		runtime/graphics/graphics_system.cpp
 		runtime/graphics/pipeline_state.cpp
@@ -75,7 +79,6 @@ target_sources(AVIS_LIB
 		runtime/graphics/render_pipeline.cpp
 		runtime/graphics/resource.cpp
 		runtime/graphics/resource_graph.cpp
-		runtime/graphics/root_descriptor.cpp
 		runtime/graphics/root_signature.cpp
 		runtime/graphics/shaders.cpp
 		runtime/io/file_descriptor.cpp
@@ -88,5 +91,5 @@ target_sources(AVIS_LIB
 # Build HLSL shaders
 enable_build_shaders(AVIS_LIB)
 
-set(COMPUTE_SHADERS ${AVIS_ASSETS_DIR}/shaders/cs_compute11.hlsl)
+set(COMPUTE_SHADERS ${AVIS_ASSETS_DIR}/shaders/cs_draw_point_cloud.hlsl)
 build_shaders(${COMPUTE_SHADERS} cs_6_5 ${AVIS_ASSETS_DIR}/cso)
