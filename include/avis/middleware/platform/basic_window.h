@@ -28,6 +28,11 @@ namespace platform
 
         void toggle_fullscreen(bool fullscreen);
 
+        std::uint32_t width() const;
+        std::uint32_t height() const;
+
+        HWND native_handle() const;
+
     protected:
         bool create(const descriptor& create_params);
         void destroy();

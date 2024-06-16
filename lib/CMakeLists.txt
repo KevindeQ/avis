@@ -65,19 +65,6 @@ target_sources(AVIS_LIB
 		runtime/data/page_controller.cpp
 		runtime/data/page_view.cpp
 		runtime/data/point_cloud.cpp
-		runtime/graphics/command_context.cpp
-		runtime/graphics/command_queue.cpp
-		runtime/graphics/graphics_device.cpp
-		runtime/graphics/graphics_system.cpp
-		runtime/graphics/pipeline_state.cpp
-		runtime/graphics/render_pass.cpp
-		runtime/graphics/render_pass_builder.cpp
-		runtime/graphics/render_pipeline.cpp
-		runtime/graphics/resource.cpp
-		runtime/graphics/resource_graph.cpp
-		runtime/graphics/root_descriptor.cpp
-		runtime/graphics/root_signature.cpp
-		runtime/graphics/shaders.cpp
 		runtime/io/file_descriptor.cpp
 		runtime/io/io_context.cpp
 		runtime/io/io_request.cpp
@@ -88,5 +75,15 @@ target_sources(AVIS_LIB
 # Build HLSL shaders
 enable_build_shaders(AVIS_LIB)
 
-set(COMPUTE_SHADERS ${AVIS_ASSETS_DIR}/shaders/cs_compute11.hlsl)
-build_shaders(${COMPUTE_SHADERS} cs_6_5 ${AVIS_ASSETS_DIR}/cso)
+set(VERTEX_SHADERS
+	${AVIS_ASSETS_DIR}/shaders/triangle_vs.hlsl)
+build_shaders(${VERTEX_SHADERS} vs_6_5 ${AVIS_ASSETS_DIR}/cso)
+
+set(PIXEL_SHADERS
+	${AVIS_ASSETS_DIR}/shaders/triangle_ps.hlsl)
+build_shaders(${PIXEL_SHADERS} ps_6_5 ${AVIS_ASSETS_DIR}/cso)
+
+# set(COMPUTE_SHADERS
+# 	${AVIS_ASSETS_DIR}/shaders/triangle_vs.hlsl
+# 	${AVIS_ASSETS_DIR}/shaders/triangle_ps.hlsl)
+# build_shaders(${COMPUTE_SHADERS} cs_6_5 ${AVIS_ASSETS_DIR}/cso)
