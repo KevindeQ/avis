@@ -3,7 +3,7 @@
 #include "avis/middleware/data_formats/ply/ply_parser.h"
 #include "avis/middleware/runtime.h"
 
-sample_app::sample_app(basic_app_config& config) :
+visualizer::visualizer(basic_app_config& config) :
     basic_app(config),
 
     render_window{ { L"D3D12 Demo", 800, 800 } },
@@ -15,6 +15,7 @@ sample_app::sample_app(basic_app_config& config) :
     file_load_service{ threads, 3 }
 {
     configure_rendering(false);
+    configure_window_resize();
     configure_input();
 
     load_assets();
@@ -22,7 +23,7 @@ sample_app::sample_app(basic_app_config& config) :
     load_content();
 }
 
-sample_app::~sample_app()
+visualizer::~visualizer()
 {
     // Ensure that the GPU is no longer referencing resources that are about to be
     // cleaned up by the destructor.
@@ -31,12 +32,12 @@ sample_app::~sample_app()
     CloseHandle(fence_event);
 }
 
-void sample_app::on_update()
+void visualizer::on_update()
 {
     input_dispatcher.dispatch_input();
 }
 
-void sample_app::on_render()
+void visualizer::on_render()
 {
     // Command list allocators can only be reset when the associated
     // command lists have finished execution on the GPU; apps should use
@@ -97,7 +98,7 @@ void sample_app::on_render()
     move_to_next_frame();
 }
 
-void sample_app::load_content()
+void visualizer::load_content()
 {
     /*io::file_descriptor test_file =
         file_context.create_descriptor("E:\\Projects\\D3D12TechDemo\\data\\models\\buddha\\buddha.obj");*/
@@ -124,7 +125,38 @@ void sample_app::load_content()
     database.fetch_data(Eigen::Vector3f{});*/
 }
 
-void sample_app::configure_rendering(const bool use_warp_device)
+void visualizer::configure_window_resize()
+{
+    render_window.on_message(
+        WM_SIZE,
+        [this](WPARAM wparam, LPARAM lparam)
+        {
+            on_window_resize(render_window.width(), render_window.height(), wparam == SIZE_MINIMIZED);
+            return 0;
+        });
+}
+
+void visualizer::on_window_resize(const std::uint32_t width, const std::uint32_t height, const bool minimized)
+{
+    wait_for_gpu();
+
+    for (std::uint32_t index = 0; index < frame_count; ++index)
+    {
+        render_targets[index].reset();
+        fence_values[index] = fence_values[frame_index];
+    }
+
+    DXGI_SWAP_CHAIN_DESC descriptor = {};
+    swap_chain->GetDesc(&descriptor);
+    throw_if_failed(
+        swap_chain->ResizeBuffers(frame_count, width, height, descriptor.BufferDesc.Format, descriptor.Flags));
+
+    frame_index = swap_chain->GetCurrentBackBufferIndex();
+
+    load_size_dependent_resources();
+}
+
+void visualizer::configure_rendering(const bool use_warp_device)
 {
     std::uint32_t dxgi_factory_flags = 0;
 
@@ -223,7 +255,7 @@ void sample_app::configure_rendering(const bool use_warp_device)
     }
 }
 
-void sample_app::get_hardware_adapter(
+void visualizer::get_hardware_adapter(
     com_ptr<IDXGIFactory4>& factory, com_ptr<IDXGIAdapter1>& adapter, bool request_high_performance_adapter)
 {
     adapter.reset();
@@ -287,7 +319,7 @@ void sample_app::get_hardware_adapter(
     adapter = adapter_temp;
 }
 
-void sample_app::wait_for_gpu()
+void visualizer::wait_for_gpu()
 {
     // Schedule a Signal command in the queue.
     throw_if_failed(command_queue->Signal(fence.get(), fence_values[frame_index]));
@@ -300,7 +332,7 @@ void sample_app::wait_for_gpu()
     fence_values[frame_index]++;
 }
 
-void sample_app::move_to_next_frame()
+void visualizer::move_to_next_frame()
 {
     // Schedule a Signal command in the queue.
     const std::uint64_t current_fence_value = fence_values[frame_index];
@@ -320,7 +352,7 @@ void sample_app::move_to_next_frame()
     fence_values[frame_index] = current_fence_value + 1;
 }
 
-void sample_app::load_assets()
+void visualizer::load_assets()
 {
     // Create an empty root signature.
     {
@@ -535,7 +567,35 @@ void sample_app::load_assets()
     }
 }
 
-void sample_app::configure_input()
+void visualizer::load_size_dependent_resources()
+{
+    update_viewport_and_scissor();
+
+    D3D12_CPU_DESCRIPTOR_HANDLE handle_rtv{};
+    handle_rtv.ptr = heap_rtv->GetCPUDescriptorHandleForHeapStart().ptr;
+
+    for (std::uint32_t index = 0; index < frame_count; ++index)
+    {
+        throw_if_failed(swap_chain->GetBuffer(index, IID_PPV_ARGS(&render_targets[index])));
+        graphics_device->CreateRenderTargetView(render_targets[index].get(), nullptr, handle_rtv);
+        handle_rtv.ptr += descriptor_size_rtv;
+    }
+}
+
+void visualizer::update_viewport_and_scissor()
+{
+    viewport.TopLeftX = 0.0f;
+    viewport.TopLeftY = 0.0f;
+    viewport.Width = render_window.width();
+    viewport.Height = render_window.height();
+
+    scissor_rect.left = 0;
+    scissor_rect.right = render_window.width();
+    scissor_rect.top = 0;
+    scissor_rect.bottom = render_window.height();
+}
+
+void visualizer::configure_input()
 {
     render_window.on_message(
         WM_INPUT,
@@ -580,7 +640,7 @@ int __stdcall wWinMain(
     basic_app_config configuration;
     configuration.fixed_time_delta = 16ms;
 
-    return engine.execute<sample_app>(configuration);
+    return engine.execute<visualizer>(configuration);
 }
 
 // file_output file_parser::operator()(const streams::memory_stream& data)

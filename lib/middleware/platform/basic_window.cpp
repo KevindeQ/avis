@@ -134,6 +134,11 @@ namespace platform
         return native_handle_;
     }
 
+    void basic_window::update_size()
+    {
+        ::GetWindowRect(native_handle_, &window_rect_);
+    }
+
     WNDCLASSEX basic_window::generate_window_class()
     {
         // Register window class

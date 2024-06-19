@@ -23,6 +23,14 @@ window::window(const descriptor& create_params) : basic_window(), basic_window_m
     }
 
     on_message(
+        WM_SIZE,
+        [this](WPARAM wparam, LPARAM lparam)
+        {
+            update_size();
+            return 0;
+        });
+
+    on_message(
         WM_CLOSE,
         [](WPARAM wparam, LPARAM lparam)
         {

@@ -37,6 +37,8 @@ namespace platform
         bool create(const descriptor& create_params);
         void destroy();
 
+        void update_size();
+
         WNDCLASSEX generate_window_class();
         bool register_window_class(WNDCLASSEX& window_class);
 

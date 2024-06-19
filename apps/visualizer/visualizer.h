@@ -8,13 +8,14 @@
 #include "avis/middleware/window.h"
 #include "avis/runtime/data/point_cloud.h"
 #include "avis/runtime/io/io_context.h"
+#include "avis/runtime/io/io_service.h"
 #include "avis/runtime/parallel/thread_pool.h"
 
-class sample_app : public basic_app
+class visualizer : public basic_app
 {
 public:
-    sample_app(basic_app_config& config);
-    virtual ~sample_app();
+    visualizer(basic_app_config& config);
+    virtual ~visualizer();
 
     void on_update() override;
 
@@ -22,6 +23,9 @@ public:
 
 private:
     void load_content();
+
+    void configure_window_resize();
+    void on_window_resize(const std::uint32_t width, const std::uint32_t height, const bool minimized);
 
     void configure_rendering(const bool use_warp_device);
     void get_hardware_adapter(
@@ -31,6 +35,8 @@ private:
     void move_to_next_frame();
 
     void load_assets();
+    void load_size_dependent_resources();
+    void update_viewport_and_scissor();
 
     void configure_input();
 
