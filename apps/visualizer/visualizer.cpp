@@ -1,6 +1,9 @@
 #include "visualizer.h"
 
 #include "avis/middleware/data_formats/ply/ply_parser.h"
+#include "avis/middleware/input/input_state.h"
+#include "avis/middleware/input/input_device_mouse.h"
+#include "avis/middleware/input/input_device_keyboard.h"
 #include "avis/middleware/runtime.h"
 
 visualizer::visualizer(basic_app_config& config) :
@@ -12,7 +15,12 @@ visualizer::visualizer(basic_app_config& config) :
     scissor_rect{ 0, 0, static_cast<long>(render_window.width()), static_cast<long>(render_window.height()) },
 
     threads{ 3 },
-    file_load_service{ threads, 3 }
+    file_load_service{ threads, 3 },
+
+    current_inputs{},
+    input_decoder{},
+    global_input_context{},
+    movement_input_context{}
 {
     configure_rendering(false);
     configure_window_resize();
@@ -34,7 +42,30 @@ visualizer::~visualizer()
 
 void visualizer::on_update()
 {
-    input_dispatcher.dispatch_input();
+    visualizer_input_state current_inputs = input_decoder.snapshot_inputs();
+    input_decoder.clear_inputs();
+
+    if (current_inputs.contains(input_actions::exit_app))
+    {
+        render_window.close();
+    }
+
+    if (current_inputs.contains(input_states::move_forward))
+    {
+        /*global_camera_controller.*/
+    }
+    if (current_inputs.contains(input_states::move_backward))
+    {
+        /*global_camera_controller.*/
+    }
+    if (current_inputs.contains(input_states::move_left))
+    {
+        /*global_camera_controller.*/
+    }
+    if (current_inputs.contains(input_states::move_right))
+    {
+        /*global_camera_controller.*/
+    }
 }
 
 void visualizer::on_render()
@@ -597,24 +628,35 @@ void visualizer::update_viewport_and_scissor()
 
 void visualizer::configure_input()
 {
+    global_input_context.add_mapping(input::key_code::key_escape, input_actions::exit_app);
+    input_decoder.push_context(global_input_context);
+
+    movement_input_context.add_mapping(input::key_code::key_w, input_states::move_forward);
+    movement_input_context.add_mapping(input::key_code::key_a, input_states::move_left);
+    movement_input_context.add_mapping(input::key_code::key_s, input_states::move_backward);
+    movement_input_context.add_mapping(input::key_code::key_d, input_states::move_right);
+    input_decoder.push_context(movement_input_context);
+
+    input_decoder.register_device<input::input_device_keyboard>(render_window.native_handle());
+    input_decoder.register_device<input::input_device_mouse>(render_window.native_handle());
+
     render_window.on_message(
         WM_INPUT,
         [this](WPARAM wparam, LPARAM lparam)
         {
-            input_dispatcher.handle_raw_input(wparam, lparam);
-            return 0;
+            // Check if this message can be ignored because the window was out of focus
+            if (GET_RAWINPUT_CODE_WPARAM(wparam) == RIM_INPUTSINK)
+            {
+                return 0ll;
+            }
+
+            input_decoder.decode(wparam, lparam);
+
+            // According to MSDN, DefWindowProc must be called to give the system a chance to perform
+            // cleanup. See https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-input for more
+            // info.
+            return DefWindowProcW(render_window.native_handle(), WM_INPUT, wparam, lparam);
         });
-
-    global_input_context.add_mapping();
-    global_input_context.add_mapping();
-    global_input_context.add_mapping();
-    input_dispatcher.push_context(global_input_context);
-
-    movement_input_context.add_mapping();
-    movement_input_context.add_mapping();
-    movement_input_context.add_mapping();
-    movement_input_context.add_mapping();
-    input_dispatcher.push_context(movement_input_context);
 }
 
 int __stdcall wWinMain(

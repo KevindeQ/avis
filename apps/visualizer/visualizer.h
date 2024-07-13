@@ -4,12 +4,35 @@
 #include "avis/middleware/basic_app.h"
 #include "avis/middleware/geometry/data_store.h"
 #include "avis/middleware/input/input_context.h"
-#include "avis/middleware/input/input_dispatcher.h"
+#include "avis/middleware/input/input_decoder.h"
+#include "avis/middleware/input/input_state.h"
 #include "avis/middleware/window.h"
 #include "avis/runtime/data/point_cloud.h"
 #include "avis/runtime/io/io_context.h"
 #include "avis/runtime/io/io_service.h"
 #include "avis/runtime/parallel/thread_pool.h"
+
+enum class input_actions
+{
+    exit_app,
+};
+
+enum class input_states
+{
+    move_forward,
+    move_backward,
+    move_left,
+    move_right
+};
+
+enum class input_ranges
+{
+
+};
+
+using visualizer_input_decoder = input::input_decoder<input_actions, input_states, input_ranges>;
+using visualizer_input_state = input::input_state<input_actions, input_states, input_ranges>;
+using visualizer_input_context = input::input_context<input_actions, input_states, input_ranges>;
 
 class visualizer : public basic_app
 {
@@ -97,9 +120,10 @@ private:
     io::io_context file_context;
     io::io_service file_load_service;
 
-    input::input_dispatcher input_dispatcher;
-    input::input_context global_input_context;
-    input::input_context movement_input_context;
+    visualizer_input_state current_inputs;
+    visualizer_input_decoder input_decoder;
+    visualizer_input_context global_input_context;
+    visualizer_input_context movement_input_context;
 };
 
 #endif
