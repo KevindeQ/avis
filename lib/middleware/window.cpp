@@ -32,9 +32,9 @@ window::window(const descriptor& create_params) : basic_window(), basic_window_m
 
     on_message(
         WM_CLOSE,
-        [](WPARAM wparam, LPARAM lparam)
+        [this](WPARAM wparam, LPARAM lparam)
         {
-            ::PostQuitMessage(EXIT_SUCCESS);
+            close();
             return 0;
         });
 }
@@ -42,6 +42,11 @@ window::window(const descriptor& create_params) : basic_window(), basic_window_m
 window::~window()
 {
     destroy();
+}
+
+void window::close()
+{
+    ::PostQuitMessage(EXIT_SUCCESS);
 }
 
 std::int64_t __stdcall window::message_handler(HWND window_handle, unsigned int message, WPARAM wparam, LPARAM lparam)

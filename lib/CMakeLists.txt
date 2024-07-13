@@ -45,7 +45,6 @@ target_sources(AVIS_LIB
 		core/streams/memory_stream.cpp
 		core/streams/text_stream.cpp
 		core/unique_handle.cpp
-
 		middleware/configuration/configuration_parser.cpp
 		middleware/configuration/ini_parser.cpp
 		middleware/data_formats/json/json_parser.cpp
@@ -53,14 +52,14 @@ target_sources(AVIS_LIB
 		middleware/data_formats/ply/ply_parser.cpp
 		middleware/geometry/data_layout.cpp
 		middleware/geometry/data_store.cpp
-		middleware/input/input_context.cpp
-		middleware/input/input_dispatcher.cpp
+		middleware/input/details/input_wrapper.cpp
+		middleware/input/input_device_keyboard.cpp
+		middleware/input/input_device_mouse.cpp
 		middleware/platform/basic_window.cpp
 		middleware/platform/basic_window_messages.cpp
 		middleware/configuration.cpp
 		middleware/runtime.cpp
 		middleware/window.cpp
-
 		runtime/data/data_provider.cpp
 		runtime/data/page_controller.cpp
 		runtime/data/page_view.cpp

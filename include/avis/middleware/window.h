@@ -16,6 +16,8 @@ public:
     window& operator=(const window&) = delete;
     ENGINE_API window& operator=(window&&) = default;
 
+    void close();
+
 private:
     ENGINE_API std::int64_t __stdcall message_handler(
         HWND window_handle, unsigned int message, WPARAM wparam, LPARAM lparam) override;
