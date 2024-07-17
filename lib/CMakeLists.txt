@@ -59,6 +59,7 @@ target_sources(AVIS_LIB
 		middleware/platform/basic_window_messages.cpp
 		middleware/configuration.cpp
 		middleware/runtime.cpp
+		middleware/step_timer.cpp
 		middleware/window.cpp
 		runtime/data/data_provider.cpp
 		runtime/data/page_controller.cpp

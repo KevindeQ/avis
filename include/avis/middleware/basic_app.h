@@ -2,6 +2,7 @@
 #define MIDDLEWARE_BASIC_APP_H
 
 #include "avis/core/common.h"
+#include "avis/middleware/step_timer.h"
 
 struct basic_app_config
 {
@@ -21,7 +22,7 @@ public:
     virtual void on_suspend() {}
     virtual void on_resume() {}
 
-    virtual void on_update() {}
+    virtual void on_update(const step_timer& timer) {}
 
     virtual void on_render() {}
 

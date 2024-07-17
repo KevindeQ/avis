@@ -40,7 +40,7 @@ public:
     visualizer(basic_app_config& config);
     virtual ~visualizer();
 
-    void on_update() override;
+    void on_update(const step_timer& timer) override;
 
     void on_render() override;
 

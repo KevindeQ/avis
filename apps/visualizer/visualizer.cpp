@@ -40,7 +40,7 @@ visualizer::~visualizer()
     CloseHandle(fence_event);
 }
 
-void visualizer::on_update()
+void visualizer::on_update(const step_timer& timer)
 {
     visualizer_input_state current_inputs = input_decoder.snapshot_inputs();
     input_decoder.clear_inputs();

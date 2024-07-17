@@ -1,138 +1,95 @@
 #ifndef MIDDLEWARE_STEP_TIMER_H
 #define MIDDLEWARE_STEP_TIMER_H
 
-#include "avis/common.h"
+#include "avis/core/common.h"
 
-class StepTimer
+class step_timer
 {
 private:
-    using Clock = std::chrono::high_resolution_clock;
-    using TimePoint = Clock::time_point;
-    using TimeSpanSeconds = std::chrono::duration<Float64>;
-    using TimeSpanNanoseconds = std::chrono::nanoseconds;
+    using clock = std::chrono::high_resolution_clock;
+    using time_point = clock::time_point;
+    using time_span_seconds = std::chrono::duration<double>;
+    using time_span_nanoseconds = std::chrono::nanoseconds;
 
 public:
-    StepTimer::StepTimer(const TimeSpanNanoseconds FixedTimeStep) :
-        m_FixedTimeStep(FixedTimeStep),
-        m_MaxTimeStep(100ms),
+    step_timer(const time_span_nanoseconds time_delta_ns);
 
-        m_GlobalTime(0ns),
-        m_CurrentTime(Clock::now()),
-        m_Accumulator(0ns),
-        m_ElapsedSeconds(0.0),
+    // void tick(void(&update)(const step_timer&));
+    template<typename update_func>
+    void tick(const update_func& update);
 
-        m_GlobalFrameCount(0),
-        m_SecondFrameCount(0),
-        m_FramesPerSecond(0)
-    {}
+    void reset();
 
-    // void Tick(void(&Update)(const StepTimer&));
-    template<typename UpdateFunc>
-    void Tick(const UpdateFunc& Update)
-    {
-        // Update time
-        const auto NewTime = Clock::now();
-        const auto ElapsedTime = std::min(DurationInNanoseconds(m_CurrentTime, NewTime), m_MaxTimeStep);
-        m_CurrentTime = NewTime;
+    float tick_residual() const;
 
-        m_ElapsedSeconds = DurationInSeconds(ElapsedTime);
-
-        Uint64 FrameCount = 0;
-        if (m_FixedTimeStep > 0ns)
-        {
-            m_Accumulator += ElapsedTime;
-            while (m_Accumulator >= m_FixedTimeStep)
-            {
-                Update(*this);
-
-                m_GlobalTime += m_FixedTimeStep;
-                m_Accumulator -= m_FixedTimeStep;
-
-                FrameCount += 1;
-            }
-        }
-        else
-        {
-            Update(*this);
-
-            m_GlobalTime += ElapsedTime;
-            m_Accumulator = 0ns;
-
-            FrameCount += 1;
-        }
-
-        // Update frame count/frames per seconds tracking values
-        m_GlobalFrameCount += FrameCount;
-        m_SecondFrameCount += FrameCount;
-        m_SecondAccumulator += ElapsedTime;
-
-        static const TimeSpanNanoseconds Second = 1s;
-        if (m_SecondAccumulator >= Second)
-        {
-            m_FramesPerSecond = m_SecondFrameCount;
-            m_SecondFrameCount = 0;
-            m_SecondAccumulator %= Second;
-        }
-    }
-
-    void Reset()
-    {
-        m_CurrentTime = Clock::now();
-        m_ElapsedSeconds = 0.0f;
-
-        m_SecondFrameCount = 0;
-        m_FramesPerSecond = 0;
-    }
-
-    Float32 GetTickResidual() const
-    {
-        if (m_FixedTimeStep == 0ns)
-        {
-            return 0.0f;
-        }
-
-        return static_cast<Float32>(m_Accumulator.count()) / static_cast<Float32>(m_FixedTimeStep.count());
-    }
-
-    Float64 GetElapsedSeconds() const
-    {
-        return m_ElapsedSeconds;
-    }
-
-    Uint64 GetFrameCount() const
-    {
-        return m_GlobalFrameCount;
-    }
-
-    Uint32 GetFramesPerSecond() const
-    {
-        return m_FramesPerSecond;
-    }
+    double elapsed_seconds() const;
+    std::uint64_t frame_count() const;
+    std::uint32_t frames_per_second() const;
 
 private:
-    static std::chrono::nanoseconds DurationInNanoseconds(const TimePoint& StartTime, const TimePoint& EndTime)
-    {
-        return std::chrono::duration_cast<TimeSpanNanoseconds>(EndTime - StartTime);
-    }
-
-    static Float64 DurationInSeconds(const TimeSpanNanoseconds& Duration)
-    {
-        return TimeSpanSeconds(Duration).count();
-    }
+    static std::chrono::nanoseconds duration_in_nanoseconds(const time_point& start_time, const time_point& end_time);
+    static double duration_in_seconds(const time_span_nanoseconds& duration);
 
 private:
-    const TimeSpanNanoseconds m_FixedTimeStep;
-    const TimeSpanNanoseconds m_MaxTimeStep;
+    const time_span_nanoseconds time_delta;
+    const time_span_nanoseconds time_delta_max;
 
-    TimeSpanNanoseconds m_GlobalTime;
-    TimePoint m_CurrentTime;
-    TimeSpanNanoseconds m_Accumulator;
-    Float64 m_ElapsedSeconds;
+    time_span_nanoseconds global_time;
+    time_point current_time;
+    time_span_nanoseconds accumulator;
+    double seconds_elapsed;
 
-    Uint64 m_GlobalFrameCount;
-    Uint32 m_SecondFrameCount;
-    Uint32 m_FramesPerSecond;
-    TimeSpanNanoseconds m_SecondAccumulator;
+    std::uint64_t global_frame_count;
+    std::uint32_t second_frame_count;
+    std::uint32_t fps;
+    time_span_nanoseconds second_accumulator;
 };
+
+template<typename update_func>
+void step_timer::tick(const update_func& update)
+{
+    // Update time
+    const auto new_time = clock::now();
+    const auto elapsed_time = std::min(duration_in_nanoseconds(current_time, new_time), time_delta_max);
+    current_time = new_time;
+
+    seconds_elapsed = duration_in_seconds(elapsed_time);
+
+    std::uint64_t frame_count = 0;
+    if (time_delta > 0ns)
+    {
+        accumulator += elapsed_time;
+        while (accumulator >= time_delta)
+        {
+            update(*this);
+
+            global_time += time_delta;
+            accumulator -= time_delta;
+
+            frame_count += 1;
+        }
+    }
+    else
+    {
+        update(*this);
+
+        global_time += elapsed_time;
+        accumulator = 0ns;
+
+        frame_count += 1;
+    }
+
+    // Update frame count/frames per seconds tracking values
+    global_frame_count += frame_count;
+    second_frame_count += frame_count;
+    second_accumulator += elapsed_time;
+
+    if (second_accumulator >= 1s)
+    {
+        fps = second_frame_count;
+        second_frame_count = 0;
+        second_accumulator %= 1s;
+    }
+}
 
 #endif
