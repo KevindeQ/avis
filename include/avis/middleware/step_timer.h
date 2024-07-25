@@ -22,13 +22,13 @@ public:
 
     float tick_residual() const;
 
-    double elapsed_seconds() const;
+    time_span_seconds elapsed_seconds() const;
     std::uint64_t frame_count() const;
     std::uint32_t frames_per_second() const;
 
 private:
     static std::chrono::nanoseconds duration_in_nanoseconds(const time_point& start_time, const time_point& end_time);
-    static double duration_in_seconds(const time_span_nanoseconds& duration);
+    static time_span_seconds duration_in_seconds(const time_span_nanoseconds& duration);
 
 private:
     const time_span_nanoseconds time_delta;
@@ -37,7 +37,7 @@ private:
     time_span_nanoseconds global_time;
     time_point current_time;
     time_span_nanoseconds accumulator;
-    double seconds_elapsed;
+    time_span_seconds seconds_elapsed;
 
     std::uint64_t global_frame_count;
     std::uint32_t second_frame_count;
