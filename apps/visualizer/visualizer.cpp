@@ -1,9 +1,9 @@
 #include "visualizer.h"
 
 #include "avis/middleware/data_formats/ply/ply_parser.h"
-#include "avis/middleware/input/input_state.h"
-#include "avis/middleware/input/input_device_mouse.h"
 #include "avis/middleware/input/input_device_keyboard.h"
+#include "avis/middleware/input/input_device_mouse.h"
+#include "avis/middleware/input/input_state.h"
 #include "avis/middleware/runtime.h"
 
 visualizer::visualizer(basic_app_config& config) :
@@ -11,8 +11,19 @@ visualizer::visualizer(basic_app_config& config) :
 
     render_window{ { L"D3D12 Demo", 800, 800 } },
 
-    viewport{ 0.0f, 0.0f, static_cast<float>(render_window.width()), static_cast<float>(render_window.height()) },
+    viewport{ 0.0f,
+              0.0f,
+              static_cast<float>(render_window.width()),
+              static_cast<float>(render_window.height()),
+              D3D12_MIN_DEPTH,
+              D3D12_MAX_DEPTH },
     scissor_rect{ 0, 0, static_cast<long>(render_window.width()), static_cast<long>(render_window.height()) },
+
+    constant_buffer_data{},
+    constant_buffer_data_begin{ nullptr },
+
+    global_camera{ },
+    global_camera_controller{ },
 
     threads{ 3 },
     file_load_service{ threads, 3 },
@@ -50,22 +61,40 @@ void visualizer::on_update(const step_timer& timer)
         render_window.close();
     }
 
+    if (current_inputs.contains(input_actions::reset_camera))
+    {
+        global_camera_controller.reset();
+    }
+
     if (current_inputs.contains(input_states::move_forward))
     {
-        /*global_camera_controller.*/
+        global_camera_controller.move_forward(1.0f, timer.elapsed_seconds());
     }
     if (current_inputs.contains(input_states::move_backward))
     {
-        /*global_camera_controller.*/
+        global_camera_controller.move_forward(-1.0f, timer.elapsed_seconds());
     }
     if (current_inputs.contains(input_states::move_left))
     {
-        /*global_camera_controller.*/
+        global_camera_controller.move_left(1.0f, timer.elapsed_seconds());
     }
     if (current_inputs.contains(input_states::move_right))
     {
-        /*global_camera_controller.*/
+        global_camera_controller.move_left(-1.0f, timer.elapsed_seconds());
     }
+
+    global_camera_controller.update();
+
+    // Update shader data
+    Eigen::Matrix4f::Map(constant_buffer_data.matrix_view_projection.data()) = global_camera.view_projection_matrix();
+    /*Eigen::Matrix4f::Map(constant_buffer_data.matrix_view_projection.data()) = global_camera.projection_matrix();*/
+    /*Eigen::Matrix4f::Map(constant_buffer_data.matrix_view_projection.data()) =
+     * global_camera.view_matrix().transpose();*/
+
+    Eigen::Matrix4f::Map(constant_buffer_data.matrix_view_projection.data()) = global_camera.view_projection_matrix();
+    Eigen::Matrix4f::Map(constant_buffer_data.matrix_view.data()) = global_camera.view_matrix();
+    Eigen::Matrix4f::Map(constant_buffer_data.matrix_projection.data()) = global_camera.projection_matrix();
+    std::memcpy(constant_buffer_data_begin, &constant_buffer_data, sizeof(constant_buffer_data));
 }
 
 void visualizer::on_render()
@@ -82,6 +111,11 @@ void visualizer::on_render()
 
     // Set necessary state.
     command_list->SetGraphicsRootSignature(root_signature.get());
+
+    std::array<ID3D12DescriptorHeap*, 1> descriptor_heaps{ { heap_cbv.get() } };
+    command_list->SetDescriptorHeaps(descriptor_heaps.size(), descriptor_heaps.data());
+    command_list->SetGraphicsRootDescriptorTable(0, heap_cbv->GetGPUDescriptorHandleForHeapStart());
+
     command_list->RSSetViewports(1, &viewport);
     command_list->RSSetScissorRects(1, &scissor_rect);
 
@@ -154,6 +188,13 @@ void visualizer::load_content()
     io::basic_file_descriptor index_file{ "E:\\Projects\\avis\\assets\\maps\\point_cloud.aif" };
     data::point_cloud database{ index_file, database_file };
     database.fetch_data(Eigen::Vector3f{});*/
+
+    global_camera = camera{ std::numbers::pi / 4.0f,
+                            static_cast<float>(render_window.width()) / static_cast<float>(render_window.height()),
+                            0.1f,
+                            100.0f };
+    global_camera.look_at(Eigen::Vector3f{ 0.0f, 0.0f, 2.0f }, Eigen::Vector3f::Zero(), Eigen::Vector3f::UnitY());
+    global_camera_controller = camera_controller{ &global_camera };
 }
 
 void visualizer::configure_window_resize()
@@ -260,13 +301,19 @@ void visualizer::configure_rendering(const bool use_warp_device)
     // Create descriptor heaps.
     {
         // Describe and create a render target view (RTV) descriptor heap.
-        D3D12_DESCRIPTOR_HEAP_DESC heap_rtv_descriptor = {};
+        D3D12_DESCRIPTOR_HEAP_DESC heap_rtv_descriptor{};
         heap_rtv_descriptor.NumDescriptors = frame_count;
         heap_rtv_descriptor.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         heap_rtv_descriptor.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         throw_if_failed(graphics_device->CreateDescriptorHeap(&heap_rtv_descriptor, IID_PPV_ARGS(&heap_rtv)));
 
         descriptor_size_rtv = graphics_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+        D3D12_DESCRIPTOR_HEAP_DESC heap_cbv_descriptor{};
+        heap_cbv_descriptor.NumDescriptors = 1;
+        heap_cbv_descriptor.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heap_cbv_descriptor.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        throw_if_failed(graphics_device->CreateDescriptorHeap(&heap_cbv_descriptor, IID_PPV_ARGS(&heap_cbv)));
     }
 
     // Create frame resources.
@@ -387,23 +434,32 @@ void visualizer::load_assets()
 {
     // Create an empty root signature.
     {
-        D3D12_ROOT_PARAMETER1 parameter_constants{};
-        parameter_constants.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        parameter_constants.Constants.ShaderRegister = 0;
-        parameter_constants.Constants.RegisterSpace = 0;
-        parameter_constants.Constants.Num32BitValues = 64;
-        parameter_constants.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        std::array<D3D12_DESCRIPTOR_RANGE1, 1> ranges;
+        ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+        ranges[0].NumDescriptors = 1;
+        ranges[0].BaseShaderRegister = 0;
+        ranges[0].RegisterSpace = 0;
+        ranges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        ranges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
 
         std::array<D3D12_ROOT_PARAMETER1, 1> root_parameters{};
-        root_parameters[0] = parameter_constants;
+        root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        root_parameters[0].DescriptorTable.pDescriptorRanges = ranges.data();
+        root_parameters[0].DescriptorTable.NumDescriptorRanges = ranges.size();
+        root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
         D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_descriptor{};
         root_signature_descriptor.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-        root_signature_descriptor.Desc_1_1.NumParameters = 1;
+        root_signature_descriptor.Desc_1_1.NumParameters = root_parameters.size();
         root_signature_descriptor.Desc_1_1.pParameters = root_parameters.data();
         root_signature_descriptor.Desc_1_1.NumStaticSamplers = 0;
         root_signature_descriptor.Desc_1_1.pStaticSamplers = nullptr;
-        root_signature_descriptor.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT /*|
+        root_signature_descriptor.Desc_1_1.Flags =
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+            D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+            D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+            D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
+            D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS /*|
                                                    D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED |
                                                    D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED*/
             ;
@@ -461,7 +517,7 @@ void visualizer::load_assets()
         D3D12_RASTERIZER_DESC rasterizer_descriptor{};
         rasterizer_descriptor.FillMode = D3D12_FILL_MODE_SOLID;
         rasterizer_descriptor.CullMode = D3D12_CULL_MODE_BACK;
-        rasterizer_descriptor.FrontCounterClockwise = FALSE;
+        rasterizer_descriptor.FrontCounterClockwise = TRUE;
         rasterizer_descriptor.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
         rasterizer_descriptor.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
         rasterizer_descriptor.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
@@ -524,9 +580,9 @@ void visualizer::load_assets()
     {
         // Define the geometry for a triangle.
         float aspect_ratio = static_cast<float>(render_window.width()) / static_cast<float>(render_window.height());
-        Vertex triangle_vertices[] = { { { 0.0f, 0.25f * aspect_ratio, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
-                                       { { 0.25f, -0.25f * aspect_ratio, 0.0f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
-                                       { { -0.25f, -0.25f * aspect_ratio, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } } };
+        Vertex triangle_vertices[] = { { { 0.0f, 0.25f * aspect_ratio, 0.5f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
+                                       { { 0.25f, -0.25f * aspect_ratio, 0.5f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
+                                       { { -0.25f, -0.25f * aspect_ratio, 0.5f }, { 0.0f, 0.0f, 1.0f, 1.0f } } };
 
         const std::uint32_t vertex_buffer_size = sizeof(triangle_vertices);
 
@@ -578,6 +634,51 @@ void visualizer::load_assets()
         vertex_buffer_view.SizeInBytes = vertex_buffer_size;
     }
 
+    // Creae the constant buffer
+    {
+        const std::uint32_t buffer_size_constant_buffer = sizeof(constant_buffer_scene);
+
+        D3D12_HEAP_PROPERTIES properties_heap{};
+        properties_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        properties_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        properties_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        properties_heap.CreationNodeMask = 1;
+        properties_heap.VisibleNodeMask = 1;
+
+        D3D12_RESOURCE_DESC resource_descriptor{};
+        resource_descriptor.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        resource_descriptor.Alignment = 0;
+        resource_descriptor.Width = buffer_size_constant_buffer;
+        resource_descriptor.Height = 1;
+        resource_descriptor.DepthOrArraySize = 1;
+        resource_descriptor.MipLevels = 1;
+        resource_descriptor.Format = DXGI_FORMAT_UNKNOWN;
+        resource_descriptor.SampleDesc.Count = 1;
+        resource_descriptor.SampleDesc.Quality = 0;
+        resource_descriptor.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        resource_descriptor.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        throw_if_failed(graphics_device->CreateCommittedResource(
+            &properties_heap,
+            D3D12_HEAP_FLAG_NONE,
+            &resource_descriptor,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&constant_buffer)));
+
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_descriptor{};
+        cbv_descriptor.BufferLocation = constant_buffer->GetGPUVirtualAddress();
+        cbv_descriptor.SizeInBytes = buffer_size_constant_buffer;
+        graphics_device->CreateConstantBufferView(&cbv_descriptor, heap_cbv->GetCPUDescriptorHandleForHeapStart());
+
+        // Map and initialize the constant buffer. This resource isn't unmapped until the app closes
+        D3D12_RANGE range_read{};
+        range_read.Begin = 0;
+        range_read.End = 0;
+        throw_if_failed(constant_buffer->Map(0, &range_read, reinterpret_cast<void**>(&constant_buffer_data_begin)));
+        std::memcpy(constant_buffer_data_begin, &constant_buffer_data, sizeof(constant_buffer_data));
+    }
+
     // Create synchronization objects and wait until assets have been uploaded to the GPU.
     {
         throw_if_failed(
@@ -619,6 +720,8 @@ void visualizer::update_viewport_and_scissor()
     viewport.TopLeftY = 0.0f;
     viewport.Width = render_window.width();
     viewport.Height = render_window.height();
+    viewport.MinDepth = D3D12_MIN_DEPTH;
+    viewport.MaxDepth = D3D12_MAX_DEPTH;
 
     scissor_rect.left = 0;
     scissor_rect.right = render_window.width();
@@ -629,7 +732,14 @@ void visualizer::update_viewport_and_scissor()
 void visualizer::configure_input()
 {
     global_input_context.add_mapping(input::key_code::key_escape, input_actions::exit_app);
+
+    global_input_context.add_mapping(input::key_code::key_r, input_actions::reset_camera);
     input_decoder.push_context(global_input_context);
+
+    movement_input_context.add_mapping(input::key_code::key_up_arrow, input_states::move_forward);
+    movement_input_context.add_mapping(input::key_code::key_left_arrow, input_states::move_left);
+    movement_input_context.add_mapping(input::key_code::key_down_arrow, input_states::move_backward);
+    movement_input_context.add_mapping(input::key_code::key_right_arrow, input_states::move_right);
 
     movement_input_context.add_mapping(input::key_code::key_w, input_states::move_forward);
     movement_input_context.add_mapping(input::key_code::key_a, input_states::move_left);
