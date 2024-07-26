@@ -66,21 +66,32 @@ void visualizer::on_update(const step_timer& timer)
         global_camera_controller.reset();
     }
 
-    if (current_inputs.contains(input_states::move_forward))
+    if (current_inputs.contains(input_states::camera_move_forward))
     {
         global_camera_controller.move_forward(1.0f, timer.elapsed_seconds());
     }
-    if (current_inputs.contains(input_states::move_backward))
+    if (current_inputs.contains(input_states::camera_move_backward))
     {
         global_camera_controller.move_forward(-1.0f, timer.elapsed_seconds());
     }
-    if (current_inputs.contains(input_states::move_left))
+    if (current_inputs.contains(input_states::camera_move_left))
     {
         global_camera_controller.move_left(1.0f, timer.elapsed_seconds());
     }
-    if (current_inputs.contains(input_states::move_right))
+    if (current_inputs.contains(input_states::camera_move_right))
     {
         global_camera_controller.move_left(-1.0f, timer.elapsed_seconds());
+    }
+
+    if (current_inputs.contains(input_ranges::camera_rotate_pitch))
+    {
+        // TODO: Replace amount with actual value from input
+        global_camera_controller.rotate_pitch(1.0f, timer.elapsed_seconds());
+    }
+    if (current_inputs.contains(input_ranges::camera_rotate_yaw))
+    {
+        // TODO: Replace amount with actual value from input
+        global_camera_controller.rotate_yaw(1.0f, timer.elapsed_seconds());
     }
 
     global_camera_controller.update();
@@ -729,15 +740,15 @@ void visualizer::configure_input()
     global_input_context.add_mapping(input::key_code::key_r, input_actions::reset_camera);
     input_decoder.push_context(global_input_context);
 
-    movement_input_context.add_mapping(input::key_code::key_up_arrow, input_states::move_forward);
-    movement_input_context.add_mapping(input::key_code::key_left_arrow, input_states::move_left);
-    movement_input_context.add_mapping(input::key_code::key_down_arrow, input_states::move_backward);
-    movement_input_context.add_mapping(input::key_code::key_right_arrow, input_states::move_right);
+    movement_input_context.add_mapping(input::key_code::key_up_arrow, input_states::camera_move_forward);
+    movement_input_context.add_mapping(input::key_code::key_left_arrow, input_states::camera_move_left);
+    movement_input_context.add_mapping(input::key_code::key_down_arrow, input_states::camera_move_backward);
+    movement_input_context.add_mapping(input::key_code::key_right_arrow, input_states::camera_move_right);
 
-    movement_input_context.add_mapping(input::key_code::key_w, input_states::move_forward);
-    movement_input_context.add_mapping(input::key_code::key_a, input_states::move_left);
-    movement_input_context.add_mapping(input::key_code::key_s, input_states::move_backward);
-    movement_input_context.add_mapping(input::key_code::key_d, input_states::move_right);
+    movement_input_context.add_mapping(input::key_code::key_w, input_states::camera_move_forward);
+    movement_input_context.add_mapping(input::key_code::key_a, input_states::camera_move_left);
+    movement_input_context.add_mapping(input::key_code::key_s, input_states::camera_move_backward);
+    movement_input_context.add_mapping(input::key_code::key_d, input_states::camera_move_right);
     input_decoder.push_context(movement_input_context);
 
     input_decoder.register_device<input::input_device_keyboard>(render_window.native_handle());

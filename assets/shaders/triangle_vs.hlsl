@@ -1,8 +1,6 @@
 cbuffer Scene : register(b0)
 {
     float4x4 matrix_view_projection;
-    float4x4 matrix_view;
-    float4x4 matrix_projection;
 };
 
 struct PSInput

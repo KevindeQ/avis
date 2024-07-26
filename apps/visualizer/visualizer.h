@@ -23,15 +23,16 @@ enum class input_actions
 
 enum class input_states
 {
-    move_forward,
-    move_backward,
-    move_left,
-    move_right
+    camera_move_forward,
+    camera_move_backward,
+    camera_move_left,
+    camera_move_right
 };
 
 enum class input_ranges
 {
-
+    camera_rotate_pitch,
+    camera_rotate_yaw
 };
 
 using visualizer_input_decoder = input::input_decoder<input_actions, input_states, input_ranges>;
@@ -42,8 +43,6 @@ struct alignas(256) constant_buffer_scene
 {
 public:
     std::array<float, 16> matrix_view_projection;
-    std::array<float, 16> matrix_view;
-    std::array<float, 16> matrix_projection;
 };
 
 class visualizer : public basic_app
