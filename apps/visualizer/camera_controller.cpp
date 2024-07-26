@@ -30,8 +30,8 @@ camera_controller::camera_controller(camera* const target) :
     current_heading{ 0.0f },
     current_pitch{ 0.0f },
 
-    speed_move{ 14 },
-    speed_strafe{ 14 }
+    speed_move{ 1.4f },
+    speed_strafe{ 1.4f }
 {
     if (target == nullptr)
     {
@@ -139,7 +139,7 @@ void camera_controller::move_forward(const float amount, const std::chrono::dura
 void camera_controller::move_left(const float amount, const std::chrono::duration<double> delta_time_seconds)
 {
     float ranged_amount = std::clamp(amount, -1.0f, 1.0f);
-    strafe = speed_strafe * ranged_amount * delta_time_seconds.count();
+    strafe = speed_strafe * -ranged_amount * delta_time_seconds.count();
 }
 
 void camera_controller::move_upward(const float amount, const std::chrono::duration<double> delta_time_seconds)
@@ -184,7 +184,8 @@ void camera_controller::clear_movement()
 
 void camera_controller::update_heading()
 {
-    Eigen::Vector3f forward = vector_up().cross(camera_target->right_vector()).normalized();
+    Eigen::Vector3f camera_right = camera_target->right_vector();
+    Eigen::Vector3f forward = vector_up().cross(camera_right).normalized();
     current_heading = std::atan2(-forward.dot(vector_east()), forward.dot(vector_north()));
 }
 

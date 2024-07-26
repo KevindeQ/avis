@@ -87,13 +87,6 @@ void visualizer::on_update(const step_timer& timer)
 
     // Update shader data
     Eigen::Matrix4f::Map(constant_buffer_data.matrix_view_projection.data()) = global_camera.view_projection_matrix();
-    /*Eigen::Matrix4f::Map(constant_buffer_data.matrix_view_projection.data()) = global_camera.projection_matrix();*/
-    /*Eigen::Matrix4f::Map(constant_buffer_data.matrix_view_projection.data()) =
-     * global_camera.view_matrix().transpose();*/
-
-    Eigen::Matrix4f::Map(constant_buffer_data.matrix_view_projection.data()) = global_camera.view_projection_matrix();
-    Eigen::Matrix4f::Map(constant_buffer_data.matrix_view.data()) = global_camera.view_matrix();
-    Eigen::Matrix4f::Map(constant_buffer_data.matrix_projection.data()) = global_camera.projection_matrix();
     std::memcpy(constant_buffer_data_begin, &constant_buffer_data, sizeof(constant_buffer_data));
 }
 
@@ -581,8 +574,8 @@ void visualizer::load_assets()
         // Define the geometry for a triangle.
         float aspect_ratio = static_cast<float>(render_window.width()) / static_cast<float>(render_window.height());
         Vertex triangle_vertices[] = { { { 0.0f, 0.25f * aspect_ratio, 0.5f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
-                                       { { 0.25f, -0.25f * aspect_ratio, 0.5f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
-                                       { { -0.25f, -0.25f * aspect_ratio, 0.5f }, { 0.0f, 0.0f, 1.0f, 1.0f } } };
+                                       { { -0.25f, -0.25f * aspect_ratio, 0.5f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
+                                       { { 0.25f, -0.25f * aspect_ratio, 0.5f }, { 0.0f, 0.0f, 1.0f, 1.0f } } };
 
         const std::uint32_t vertex_buffer_size = sizeof(triangle_vertices);
 

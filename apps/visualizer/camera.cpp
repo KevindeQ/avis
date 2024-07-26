@@ -40,7 +40,6 @@ void basic_camera::update()
     matrix_view = Eigen::Matrix4f::Identity();
     matrix_view.block<3, 3>(0, 0) = matrix_rotation;
     matrix_view.block<3, 1>(0, 3) = translation_inverse;
-    matrix_view.transposeInPlace();
 
     matrix_view_projection = matrix_projection * matrix_view;
     matrix_reproject = matrix_view_projection_previous * matrix_view_projection.inverse();
@@ -91,29 +90,9 @@ void basic_camera::set_matrix_projection(const Eigen::Matrix4f& new_matrix)
 
 void basic_camera::set_look_direction(Eigen::Vector3f forward, Eigen::Vector3f up)
 {
-    float forward_norm_squared = forward.squaredNorm();
-    if (forward_norm_squared >= 0.000001f)
-    {
-        forward = (1.0f / std::sqrt(forward_norm_squared)) * forward;
-    }
-    else
-    {
-        forward = -Eigen::Vector3f::UnitZ();
-    }
-
-    Eigen::Vector3f right = up.cross(forward);
-    float left_norm_squared = right.squaredNorm();
-    if (left_norm_squared >= 0.000001f)
-    {
-        right = (1.0f / left_norm_squared) * right;
-    }
-    else
-    {
-        Eigen::Vector3f unit_y = Eigen::Vector3f::UnitY();
-        right = Eigen::Quaternionf{ -(std::numbers::pi / 2.0f), unit_y.x(), unit_y.y(), unit_y.z() } * forward;
-    }
-
-    up = forward.cross(right);
+    forward.normalize();
+    Eigen::Vector3f right = forward.cross(up).normalized();
+    up = right.cross(forward);
 
     // clang-format off
     matrix_basis = Eigen::Matrix3f{
