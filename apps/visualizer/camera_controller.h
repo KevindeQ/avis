@@ -20,6 +20,9 @@ public:
     void move_left(const float amount, const std::chrono::duration<double> delta_time_seconds);
     void move_upward(const float amount, const std::chrono::duration<double> delta_time_seconds);
 
+    void rotate_pitch(const float amount, const std::chrono::duration<double> delta_time_seconds);
+    void rotate_yaw(const float amount, const std::chrono::duration<double> delta_time_seconds);
+
     void update();
 
     void reset();
@@ -43,12 +46,16 @@ private:
     float forward;
     float strafe;
     float ascent;
+    float pitch;
+    float yaw;
 
     float current_heading;
     float current_pitch;
 
     float speed_move;
     float speed_strafe;
+    float look_sensitivity_horizontal;
+    float look_sensitivity_vertical;
 };
 
 inline Eigen::Vector3f camera_controller::vector_north() const

@@ -8,12 +8,16 @@ camera_controller::camera_controller() noexcept :
     forward{ 0.0f },
     strafe{ 0.0f },
     ascent{ 0.0f },
+    pitch{ 0.0f },
+    yaw{ 0.0f },
 
     current_heading{ 0.0f },
     current_pitch{ 0.0f },
 
     speed_move{ 0.0f },
-    speed_strafe{ 0.0f }
+    speed_strafe{ 0.0f },
+    look_sensitivity_horizontal{ 0.0f },
+    look_sensitivity_vertical{ 0.0f }
 {}
 
 camera_controller::camera_controller(camera* const target) :
@@ -26,12 +30,16 @@ camera_controller::camera_controller(camera* const target) :
     forward{ 0.0f },
     strafe{ 0.0f },
     ascent{ 0.0f },
+    pitch{ 0.0f },
+    yaw{ 0.0f },
 
     current_heading{ 0.0f },
     current_pitch{ 0.0f },
 
     speed_move{ 1.4f },
-    speed_strafe{ 1.4f }
+    speed_strafe{ 1.4f },
+    look_sensitivity_horizontal{ 1.4f },
+    look_sensitivity_vertical{ 1.4f }
 {
     if (target == nullptr)
     {
@@ -62,12 +70,16 @@ camera_controller::camera_controller(const camera_controller& other) noexcept :
     forward{ other.forward },
     strafe{ other.strafe },
     ascent{ other.ascent },
+    pitch{ other.pitch },
+    yaw{ other.yaw },
 
     current_heading{ other.current_heading },
     current_pitch{ other.current_pitch },
 
     speed_move{ other.speed_move },
-    speed_strafe{ other.speed_strafe }
+    speed_strafe{ other.speed_strafe },
+    look_sensitivity_horizontal{ other.look_sensitivity_horizontal },
+    look_sensitivity_vertical{ other.look_sensitivity_vertical }
 {}
 
 camera_controller::camera_controller(camera_controller&& other) noexcept :
@@ -78,12 +90,16 @@ camera_controller::camera_controller(camera_controller&& other) noexcept :
     forward{ other.forward },
     strafe{ other.strafe },
     ascent{ other.ascent },
+    pitch{ other.pitch },
+    yaw{ other.yaw },
 
     current_heading{ other.current_heading },
     current_pitch{ other.current_pitch },
 
     speed_move{ other.speed_move },
-    speed_strafe{ other.speed_strafe }
+    speed_strafe{ other.speed_strafe },
+    look_sensitivity_horizontal{ other.look_sensitivity_horizontal },
+    look_sensitivity_vertical{ other.look_sensitivity_vertical }
 {}
 
 camera_controller& camera_controller::operator=(const camera_controller& rhs) noexcept
@@ -97,12 +113,16 @@ camera_controller& camera_controller::operator=(const camera_controller& rhs) no
         forward = rhs.forward;
         strafe = rhs.strafe;
         ascent = rhs.ascent;
+        pitch = rhs.pitch;
+        yaw = rhs.yaw;
 
         current_heading = rhs.current_heading;
         current_pitch = rhs.current_pitch;
 
         speed_move = rhs.speed_move;
         speed_strafe = rhs.speed_strafe;
+        look_sensitivity_horizontal = rhs.look_sensitivity_horizontal;
+        look_sensitivity_vertical = rhs.look_sensitivity_vertical;
     }
 
     return *this;
@@ -119,12 +139,16 @@ camera_controller& camera_controller::operator=(camera_controller&& rhs) noexcep
         forward = rhs.forward;
         strafe = rhs.strafe;
         ascent = rhs.ascent;
+        pitch = rhs.pitch;
+        yaw = rhs.yaw;
 
         current_heading = rhs.current_heading;
         current_pitch = rhs.current_pitch;
 
         speed_move = rhs.speed_move;
         speed_strafe = rhs.speed_strafe;
+        look_sensitivity_horizontal = rhs.look_sensitivity_horizontal;
+        look_sensitivity_vertical = rhs.look_sensitivity_vertical;
     }
 
     return *this;
@@ -148,6 +172,18 @@ void camera_controller::move_upward(const float amount, const std::chrono::durat
     ascent = speed_strafe * ranged_amount * delta_time_seconds.count();
 }
 
+void camera_controller::rotate_pitch(const float amount, const std::chrono::duration<double> delta_time_seconds)
+{
+    float ranged_amount = std::clamp(amount, -1.0f, 1.0f);
+    pitch = look_sensitivity_vertical * ranged_amount * delta_time_seconds.count();
+}
+
+void camera_controller::rotate_yaw(const float amount, const std::chrono::duration<double> delta_time_seconds)
+{
+    float ranged_amount = std::clamp(amount, -1.0f, 1.0f);
+    yaw = look_sensitivity_horizontal * ranged_amount * delta_time_seconds.count();
+}
+
 void camera_controller::update()
 {
     if (camera_target == nullptr)
@@ -155,6 +191,24 @@ void camera_controller::update()
         return;
     }
 
+    // Apply pitch delta and make sure pitch stays within its valid range
+    constexpr float max_range_pitch = std::numbers::pi / 2.0f;
+    current_pitch += pitch;
+    current_pitch = std::clamp(current_pitch, -max_range_pitch, max_range_pitch);
+
+    // Apply yaw delta and make sure yaw stays within its valid range
+    constexpr float value_wrap_around = 2.0f * std::numbers::pi;
+    current_heading -= yaw;
+    if (current_heading > std::numbers::pi)
+    {
+        current_heading -= value_wrap_around;
+    }
+    else if (current_heading <= std::numbers::pi)
+    {
+        current_heading += value_wrap_around;
+    }
+
+    // Update the camera to move and rotate according to the given inputs
     Eigen::Matrix3f orientation = matrix_basis_world * Eigen::AngleAxis{ current_heading, Eigen::Vector3f::UnitY() } *
                                   Eigen::AngleAxis{ current_pitch, Eigen::Vector3f::UnitX() };
     Eigen::Vector3f position = orientation * Eigen::Vector3f(strafe, ascent, -forward) + camera_target->position();
@@ -180,6 +234,9 @@ void camera_controller::clear_movement()
     forward = 0.0f;
     strafe = 0.0f;
     ascent = 0.0f;
+
+    pitch = 0.0f;
+    yaw = 0.0f;
 }
 
 void camera_controller::update_heading()
@@ -191,5 +248,6 @@ void camera_controller::update_heading()
 
 void camera_controller::update_pitch()
 {
-    current_pitch = std::sin(camera_target->forward_vector().dot(matrix_basis_world.row(1)));
+    Eigen::Vector3f camera_forward = camera_target->forward_vector();
+    current_pitch = std::sin(camera_forward.dot(vector_up()));
 }
