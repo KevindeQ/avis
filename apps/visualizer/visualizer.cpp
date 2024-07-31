@@ -847,7 +847,7 @@ void visualizer::configure_input()
                 return 0ll;
             }
 
-            current_inputs = input_decoder.decode(wparam, lparam);
+            input_decoder.decode(current_inputs, wparam, lparam);
 
             // According to MSDN, DefWindowProc must be called to give the system a chance to perform
             // cleanup. See https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-input for more

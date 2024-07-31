@@ -18,7 +18,8 @@ namespace input
             std::enable_if_t<std::is_base_of_v<input_device, device_type>>* = nullptr>
         void register_device(arguments_t&&... arguments);
 
-        input_state<actions_t, states_t, ranges_t> decode(const WPARAM wparam, const LPARAM lparam);
+        void decode(
+            input_state<actions_t, states_t, ranges_t>& current_inputs, const WPARAM wparam, const LPARAM lparam);
 
         void push_context(input_context<actions_t, states_t, ranges_t>& context);
         void pop_context();
@@ -41,8 +42,8 @@ namespace input
     }
 
     template<enumeration actions_t, enumeration states_t, enumeration ranges_t>
-    input_state<actions_t, states_t, ranges_t>
-        input_decoder<actions_t, states_t, ranges_t>::decode(const WPARAM wparam, const LPARAM lparam)
+    void input_decoder<actions_t, states_t, ranges_t>::decode(
+        input_state<actions_t, states_t, ranges_t>& current_inputs, const WPARAM wparam, const LPARAM lparam)
     {
         std::uint32_t buffer_size = 0;
         std::uint32_t error_code = GetRawInputData(
@@ -65,7 +66,6 @@ namespace input
             throw std::system_error(error_code, "Exception occurred");
         }
 
-        input_state<actions_t, states_t, ranges_t> current_inputs{};
         input_collector collector{ current_inputs, contexts };
 
         RAWINPUT* raw_message = reinterpret_cast<RAWINPUT*>(buffer.data());
@@ -73,8 +73,6 @@ namespace input
         {
             device->decode_input(raw_message, collector);
         }
-
-        return current_inputs;
     }
 
     template<enumeration actions_t, enumeration states_t, enumeration ranges_t>
