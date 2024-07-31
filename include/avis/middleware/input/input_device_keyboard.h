@@ -2,6 +2,7 @@
 #define MIDDLEWARE_INPUT_INPUT_DEVICE_KEYBOARD_H
 
 #include "avis/core/common.h"
+#include "avis/middleware/input/input_collector.h"
 #include "avis/middleware/input/input_device.h"
 
 namespace input
@@ -166,7 +167,7 @@ namespace input
     public:
         input_device_keyboard(HWND window_handle);
 
-        std::vector<details::input_wrapper> decode_input(const RAWINPUT* raw_message) override;
+        void decode_input(const RAWINPUT* raw_message, input_collector& collector) override;
 
     private:
         key_code map_virtual_key(const std::uint32_t virtual_key, const bool is_e0) const;

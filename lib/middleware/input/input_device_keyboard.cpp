@@ -12,18 +12,23 @@ namespace input
                 RAWINPUTDEVICE input_device_descriptor{};
                 input_device_descriptor.usUsagePage = 0x0001;
                 input_device_descriptor.usUsage = 0x0006;
-                input_device_descriptor.dwFlags = RIDEV_NOLEGACY;
+                input_device_descriptor.dwFlags = 0;
                 input_device_descriptor.hwndTarget = window_handle;
 
-                RegisterRawInputDevices(&input_device_descriptor, 1, sizeof(input_device_descriptor));
+                if (RegisterRawInputDevices(&input_device_descriptor, 1, sizeof(input_device_descriptor)) == FALSE)
+                {
+                    DWORD error_value = GetLastError();
+                    std::error_code error_code(error_value, std::system_category());
+                    throw std::system_error(error_code, "Exception occurred");
+                }
             });
     }
 
-    std::vector<details::input_wrapper> input_device_keyboard::decode_input(const RAWINPUT* raw_message)
+    void input_device_keyboard::decode_input(const RAWINPUT* raw_message, input_collector& collector)
     {
         if (raw_message->header.dwType != RIM_TYPEKEYBOARD)
         {
-            return {};
+            return;
         }
 
         const RAWKEYBOARD& keyboard_message = raw_message->data.keyboard;
@@ -35,7 +40,7 @@ namespace input
         // Ignore key overrun state and keys not mapped to any virtual key code
         if (scan_code == KEYBOARD_OVERRUN_MAKE_CODE || virtual_key >= UCHAR_MAX)
         {
-            return {};
+            return;
         }
 
         // Correct left-hand / right-hand shift
@@ -77,7 +82,8 @@ namespace input
         // releases. See http://www.win.tue.nl/~aeb/linux/kbd/scancodes-1.html.
         const bool key_up = (flags & RI_KEY_BREAK) != 0;
 
-        return { details::input_wrapper{ mapped_key_code } };
+        input_tag_collector<key_code> collect_key_code = collector.build_tag_collector<key_code>();
+        collect_key_code(mapped_key_code);
     }
 
     key_code input_device_keyboard::map_virtual_key(const std::uint32_t virtual_key, const bool is_e0) const

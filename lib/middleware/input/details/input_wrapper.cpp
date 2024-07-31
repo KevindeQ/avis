@@ -6,8 +6,8 @@ namespace input::details
 {
     bool input_wrapper::operator==(const input_wrapper& other) const
     {
-        return (type_id == other.type_id) &&
-               (input_size == other.input_size) &&
-               (std::memcmp(input_value.data(), other.input_value.data(), input_size) == 0);
+        return (input_type_id == other.input_type_id) &&
+               (input_type_size == other.input_type_size) &&
+               (std::memcmp(input_type_value.data(), other.input_type_value.data(), input_type_size) == 0);
     }
 } // namespace input::details

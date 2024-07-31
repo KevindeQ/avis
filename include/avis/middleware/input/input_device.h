@@ -2,15 +2,15 @@
 #define MIDDLEWARE_INPUT_INPUT_DEVICE_H
 
 #include "avis/core/common.h"
-#include "avis/middleware/input/details/input_wrapper.h"
+#include "avis/middleware/input/input_collector.h"
 
 namespace input
 {
     class input_device
     {
     public:
-        virtual std::vector<details::input_wrapper> decode_input(const RAWINPUT* raw_message) = 0;
+        virtual void decode_input(const RAWINPUT* raw_message, input_collector& context) = 0;
     };
-}
+} // namespace input
 
 #endif

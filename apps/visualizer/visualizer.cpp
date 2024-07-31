@@ -1,10 +1,86 @@
 #include "visualizer.h"
 
 #include "avis/middleware/data_formats/ply/ply_parser.h"
+#include "avis/middleware/input/input_device_controller_dualsense.h"
 #include "avis/middleware/input/input_device_keyboard.h"
 #include "avis/middleware/input/input_device_mouse.h"
 #include "avis/middleware/input/input_state.h"
 #include "avis/middleware/runtime.h"
+
+#include <format>
+
+//void enumerate_usb_hid_devices()
+//{
+//    std::uint32_t device_count = 0;
+//    std::uint32_t error_code = GetRawInputDeviceList(nullptr, &device_count, sizeof(RAWINPUTDEVICELIST));
+//    if (error_code < 0)
+//    {
+//        DWORD error_value = GetLastError();
+//        std::error_code error_code(error_value, std::system_category());
+//        throw std::system_error(error_code, "Exception occurred");
+//    }
+//
+//    // No devices were found, so bail out
+//    if (device_count == 0)
+//    {
+//        return;
+//    }
+//
+//    // Get a list of SUB HID devices
+//    std::vector<RAWINPUTDEVICELIST> device_list{};
+//    device_list.resize(device_count);
+//    error_code = GetRawInputDeviceList(device_list.data(), &device_count, sizeof(RAWINPUTDEVICELIST));
+//    if (error_code < 0)
+//    {
+//        DWORD error_value = GetLastError();
+//        std::error_code error_code(error_value, std::system_category());
+//        throw std::system_error(error_code, "Exception occurred");
+//    }
+//
+//    for (const RAWINPUTDEVICELIST& device : device_list)
+//    {
+//        // Get required buffer size for device name
+//        std::uint32_t buffer_size = 0;
+//        error_code = GetRawInputDeviceInfoW(device.hDevice, RIDI_DEVICENAME, NULL, &buffer_size);
+//        if (error_code < 0)
+//        {
+//            continue;
+//        }
+//
+//        // Get the device name
+//        std::wstring device_name{};
+//        device_name.resize(buffer_size + 1);
+//
+//        error_code = GetRawInputDeviceInfo(device.hDevice, RIDI_DEVICENAME, device_name.data(), &buffer_size);
+//        if (error_code < 0)
+//        {
+//            continue;
+//        }
+//
+//        // Set Device Info & Buffer Size
+//        RID_DEVICE_INFO device_info{};
+//        device_info.cbSize = sizeof(RID_DEVICE_INFO);
+//        buffer_size = device_info.cbSize;
+//
+//        // Get Device Info
+//        error_code = GetRawInputDeviceInfo(device.hDevice, RIDI_DEVICEINFO, &device_info, &buffer_size);
+//        if (error_code < 0)
+//        {
+//            continue;
+//        }
+//
+//        if (device_info.dwType == RIM_TYPEHID)
+//        {
+//            OutputDebugStringW(L"========= HID Device =========\n");
+//            OutputDebugStringW(std::format(L"Device Name: {}\n", device_name.c_str()).c_str());
+//            OutputDebugStringW(std::format(L"Vendor Id: {:#x}\n", device_info.hid.dwVendorId).c_str());
+//            OutputDebugStringW(std::format(L"Product Id: {:#x}\n", device_info.hid.dwProductId).c_str());
+//            OutputDebugStringW(std::format(L"Version No: {}\n", device_info.hid.dwVersionNumber).c_str());
+//            OutputDebugStringW(std::format(L"Usage page: {}\n", device_info.hid.usUsagePage).c_str());
+//            OutputDebugStringW(std::format(L"Usage: {}\n", device_info.hid.usUsage).c_str());
+//        }
+//    }
+//}
 
 visualizer::visualizer(basic_app_config& config) :
     basic_app(config),
@@ -22,8 +98,8 @@ visualizer::visualizer(basic_app_config& config) :
     constant_buffer_data{},
     constant_buffer_data_begin{ nullptr },
 
-    global_camera{ },
-    global_camera_controller{ },
+    global_camera{},
+    global_camera_controller{},
 
     threads{ 3 },
     file_load_service{ threads, 3 },
@@ -33,6 +109,8 @@ visualizer::visualizer(basic_app_config& config) :
     global_input_context{},
     movement_input_context{}
 {
+    /*enumerate_usb_hid_devices();*/
+
     configure_rendering(false);
     configure_window_resize();
     configure_input();
@@ -53,9 +131,6 @@ visualizer::~visualizer()
 
 void visualizer::on_update(const step_timer& timer)
 {
-    visualizer_input_state current_inputs = input_decoder.snapshot_inputs();
-    input_decoder.clear_inputs();
-
     if (current_inputs.contains(input_actions::exit_app))
     {
         render_window.close();
@@ -93,6 +168,8 @@ void visualizer::on_update(const step_timer& timer)
         // TODO: Replace amount with actual value from input
         global_camera_controller.rotate_yaw(1.0f, timer.elapsed_seconds());
     }
+
+    current_inputs.clear();
 
     global_camera_controller.update();
 
@@ -749,10 +826,16 @@ void visualizer::configure_input()
     movement_input_context.add_mapping(input::key_code::key_a, input_states::camera_move_left);
     movement_input_context.add_mapping(input::key_code::key_s, input_states::camera_move_backward);
     movement_input_context.add_mapping(input::key_code::key_d, input_states::camera_move_right);
+
+    movement_input_context.add_mapping(input::controller_buttons::button_triangle, input_states::camera_move_forward);
+    movement_input_context.add_mapping(input::controller_buttons::button_square, input_states::camera_move_left);
+    movement_input_context.add_mapping(input::controller_buttons::button_cross, input_states::camera_move_backward);
+    movement_input_context.add_mapping(input::controller_buttons::button_circle, input_states::camera_move_right);
     input_decoder.push_context(movement_input_context);
 
     input_decoder.register_device<input::input_device_keyboard>(render_window.native_handle());
     input_decoder.register_device<input::input_device_mouse>(render_window.native_handle());
+    input_decoder.register_device<input::input_device_controller_dualsense>(render_window.native_handle());
 
     render_window.on_message(
         WM_INPUT,
@@ -764,7 +847,7 @@ void visualizer::configure_input()
                 return 0ll;
             }
 
-            input_decoder.decode(wparam, lparam);
+            current_inputs = input_decoder.decode(wparam, lparam);
 
             // According to MSDN, DefWindowProc must be called to give the system a chance to perform
             // cleanup. See https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-input for more

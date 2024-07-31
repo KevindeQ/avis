@@ -8,6 +8,8 @@
 
 namespace input
 {
+    using input_context_collector = std::function<bool(const details::input_wrapper& raw_input)>;
+
     template<enumeration actions_t, enumeration states_t, enumeration ranges_t>
     class input_context
     {
@@ -16,69 +18,85 @@ namespace input
         void add_mapping(raw_input_t raw_value, actions_t action);
         template<typename raw_input_t>
         void add_mapping(raw_input_t raw_value, states_t state);
-        template<typename raw_input_t>
-        void add_mapping(raw_input_t raw_value, ranges_t range);
+        template<typename raw_input_t, typename value_t>
+        void add_mapping(raw_input_t raw_value, ranges_t range /*, range_converter_t range_converter*/);
 
-        bool map_value(const details::input_wrapper& raw_value, input_state<actions_t, states_t, ranges_t>& inputs) const;
+        input_context_collector
+            build_context_collector(input_state<actions_t, states_t, ranges_t>& current_state) const;
 
     private:
-        std::unordered_map<details::input_wrapper, actions_t> actions_map;
-        std::unordered_map<details::input_wrapper, states_t> states_map;
-        std::unordered_map<details::input_wrapper, ranges_t> ranges_map;
+        using store_value_t = std::function<void(input_state<actions_t, states_t, ranges_t>& current_state)>;
+
+        /*std::unordered_map<details::input_wrapper, store_value_t> conversion_map;*/
+        std::vector<details::input_wrapper> index_map;
+        std::vector<store_value_t> collector_map;
     };
 
     template<enumeration actions_t, enumeration states_t, enumeration ranges_t>
     template<typename raw_input_t>
     void input_context<actions_t, states_t, ranges_t>::add_mapping(raw_input_t raw_value, actions_t action)
     {
-        actions_map.insert_or_assign(details::input_wrapper{ raw_value }, action);
+        /*conversion_map.insert_or_assign(
+            details::input_wrapper{ raw_value },
+            [action](input_state<actions_t, states_t, ranges_t>& current_state) { current_state.add_input(action); });*/
+
+        index_map.push_back(details::input_wrapper{ raw_value });
+        collector_map.push_back([action](input_state<actions_t, states_t, ranges_t>& current_state)
+                                { current_state.add_input(action); });
     }
 
     template<enumeration actions_t, enumeration states_t, enumeration ranges_t>
     template<typename raw_input_t>
     void input_context<actions_t, states_t, ranges_t>::add_mapping(raw_input_t raw_value, states_t state)
     {
-        states_map.insert_or_assign(details::input_wrapper{ raw_value }, state);
+        /*conversion_map.insert_or_assign(
+            details::input_wrapper{ raw_value },
+            [state](input_state<actions_t, states_t, ranges_t>& current_state) { current_state.add_input(state); });*/
+
+        index_map.push_back(details::input_wrapper{ raw_value });
+        collector_map.push_back([state](input_state<actions_t, states_t, ranges_t>& current_state)
+                                { current_state.add_input(state); });
     }
 
     template<enumeration actions_t, enumeration states_t, enumeration ranges_t>
-    template<typename raw_input_t>
-    void input_context<actions_t, states_t, ranges_t>::add_mapping(raw_input_t raw_value, ranges_t range)
+    template<typename raw_input_t, typename value_t>
+    void input_context<actions_t, states_t, ranges_t>::add_mapping(
+        raw_input_t raw_value, ranges_t range /*, range_converter_t range_converter*/)
     {
-        ranges_map.insert_or_assign(details::input_wrapper{ raw_value }, range);
+        /*conversion_map.insert_or_assign(
+            details::input_wrapper{ raw_value },
+            [range](input_state<actions_t, states_t, ranges_t>& current_state) { current_state.add_input(range); });*/
+
+        index_map.push_back(details::input_wrapper{ raw_value });
+        collector_map.push_back([range](input_state<actions_t, states_t, ranges_t>& current_state)
+                                { current_state.add_input(range); });
     }
 
     template<enumeration actions_t, enumeration states_t, enumeration ranges_t>
-    bool input_context<actions_t, states_t, ranges_t>::map_value(
-        const details::input_wrapper& raw_value, input_state<actions_t, states_t, ranges_t>& inputs) const
+    input_context_collector input_context<actions_t, states_t, ranges_t>::build_context_collector(
+        input_state<actions_t, states_t, ranges_t>& current_state) const
     {
-        typename std::unordered_map<details::input_wrapper, actions_t>::const_iterator it_action =
-            actions_map.find(raw_value);
-        if (it_action != actions_map.cend())
+        return [this, &current_state](const details::input_wrapper& raw_input)
         {
-            // TODO: Do something with action
-            inputs.add_input(it_action->second);
-            return true;
-        }
+            /*typename decltype(conversion_map)::const_iterator it = conversion_map.find(raw_input);
+            if (it == conversion_map.cend())
+            {
+                return false;
+            }
 
-        typename std::unordered_map<details::input_wrapper, states_t>::const_iterator it_state =
-            states_map.find(raw_value);
-        if (it_state != states_map.cend())
-        {
-            // TODO: Do something with state
-            inputs.add_input(it_state->second);
-            return true;
-        }
+            it->second(current_state);
+            return true;*/
 
-        typename std::unordered_map<details::input_wrapper, ranges_t>::const_iterator it_range =
-            ranges_map.find(raw_value);
-        if (it_range != ranges_map.cend())
-        {
-            // TODO: Do something with range
-            return true;
-        }
+            const auto& it = std::find(index_map.cbegin(), index_map.cend(), raw_input);
+            if (it == index_map.cend())
+            {
+                return false;
+            }
 
-        return false;
+            std::size_t index = std::distance(index_map.cbegin(), it);
+            collector_map[index](current_state);
+            return true;
+        };
     }
 } // namespace input
 

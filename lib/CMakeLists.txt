@@ -53,6 +53,7 @@ target_sources(AVIS_LIB
 		middleware/geometry/data_layout.cpp
 		middleware/geometry/data_store.cpp
 		middleware/input/details/input_wrapper.cpp
+		middleware/input/input_device_controller_dualsense.cpp
 		middleware/input/input_device_keyboard.cpp
 		middleware/input/input_device_mouse.cpp
 		middleware/platform/basic_window.cpp

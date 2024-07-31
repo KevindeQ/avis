@@ -12,32 +12,32 @@ namespace input
                 RAWINPUTDEVICE input_device_descriptor{};
                 input_device_descriptor.usUsagePage = 0x0001;
                 input_device_descriptor.usUsage = 0x0001;
-                input_device_descriptor.dwFlags = RIDEV_NOLEGACY;
+                input_device_descriptor.dwFlags = 0;
                 input_device_descriptor.hwndTarget = window_handle;
 
-                RegisterRawInputDevices(&input_device_descriptor, 1, sizeof(input_device_descriptor));
+                if (RegisterRawInputDevices(&input_device_descriptor, 1, sizeof(input_device_descriptor)) == FALSE)
+                {
+                    DWORD error_value = GetLastError();
+                    std::error_code error_code(error_value, std::system_category());
+                    throw std::system_error(error_code, "Exception occurred");
+                }
             });
     }
 
-    std::vector<details::input_wrapper> input_device_mouse::decode_input(const RAWINPUT* raw_message)
+    void input_device_mouse::decode_input(const RAWINPUT* raw_message, input_collector& collector)
     {
         if (raw_message->header.dwType != RIM_TYPEMOUSE)
         {
-            return {};
+            return;
         }
 
-        std::vector<details::input_wrapper> raw_inputs{};
-
         const RAWMOUSE& mouse_message = raw_message->data.mouse;
-        decode_mouse_position(mouse_message, raw_inputs);
-        decode_mouse_buttons(mouse_message, raw_inputs);
-        decode_mouse_wheel(mouse_message, raw_inputs);
-
-        return raw_inputs;
+        decode_mouse_position(mouse_message, collector);
+        decode_mouse_buttons(mouse_message, collector);
+        decode_mouse_wheel(mouse_message, collector);
     }
 
-    void input_device_mouse::decode_mouse_position(
-        const RAWMOUSE& mouse_message, std::vector<details::input_wrapper>& raw_inputs)
+    void input_device_mouse::decode_mouse_position(const RAWMOUSE& mouse_message, input_collector& collector)
     {
         if (mouse_message.usFlags & MOUSE_MOVE_ABSOLUTE)
         {
@@ -77,8 +77,7 @@ namespace input
         }
     }
 
-    void input_device_mouse::decode_mouse_buttons(
-        const RAWMOUSE& mouse_message, std::vector<details::input_wrapper>& raw_inputs)
+    void input_device_mouse::decode_mouse_buttons(const RAWMOUSE& mouse_message, input_collector& collector)
     {
         if (mouse_message.usButtonFlags & RI_MOUSE_LEFT_BUTTON_UP)
         {
@@ -108,8 +107,7 @@ namespace input
         }
     }
 
-    void input_device_mouse::decode_mouse_wheel(
-        const RAWMOUSE& mouse_message, std::vector<details::input_wrapper>& raw_inputs)
+    void input_device_mouse::decode_mouse_wheel(const RAWMOUSE& mouse_message, input_collector& collector)
     {
         if ((mouse_message.usButtonFlags & ~RI_MOUSE_WHEEL) && (mouse_message.usButtonFlags & ~RI_MOUSE_HWHEEL))
         {

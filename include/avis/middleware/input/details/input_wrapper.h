@@ -10,33 +10,61 @@ namespace input::details
     class input_wrapper
     {
     public:
-        template<typename value_t, typename std::enable_if<std::is_enum_v<value_t>>::type* = nullptr>
-        input_wrapper(value_t& value);
+        template<enumeration type_value_t>
+        input_wrapper(type_value_t& type_value);
+        template<enumeration type_value_t, typename value_t>
+        input_wrapper(type_value_t& type_value, value_t& value);
 
         bool operator==(const input_wrapper& other) const;
 
     private:
         friend struct std::hash<input_wrapper>;
 
-        static constexpr std::size_t max_size_object = 8;
+        static constexpr std::size_t max_size_object = 4;
 
-        int type_id;
-
+        int input_type_id;
+        std::array<std::byte, max_size_object> input_type_value;
+        std::size_t input_type_size;
         std::array<std::byte, max_size_object> input_value;
-        std::size_t input_size;
+        std::size_t input_value_size;
     };
 
-    template<typename value_t, typename std::enable_if<std::is_enum_v<value_t>>::type*>
-    input_wrapper::input_wrapper(value_t& value) :
-        type_id{ details::type_index<value_t>::id() },
+    template<enumeration type_value_t>
+    input_wrapper::input_wrapper(type_value_t& type_value) :
+        input_type_id{ details::type_index<type_value_t>::id() },
+        input_type_value{},
+        input_type_size{ sizeof(type_value_t) },
         input_value{},
-        input_size{ sizeof(value_t) }
+        input_value_size{ 0 }
     {
-        static_assert(sizeof(value_t) <= max_size_object, "Given datatype doesn't fit in the storage");
+        static_assert(sizeof(type_value_t) <= max_size_object, "Given datatype doesn't fit in the storage");
 
         // Store a local copy of the given value for later use
         std::copy_n(
-            reinterpret_cast<std::array<std::byte, max_size_object>::pointer>(&value), input_size, input_value.begin());
+            reinterpret_cast<typename decltype(input_type_value)::pointer>(&type_value),
+            input_type_size,
+            input_type_value.begin());
+    }
+
+    template<enumeration type_value_t, typename value_t>
+    input_wrapper::input_wrapper(type_value_t& type_value, value_t& value) :
+        input_type_id{ details::type_index<type_value_t>::id() },
+        input_type_value{},
+        input_type_size{ sizeof(type_value_t) },
+        input_value{},
+        input_value_size{ sizeof(value_t) }
+    {
+        static_assert(sizeof(type_value_t) <= max_size_object, "Given datatype doesn't fit in the storage");
+
+        // Store a local copy of the given type_value for later comparison
+        std::copy_n(
+            reinterpret_cast<typename decltype(input_type_value)::pointer>(&type_value),
+            input_type_size,
+            input_type_value.begin());
+
+        // Store a local copy of the given value for later retrieval
+        std::copy_n(
+            reinterpret_cast<typename decltype(input_value)::pointer>(&value), input_value_size, input_value.begin());
     }
 } // namespace input::details
 
@@ -51,9 +79,9 @@ namespace std
             using std::hash;
 
             std::size_t seed = 0;
-            hash_combine(seed, key.type_id);
-            hash_combine(seed, key.input_size);
-            for (const std::byte& b : key.input_value)
+            hash_combine(seed, key.input_type_id);
+            hash_combine(seed, key.input_type_size);
+            for (const std::byte& b : key.input_type_value)
             {
                 hash_combine(seed, b);
             }
