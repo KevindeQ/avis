@@ -11,13 +11,15 @@ namespace input
     public:
         void add_input(const actions_t& action);
         void add_input(const states_t& state);
-        void add_input(const ranges_t& range);
+        void add_input(const ranges_t& range, const double value);
 
         void clear();
 
         bool contains(const actions_t action) const;
         bool contains(const states_t state) const;
         bool contains(const ranges_t range) const;
+
+        double value(const ranges_t range) const;
 
     private:
         std::unordered_set<actions_t> actions;
@@ -38,10 +40,9 @@ namespace input
     }
 
     template<enumeration actions_t, enumeration states_t, enumeration ranges_t>
-    void input_state<actions_t, states_t, ranges_t>::add_input(const ranges_t& range)
+    void input_state<actions_t, states_t, ranges_t>::add_input(const ranges_t& range, const double value)
     {
-        // TODO: Actually pass value as parameter
-        ranges.insert_or_assign(range, 1.0);
+        ranges.insert_or_assign(range, value);
     }
 
     template<enumeration actions_t, enumeration states_t, enumeration ranges_t>
@@ -68,6 +69,12 @@ namespace input
     bool input_state<actions_t, states_t, ranges_t>::contains(const ranges_t range) const
     {
         return ranges.contains(range);
+    }
+
+    template<enumeration actions_t, enumeration states_t, enumeration ranges_t>
+    double input_state<actions_t, states_t, ranges_t>::value(const ranges_t range) const
+    {
+        return ranges.at(range);
     }
 } // namespace input
 

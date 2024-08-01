@@ -82,8 +82,7 @@ namespace input
         // releases. See http://www.win.tue.nl/~aeb/linux/kbd/scancodes-1.html.
         const bool key_up = (flags & RI_KEY_BREAK) != 0;
 
-        input_tag_collector<key_code> collect_key_code = collector.build_tag_collector<key_code>();
-        collect_key_code(mapped_key_code);
+        collector.collect(mapped_key_code);
     }
 
     key_code input_device_keyboard::map_virtual_key(const std::uint32_t virtual_key, const bool is_e0) const

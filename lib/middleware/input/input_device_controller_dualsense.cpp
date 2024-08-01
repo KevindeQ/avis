@@ -96,8 +96,6 @@ namespace input
             return;
         }
 
-        input_tag_collector<controller_axis> collect_axis_value = collector.build_tag_collector<controller_axis>();
-
         /*std::wstring usage_text = L"";*/
         for (std::uint16_t index = 0; index < caps.NumberInputValueCaps; ++index)
         {
@@ -122,7 +120,7 @@ namespace input
             if (index < axis_value_map.size())
             {
                 controller_axis axis = axis_value_map[index];
-                collect_axis_value(axis/*, value*/);
+                collector.collect<controller_axis>(axis, value);
             }
         }
         /*OutputDebugStringW(std::format(L"Usage: {}\n", usage_text).c_str());*/
@@ -155,16 +153,13 @@ namespace input
                 continue;
             }
 
-            input_tag_collector<controller_buttons> collect_button_value =
-                collector.build_tag_collector<controller_buttons>();
-
             // This loop only works because the usages have been determined to only contain values when they contain
             // information about actual buttons. Besides, this doesn't need to be flexible because there is no variation
             // in hardware and only needs to work for one specific device.
             for (std::uint32_t usage_index = 0; usage_index < usage_count; ++usage_index)
             {
                 controller_buttons button = button_value_map[usages[usage_index] - 1];
-                collect_button_value(button);
+                collector.collect<controller_buttons>(button);
             }
         }
     }
