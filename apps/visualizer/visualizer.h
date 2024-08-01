@@ -31,6 +31,8 @@ enum class input_states
 
 enum class input_ranges
 {
+    camera_move_forward_backward,
+    camera_move_left_right,
     camera_rotate_pitch,
     camera_rotate_yaw
 };
@@ -142,6 +144,8 @@ private:
     visualizer_input_decoder input_decoder;
     visualizer_input_context global_input_context;
     visualizer_input_context movement_input_context;
+
+    static constexpr double dead_zone_magnitude = 0.04f;
 };
 
 #endif

@@ -7,81 +7,6 @@
 #include "avis/middleware/input/input_state.h"
 #include "avis/middleware/runtime.h"
 
-#include <format>
-
-//void enumerate_usb_hid_devices()
-//{
-//    std::uint32_t device_count = 0;
-//    std::uint32_t error_code = GetRawInputDeviceList(nullptr, &device_count, sizeof(RAWINPUTDEVICELIST));
-//    if (error_code < 0)
-//    {
-//        DWORD error_value = GetLastError();
-//        std::error_code error_code(error_value, std::system_category());
-//        throw std::system_error(error_code, "Exception occurred");
-//    }
-//
-//    // No devices were found, so bail out
-//    if (device_count == 0)
-//    {
-//        return;
-//    }
-//
-//    // Get a list of SUB HID devices
-//    std::vector<RAWINPUTDEVICELIST> device_list{};
-//    device_list.resize(device_count);
-//    error_code = GetRawInputDeviceList(device_list.data(), &device_count, sizeof(RAWINPUTDEVICELIST));
-//    if (error_code < 0)
-//    {
-//        DWORD error_value = GetLastError();
-//        std::error_code error_code(error_value, std::system_category());
-//        throw std::system_error(error_code, "Exception occurred");
-//    }
-//
-//    for (const RAWINPUTDEVICELIST& device : device_list)
-//    {
-//        // Get required buffer size for device name
-//        std::uint32_t buffer_size = 0;
-//        error_code = GetRawInputDeviceInfoW(device.hDevice, RIDI_DEVICENAME, NULL, &buffer_size);
-//        if (error_code < 0)
-//        {
-//            continue;
-//        }
-//
-//        // Get the device name
-//        std::wstring device_name{};
-//        device_name.resize(buffer_size + 1);
-//
-//        error_code = GetRawInputDeviceInfo(device.hDevice, RIDI_DEVICENAME, device_name.data(), &buffer_size);
-//        if (error_code < 0)
-//        {
-//            continue;
-//        }
-//
-//        // Set Device Info & Buffer Size
-//        RID_DEVICE_INFO device_info{};
-//        device_info.cbSize = sizeof(RID_DEVICE_INFO);
-//        buffer_size = device_info.cbSize;
-//
-//        // Get Device Info
-//        error_code = GetRawInputDeviceInfo(device.hDevice, RIDI_DEVICEINFO, &device_info, &buffer_size);
-//        if (error_code < 0)
-//        {
-//            continue;
-//        }
-//
-//        if (device_info.dwType == RIM_TYPEHID)
-//        {
-//            OutputDebugStringW(L"========= HID Device =========\n");
-//            OutputDebugStringW(std::format(L"Device Name: {}\n", device_name.c_str()).c_str());
-//            OutputDebugStringW(std::format(L"Vendor Id: {:#x}\n", device_info.hid.dwVendorId).c_str());
-//            OutputDebugStringW(std::format(L"Product Id: {:#x}\n", device_info.hid.dwProductId).c_str());
-//            OutputDebugStringW(std::format(L"Version No: {}\n", device_info.hid.dwVersionNumber).c_str());
-//            OutputDebugStringW(std::format(L"Usage page: {}\n", device_info.hid.usUsagePage).c_str());
-//            OutputDebugStringW(std::format(L"Usage: {}\n", device_info.hid.usUsage).c_str());
-//        }
-//    }
-//}
-
 visualizer::visualizer(basic_app_config& config) :
     basic_app(config),
 
@@ -109,8 +34,6 @@ visualizer::visualizer(basic_app_config& config) :
     global_input_context{},
     movement_input_context{}
 {
-    /*enumerate_usb_hid_devices();*/
-
     configure_rendering(false);
     configure_window_resize();
     configure_input();
@@ -141,37 +64,70 @@ void visualizer::on_update(const step_timer& timer)
         global_camera_controller.reset();
     }
 
-    if (current_inputs.contains(input_states::camera_move_forward))
+    bool camera_move_forward_backward = current_inputs.contains(input_ranges::camera_move_forward_backward);
+    bool camera_move_left_right = current_inputs.contains(input_ranges::camera_move_left_right);
+
+    bool camera_move_forward = current_inputs.contains(input_states::camera_move_forward);
+    bool camera_move_backward = current_inputs.contains(input_states::camera_move_backward);
+    bool camera_move_left = current_inputs.contains(input_states::camera_move_left);
+    bool camera_move_right = current_inputs.contains(input_states::camera_move_right);
+
+    if (camera_move_forward_backward || camera_move_left_right || camera_move_forward || camera_move_backward ||
+        camera_move_left || camera_move_right)
     {
-        global_camera_controller.move_forward(1.0f, timer.elapsed_seconds());
-    }
-    if (current_inputs.contains(input_states::camera_move_backward))
-    {
-        global_camera_controller.move_forward(-1.0f, timer.elapsed_seconds());
-    }
-    if (current_inputs.contains(input_states::camera_move_left))
-    {
-        global_camera_controller.move_left(1.0f, timer.elapsed_seconds());
-    }
-    if (current_inputs.contains(input_states::camera_move_right))
-    {
-        global_camera_controller.move_left(-1.0f, timer.elapsed_seconds());
+
+        double normalized_forward = 0.0f;
+        double normalized_left = 0.0f;
+
+        if (camera_move_forward_backward || camera_move_left_right)
+        {
+            normalized_forward =
+                camera_move_forward_backward ?
+                    2.0f * (current_inputs.value(input_ranges::camera_move_forward_backward) / 254.0f) - 1.0f :
+                    0.0f;
+
+            normalized_left = camera_move_left_right ?
+                                  2.0f * (current_inputs.value(input_ranges::camera_move_left_right) / 254.0f) - 1.0f :
+                                  0.0f;
+        }
+
+        normalized_forward = camera_move_forward ? 1.0f : normalized_forward;
+        normalized_forward = camera_move_backward ? -1.0f : normalized_forward;
+
+        normalized_left = camera_move_left ? 1.0f : normalized_left;
+        normalized_left = camera_move_right ? -1.0f : normalized_left;
+
+        // Apply deadzone check
+        double stick_magnitude = (normalized_forward * normalized_forward) + (normalized_left * normalized_left);
+        if (stick_magnitude > dead_zone_magnitude)
+        {
+            global_camera_controller.move_forward(normalized_forward, timer.elapsed_seconds());
+            global_camera_controller.move_left(normalized_left, timer.elapsed_seconds());
+        }
     }
 
-    if (current_inputs.contains(input_ranges::camera_rotate_pitch))
+    bool camera_pitch = current_inputs.contains(input_ranges::camera_rotate_pitch);
+    bool camera_yaw = current_inputs.contains(input_ranges::camera_rotate_yaw);
+    if (camera_pitch || camera_yaw)
     {
-        // TODO: Replace amount with actual value from input
-        global_camera_controller.rotate_pitch(1.0f, timer.elapsed_seconds());
-    }
-    if (current_inputs.contains(input_ranges::camera_rotate_yaw))
-    {
-        // TODO: Replace amount with actual value from input
-        global_camera_controller.rotate_yaw(1.0f, timer.elapsed_seconds());
-    }
+        double normalized_pitch =
+            camera_pitch ? 2.0f * (current_inputs.value(input_ranges::camera_rotate_pitch) / 254.0f) - 1.0f : 0.0f;
 
-    current_inputs.clear();
+        double normalized_yaw =
+            camera_yaw ? 2.0f * (current_inputs.value(input_ranges::camera_rotate_yaw) / 256.0f) - 1.0f : 0.0f;
+
+        // Apply deadzone check
+        double stick_magnitude = (normalized_pitch * normalized_pitch) + (normalized_yaw * normalized_yaw);
+        if (stick_magnitude > dead_zone_magnitude)
+        {
+            global_camera_controller.rotate_pitch(normalized_pitch, timer.elapsed_seconds());
+            global_camera_controller.rotate_yaw(normalized_yaw, timer.elapsed_seconds());
+        }
+    }
 
     global_camera_controller.update();
+
+    current_inputs.clear();
 
     // Update shader data
     Eigen::Matrix4f::Map(constant_buffer_data.matrix_view_projection.data()) = global_camera.view_projection_matrix();
@@ -827,10 +783,11 @@ void visualizer::configure_input()
     movement_input_context.add_mapping(input::key_code::key_s, input_states::camera_move_backward);
     movement_input_context.add_mapping(input::key_code::key_d, input_states::camera_move_right);
 
-    movement_input_context.add_mapping(input::controller_buttons::button_triangle, input_states::camera_move_forward);
-    movement_input_context.add_mapping(input::controller_buttons::button_square, input_states::camera_move_left);
-    movement_input_context.add_mapping(input::controller_buttons::button_cross, input_states::camera_move_backward);
-    movement_input_context.add_mapping(input::controller_buttons::button_circle, input_states::camera_move_right);
+    movement_input_context.add_mapping(input::controller_axis::axis_left_stick_x, input_ranges::camera_move_left_right);
+    movement_input_context.add_mapping(
+        input::controller_axis::axis_left_stick_y, input_ranges::camera_move_forward_backward);
+    movement_input_context.add_mapping(input::controller_axis::axis_right_stick_x, input_ranges::camera_rotate_yaw);
+    movement_input_context.add_mapping(input::controller_axis::axis_right_stick_y, input_ranges::camera_rotate_pitch);
     input_decoder.push_context(movement_input_context);
 
     input_decoder.register_device<input::input_device_keyboard>(render_window.native_handle());
