@@ -38,8 +38,8 @@ camera_controller::camera_controller(camera* const target) :
 
     speed_move{ 1.4f },
     speed_strafe{ 1.4f },
-    look_sensitivity_horizontal{ 1.4f },
-    look_sensitivity_vertical{ 1.4f }
+    look_sensitivity_horizontal{ 1.0f },
+    look_sensitivity_vertical{ 1.0f }
 {
     if (target == nullptr)
     {
