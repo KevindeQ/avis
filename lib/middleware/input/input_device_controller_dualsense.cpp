@@ -35,6 +35,9 @@ namespace input
 
     void input_device_controller_dualsense::decode_input(const RAWINPUT* raw_message, input_collector& collector)
     {
+        // TODO: Get thumb pad working and implemented
+        // TODO: Refactor implementation by wrapping functionality into separate functions
+
         if (raw_message->header.dwType != RIM_TYPEHID)
         {
             return;
@@ -73,13 +76,6 @@ namespace input
             return;
         }
 
-        /*std::wstring raw_text = L"";
-        for (const std::byte& raw_byte : buffer_preparsed_data | std::views::drop(64) | std::views::take(16))
-        {
-            raw_text += std::format(L"{:x} ", static_cast<unsigned char>(raw_byte));
-        }
-        OutputDebugString(std::format(L"Raw: {}\n", raw_text).c_str());*/
-
         PHIDP_PREPARSED_DATA preparsed_data = reinterpret_cast<PHIDP_PREPARSED_DATA>(buffer_preparsed_data.data());
         HIDP_CAPS caps;
         std::int32_t data_valid = HidP_GetCaps(preparsed_data, &caps);
@@ -96,7 +92,6 @@ namespace input
             return;
         }
 
-        /*std::wstring usage_text = L"";*/
         for (std::uint16_t index = 0; index < caps.NumberInputValueCaps; ++index)
         {
             unsigned long value = 0;
@@ -114,16 +109,12 @@ namespace input
                 continue;
             }
 
-            // TODO: Do something with the usage value
-            /*usage_text += std::format(L"{} ", value);*/
-
             if (index < axis_value_map.size())
             {
                 controller_axis axis = axis_value_map[index];
                 collector.collect<controller_axis>(axis, value);
             }
         }
-        /*OutputDebugStringW(std::format(L"Usage: {}\n", usage_text).c_str());*/
 
         buffer_button_caps.resize(caps.NumberInputButtonCaps * sizeof(HIDP_BUTTON_CAPS));
         PHIDP_BUTTON_CAPS button_caps = reinterpret_cast<PHIDP_BUTTON_CAPS>(buffer_button_caps.data());

@@ -33,6 +33,8 @@ void basic_camera::update()
 {
     matrix_view_projection_previous = matrix_view_projection;
 
+    // TODO: Camera rotation stretches the picture in a weird way. Check if this has a bug?
+
     Eigen::Quaternionf rotation_inverse = current_orientation.conjugate();
     Eigen::Vector3f translation_inverse = rotation_inverse * -current_position;
     Eigen::Matrix3f matrix_rotation = rotation_inverse.toRotationMatrix();

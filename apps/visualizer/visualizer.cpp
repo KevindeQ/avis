@@ -81,11 +81,13 @@ void visualizer::on_update(const step_timer& timer)
 
         if (camera_move_forward_backward || camera_move_left_right)
         {
+            // TODO: Move range mapping to input_context
             normalized_forward =
                 camera_move_forward_backward ?
                     2.0f * (current_inputs.value(input_ranges::camera_move_forward_backward) / 254.0f) - 1.0f :
                     0.0f;
 
+            // TODO: Move range mapping to input_context
             normalized_left = camera_move_left_right ?
                                   2.0f * (current_inputs.value(input_ranges::camera_move_left_right) / 254.0f) - 1.0f :
                                   0.0f;
@@ -110,9 +112,11 @@ void visualizer::on_update(const step_timer& timer)
     bool camera_yaw = current_inputs.contains(input_ranges::camera_rotate_yaw);
     if (camera_pitch || camera_yaw)
     {
+        // TODO: Move range mapping to input_context
         double normalized_pitch =
             camera_pitch ? 2.0f * (current_inputs.value(input_ranges::camera_rotate_pitch) / 254.0f) - 1.0f : 0.0f;
 
+        // TODO: Move range mapping to input_context
         double normalized_yaw =
             camera_yaw ? 2.0f * (current_inputs.value(input_ranges::camera_rotate_yaw) / 256.0f) - 1.0f : 0.0f;
 

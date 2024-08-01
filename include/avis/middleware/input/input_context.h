@@ -65,7 +65,7 @@ namespace input
             {
                 if (value.has_value())
                 {
-                    // TODO: Do range mapping
+                    // TODO: Implement range mapping that is provided by caller
                     double mapped_value = value.value();
                     current_state.add_input(range, mapped_value);
                 }
