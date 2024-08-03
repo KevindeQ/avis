@@ -23,6 +23,8 @@ namespace geometry
         const std::vector<unsigned char>& block_data(const std::size_t block_id) const;
         std::vector<unsigned char>& block_data(const std::size_t block_id);
 
+        const std::size_t block_count() const;
+
     private:
         std::vector<data_block> data_blocks;
     };

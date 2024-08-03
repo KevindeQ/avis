@@ -15,10 +15,10 @@ namespace geometry
     void data_layout::add_element_back(
         const std::string_view name,
         const data_element_format format,
-        const std::size_t byte_offset,
         const std::size_t byte_count,
         const std::size_t byte_stride)
     {
+        std::size_t byte_offset = sum_element_stride();
         data_element_descriptor new_descriptor{ .name = std::string{ name.begin(), name.end() },
                                                 .slot = 0,
                                                 .format = format,
@@ -42,13 +42,23 @@ namespace geometry
 
     std::size_t data_layout::stride() const
     {
-        // TODO: Implement function
-        return 0;
+        return sum_element_stride();
     }
 
     std::size_t data_layout::offset_by_id(const std::size_t id) const
     {
-        // TODO: Implement function
-        return 0;
+        // TODO: Take into account slot id (instead of looking at the element index)
+        return descriptors.at(id).byte_offset;
+    }
+
+    std::size_t data_layout::sum_element_stride() const
+    {
+        std::size_t total = 0;
+        for (data_element_descriptor descriptor : descriptors)
+        {
+            total += descriptor.byte_stride;
+        }
+
+        return total;
     }
 } // namespace geometry

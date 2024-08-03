@@ -144,7 +144,7 @@ namespace data_formats::ply
 
             std::vector<unsigned char>& block_data = new_data_store.block_data(mapping.block_index);
             block_data.clear();
-            block_data.insert(block_data.end(), line_start_it, line_start_it + byte_count);
+            block_data.insert(block_data.end(), data.begin() + data_offset, data.end());
 
             line_start_it += byte_count;
         }
@@ -261,7 +261,7 @@ namespace data_formats::ply
             std::size_t element_byte_count = format_byte_count(element_format);
 
             current_block_layout.add_element_back(
-                property_name, element_format, 0, element_byte_count, element_byte_count);
+                property_name, element_format, element_byte_count, element_byte_count);
 
             return true;
         }
