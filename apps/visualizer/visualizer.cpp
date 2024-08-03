@@ -38,9 +38,11 @@ visualizer::visualizer(basic_app_config& config) :
     configure_window_resize();
     configure_input();
 
-    load_assets();
-
+    // TODO: Make it possible to load content after assets. Currently, there is a dependency on the vertices being
+    // loaded before the graphics pipeline.
     load_content();
+
+    load_assets();
 }
 
 visualizer::~visualizer()
@@ -134,7 +136,12 @@ void visualizer::on_update(const step_timer& timer)
     current_inputs.clear();
 
     // Update shader data
-    Eigen::Matrix4f::Map(constant_buffer_data.matrix_view_projection.data()) = global_camera.view_projection_matrix();
+    Eigen::Matrix4f matrix_world{
+        { 0.0f, -1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f, 0.0f }, { -1.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f, 1.0f }
+    };
+    Eigen::Matrix4f matrix_world_view_projection = global_camera.view_projection_matrix() * matrix_world;
+
+    Eigen::Matrix4f::Map(constant_buffer_data.matrix_world_view_projection.data()) = matrix_world_view_projection;
     std::memcpy(constant_buffer_data_begin, &constant_buffer_data, sizeof(constant_buffer_data));
 }
 
@@ -178,9 +185,9 @@ void visualizer::on_render()
     // Record commands.
     const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
     command_list->ClearRenderTargetView(handle_rtv, clearColor, 0, nullptr);
-    command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
     command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
-    command_list->DrawInstanced(3, 1, 0, 0);
+    command_list->DrawInstanced(vertices.size(), 1, 0, 0);
 
     // Indicate that the back buffer will now be used to present.
     D3D12_RESOURCE_BARRIER barrier_render_present{};
@@ -213,29 +220,93 @@ void visualizer::load_content()
     /*std::future<file_output> test_file_contents =
         file_load_service.async_read_file<file_output>(test_file, file_parser{});*/
 
-    io::file_descriptor ply_file =
-        file_context.create_descriptor("E:\\Data\\KITTI-360\\data_3d_semantics\\train\\2013_05_28_drive_0000_"
-                                       "sync\\dynamic\\0000000002_0000000385.ply");
-    std::future<geometry::data_store> test_file_contents = file_load_service.async_read_file<geometry::data_store>(
-        ply_file,
-        [](const streams::memory_stream& data)
-        {
-            data_formats::ply::ply_parser parser;
-            return parser.parse(data);
-        });
-    geometry::data_store geometry_data = test_file_contents.get();
+    std::filesystem::path folder_lidar_data{
+        "E:\\Data\\KITTI-360\\data_3d_semantics\\train\\2013_05_28_drive_0000_sync\\static"
+    };
 
-    /*io::basic_file_descriptor database_file{ "E:\\Projects\\avis\\assets\\maps\\point_cloud.adf" };
-    io::basic_file_descriptor index_file{ "E:\\Projects\\avis\\assets\\maps\\point_cloud.aif" };
-    data::point_cloud database{ index_file, database_file };
-    database.fetch_data(Eigen::Vector3f{});*/
+    std::vector<std::future<geometry::data_store>> promises_data{};
+
+    std::size_t count = 0;
+    std::size_t max_count = 10;
+    for (auto const& directory_entry : std::filesystem::directory_iterator{ folder_lidar_data })
+    {
+        // Break out when enough data is loaded
+        if (count >= max_count)
+        {
+            break;
+        }
+
+        if (directory_entry.is_regular_file())
+        {
+            io::file_descriptor ply_file = file_context.create_descriptor(directory_entry);
+            std::future<geometry::data_store> data_promise = file_load_service.async_read_file<geometry::data_store>(
+                ply_file,
+                [](const streams::memory_stream& data)
+                {
+                    data_formats::ply::ply_parser parser;
+                    return parser.parse(data);
+                });
+            promises_data.push_back(std::move(data_promise));
+        }
+
+        count += 1;
+    }
+
+    for (std::future<geometry::data_store>& promise : promises_data)
+    {
+        geometry::data_store geometry_data = promise.get();
+        load_vertices(geometry_data);
+    }
 
     global_camera = camera{ std::numbers::pi / 4.0f,
                             static_cast<float>(render_window.width()) / static_cast<float>(render_window.height()),
                             0.1f,
                             100.0f };
-    global_camera.look_at(Eigen::Vector3f{ 0.0f, 0.0f, 2.0f }, Eigen::Vector3f::Zero(), Eigen::Vector3f::UnitY());
+    /*global_camera.look_at(Eigen::Vector3f{ 0.0f, 0.0f, 2.0f }, Eigen::Vector3f::Zero(), Eigen::Vector3f::UnitY());*/
+    global_camera.look_at(
+        Eigen::Vector3f{ -3820.0f, 116.0f, -1000.0f },
+        Eigen::Vector3f{ -3678.0, 114.0f, -904.0f },
+        Eigen::Vector3f::UnitY());
     global_camera_controller = camera_controller{ &global_camera };
+}
+
+void visualizer::load_vertices(const geometry::data_store& geometry_data)
+{
+    auto bytes_to_float = [](const unsigned char* bytes)
+    {
+        float result = 0.0f;
+        std::copy(bytes, bytes + sizeof(float), reinterpret_cast<unsigned char*>(&result));
+        return result;
+    };
+
+    for (std::size_t block_index = 0; block_index < geometry_data.block_count(); ++block_index)
+    {
+        const geometry::data_layout& layout = geometry_data.block_layout(block_index);
+        const std::vector<unsigned char>& data = geometry_data.block_data(block_index);
+
+        std::size_t offset_x = layout.offset_by_id(0);
+        std::size_t offset_y = layout.offset_by_id(1);
+        std::size_t offset_z = layout.offset_by_id(2);
+
+        std::size_t offset_r = layout.offset_by_id(3);
+        std::size_t offset_g = layout.offset_by_id(4);
+        std::size_t offset_b = layout.offset_by_id(5);
+
+        std::size_t element_stride = layout.stride();
+        std::size_t element_count = data.size() / element_stride;
+        for (std::size_t element_index = 0; element_index < element_count; ++element_index)
+        {
+            std::size_t element_offset = element_index * element_stride;
+
+            vertex point{ .position = { .x = bytes_to_float(&data[element_offset + offset_x]),
+                                        .y = bytes_to_float(&data[element_offset + offset_y]),
+                                        .z = bytes_to_float(&data[element_offset + offset_z]) },
+                          .color = { .r = data[element_offset + offset_r],
+                                     .g = data[element_offset + offset_g],
+                                     .b = data[element_offset + offset_b] } };
+            vertices.push_back(point);
+        }
+    }
 }
 
 void visualizer::configure_window_resize()
@@ -549,10 +620,20 @@ void visualizer::load_assets()
         byte_code_ps.BytecodeLength = bytes_ps.size();
 
         // Define the vertex input layout.
-        D3D12_INPUT_ELEMENT_DESC input_element_descs[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
-        };
+        D3D12_INPUT_ELEMENT_DESC input_element_descs[] = { { "POSITION",
+                                                             0,
+                                                             DXGI_FORMAT_R32G32B32_FLOAT,
+                                                             0,
+                                                             offsetof(vertex, position),
+                                                             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                                                             0 },
+                                                           { "COLOR",
+                                                             0,
+                                                             DXGI_FORMAT_R8G8B8A8_UINT,
+                                                             0,
+                                                             offsetof(vertex, color),
+                                                             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                                                             0 } };
 
         // Describe and create the graphics pipeline state object (PSO).
         D3D12_RASTERIZER_DESC rasterizer_descriptor{};
@@ -598,7 +679,7 @@ void visualizer::load_assets()
         pso_descriptor.DepthStencilState.DepthEnable = FALSE;
         pso_descriptor.DepthStencilState.StencilEnable = FALSE;
         pso_descriptor.SampleMask = UINT_MAX;
-        pso_descriptor.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pso_descriptor.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
         pso_descriptor.NumRenderTargets = 1;
         pso_descriptor.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
         pso_descriptor.SampleDesc.Count = 1;
@@ -620,12 +701,7 @@ void visualizer::load_assets()
     // Create the vertex buffer.
     {
         // Define the geometry for a triangle.
-        float aspect_ratio = static_cast<float>(render_window.width()) / static_cast<float>(render_window.height());
-        Vertex triangle_vertices[] = { { { 0.0f, 0.25f * aspect_ratio, 0.5f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
-                                       { { -0.25f, -0.25f * aspect_ratio, 0.5f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
-                                       { { 0.25f, -0.25f * aspect_ratio, 0.5f }, { 0.0f, 0.0f, 1.0f, 1.0f } } };
-
-        const std::uint32_t vertex_buffer_size = sizeof(triangle_vertices);
+        const std::uint32_t vertex_buffer_size = vertices.size() * sizeof(vertex);
 
         D3D12_HEAP_PROPERTIES heap_properties{};
         heap_properties.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -666,12 +742,12 @@ void visualizer::load_assets()
         // Copy the triangle data to the vertex buffer.
         std::uint8_t* vertex_data_begin;
         throw_if_failed(vertex_buffer->Map(0, &read_range, reinterpret_cast<void**>(&vertex_data_begin)));
-        memcpy(vertex_data_begin, triangle_vertices, sizeof(triangle_vertices));
+        memcpy(vertex_data_begin, vertices.data(), vertex_buffer_size);
         vertex_buffer->Unmap(0, nullptr);
 
         // Initialize the vertex buffer view.
         vertex_buffer_view.BufferLocation = vertex_buffer->GetGPUVirtualAddress();
-        vertex_buffer_view.StrideInBytes = sizeof(Vertex);
+        vertex_buffer_view.StrideInBytes = sizeof(vertex);
         vertex_buffer_view.SizeInBytes = vertex_buffer_size;
     }
 

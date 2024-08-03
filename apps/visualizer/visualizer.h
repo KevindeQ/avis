@@ -44,7 +44,7 @@ using visualizer_input_context = input::input_context<input_actions, input_state
 struct alignas(256) constant_buffer_scene
 {
 public:
-    std::array<float, 16> matrix_view_projection;
+    std::array<float, 16> matrix_world_view_projection;
 };
 
 class visualizer : public basic_app
@@ -59,6 +59,7 @@ public:
 
 private:
     void load_content();
+    void load_vertices(const geometry::data_store& geometry_data);
 
     void configure_window_resize();
     void on_window_resize(const std::uint32_t width, const std::uint32_t height, const bool minimized);
@@ -84,18 +85,17 @@ private:
         float z;
     };
 
-    struct float4
+    struct color_rgb
     {
-        float x;
-        float y;
-        float z;
-        float w;
+        std::uint8_t r;
+        std::uint8_t g;
+        std::uint8_t b;
     };
 
-    struct Vertex
+    struct vertex
     {
         float3 position;
-        float4 color;
+        color_rgb color;
     };
 
     window render_window;
@@ -126,6 +126,8 @@ private:
     com_ptr<ID3D12Resource> constant_buffer;
     constant_buffer_scene constant_buffer_data;
     std::uint8_t* constant_buffer_data_begin;
+
+    std::vector<vertex> vertices;
 
     // Synchronization objects.
     std::uint32_t frame_index;
