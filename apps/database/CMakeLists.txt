@@ -16,17 +16,17 @@ set_target_properties(AVIS_DATABASE
 
 target_compile_definitions(AVIS_DATABASE
 	PUBLIC
-		AVIS_LIB
+		ADB_LIB_SERVER
 )
 
 target_include_directories(AVIS_DATABASE
 	PRIVATE
-		AVIS_LIB
+		ADB_LIB_SERVER
 )
 
 target_link_libraries(AVIS_DATABASE
 	PRIVATE
-		AVIS_LIB
+		ADB_LIB_SERVER
 		ASIO
 )
 

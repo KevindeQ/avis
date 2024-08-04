@@ -70,9 +70,9 @@ if (CMAKE_BUILD_TYPE AND
 endif()
 
 set(AVIS_SRC_DIR     ${CMAKE_CURRENT_SOURCE_DIR})
-set(AVIS_LIB_DIR     ${AVIS_SRC_DIR}/lib)
+set(AVIS_LIB_DIR     ${AVIS_SRC_DIR}/lib/avis)
 set(AVIS_INCLUDE_DIR ${AVIS_SRC_DIR}/include)
-set(AVIS_ASSETS_DIR    ${AVIS_SRC_DIR}/assets)
+set(AVIS_ASSETS_DIR  ${AVIS_SRC_DIR}/assets)
 
 # Include additional support CMake files
 include(${AVIS_SRC_DIR}/cmake/ShaderSupport.cmake)
@@ -92,7 +92,9 @@ option(AVIS_INCLUDE_TESTS "Generate build targets for the Avis unit tests." ON)
 Include(FetchContent)
 
 add_subdirectory(extern)
-add_subdirectory(lib)
+add_subdirectory(lib/adb/server)
+#add_subdirectory(lib/adb/client)
+add_subdirectory(lib/avis)
 
 if(AVIS_INCLUDE_APPS)
   add_subdirectory(apps)
