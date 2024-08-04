@@ -27,12 +27,15 @@ target_include_directories(AVIS_VISUALIZER
 target_link_libraries(AVIS_VISUALIZER
 	PRIVATE
 		AVIS_LIB
+
+		hid
 )
 
 target_sources(AVIS_VISUALIZER
 	PRIVATE
-		visualizer.cpp
-)
+		camera.cpp
+		camera_controller.cpp
+		visualizer.cpp)
 
 # Copy the assets to the output directory
 add_custom_command(

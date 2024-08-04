@@ -4,6 +4,7 @@
 #include "avis/core/common.h"
 #include "avis/middleware/basic_app.h"
 #include "avis/middleware/configuration.h"
+#include "avis/middleware/step_timer.h"
 
 class runtime_builder;
 
@@ -48,11 +49,16 @@ std::int32_t runtime::execute(basic_app_config& config)
     {
         application_t app{config};
 
+        step_timer fixed_time_step{ config.fixed_time_delta };
+
         app.on_launch();
 
         while (dispatch_system_messages())
         {
-            app.on_update();
+            // Run updates on the configured time delta
+            fixed_time_step.tick([&app = app](const step_timer& timer) { app.on_update(timer); });
+
+            // Render frames as fast as possible
             app.on_render();
         }
 

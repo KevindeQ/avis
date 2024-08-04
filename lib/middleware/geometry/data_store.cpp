@@ -49,4 +49,9 @@ namespace geometry
 
         return data_blocks[block_id].data;
     }
+
+    const std::size_t data_store::block_count() const
+    {
+        return data_blocks.size();
+    }
 } // namespace geometry

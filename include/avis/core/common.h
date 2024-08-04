@@ -2,6 +2,7 @@
 #define CORE_COMMON_H
 
 #include <algorithm>
+#include <any>
 #include <array>
 #include <atomic>
 #include <bitset>
@@ -17,9 +18,11 @@
 #include <locale>
 #include <map>
 #include <memory>
+#include <numbers>
 #include <numeric>
 #include <optional>
 #include <queue>
+#include <ranges>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -27,6 +30,7 @@
 #include <system_error>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -41,5 +45,8 @@ using namespace std::chrono_literals;
 #include "avis/core/helper_functions.h"
 #include "avis/core/string_functions.h"
 #include "avis/core/unique_handle.h"
+
+template<typename enum_t>
+concept enumeration = std::is_enum_v<enum_t>;
 
 #endif

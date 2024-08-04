@@ -42,6 +42,9 @@ namespace platform
         ::ShowWindow(native_handle_, SW_SHOW);
         ::UpdateWindow(native_handle_);
 
+        // Store window dimensions
+        window_rect_ = dimensions;
+
         return true;
     }
 
@@ -64,6 +67,8 @@ namespace platform
             dimensions.right - dimensions.left,
             dimensions.bottom - dimensions.top,
             SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOZORDER);
+
+        window_rect_ = dimensions;
     }
 
     void basic_window::toggle_fullscreen(bool fullscreen)
@@ -112,6 +117,26 @@ namespace platform
                 window_rect_.bottom - window_rect_.top,
                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         }
+    }
+
+    std::uint32_t basic_window::width() const
+    {
+        return window_rect_.right - window_rect_.left;
+    }
+
+    std::uint32_t basic_window::height() const
+    {
+        return window_rect_.bottom - window_rect_.top;
+    }
+
+    HWND basic_window::native_handle() const
+    {
+        return native_handle_;
+    }
+
+    void basic_window::update_size()
+    {
+        ::GetWindowRect(native_handle_, &window_rect_);
     }
 
     WNDCLASSEX basic_window::generate_window_class()

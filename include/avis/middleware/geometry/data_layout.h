@@ -40,7 +40,6 @@ namespace geometry
         void add_element_back(
             const std::string_view name,
             const data_element_format format,
-            const std::size_t byte_offset,
             const std::size_t byte_count,
             const std::size_t byte_stride);
 
@@ -51,6 +50,8 @@ namespace geometry
         std::size_t offset_by_id(const std::size_t id) const;
 
     private:
+        std::size_t sum_element_stride() const;
+
         // Descriptors are sorted in ascending order on data_element_descriptor::slot
         std::vector<data_element_descriptor> descriptors;
     };
