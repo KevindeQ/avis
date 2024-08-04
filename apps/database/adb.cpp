@@ -98,45 +98,4 @@ int main(int argc, char* argv[])
     }
 
     return 0;
-
-    //std::filesystem::path source_directory{
-    //    "E:\\Data\\KITTI-360\\data_3d_semantics\\train\\2013_05_28_drive_0000_sync\\static\\"
-    //};
-    //std::vector<std::future<geometry::data_store>> geometry_data{};
-
-    //for (const std::filesystem::directory_entry& entry :
-    //     std::filesystem::recursive_directory_iterator(source_directory))
-    //{
-    //    if (!entry.is_regular_file())
-    //    {
-    //        continue;
-    //    }
-
-    //    std::filesystem::path p = entry.path();
-    //    if (p.extension() != ".ply")
-    //    {
-    //        continue;
-    //    }
-
-    //    io::file_descriptor ply_file = file_context.create_descriptor(p);
-    //    /*std::future<geometry::data_store> file_contents = file_load_service.async_read_file<geometry::data_store>(
-    //        ply_file,
-    //        [](const streams::memory_stream& data)
-    //        {
-    //            data_formats::ply::ply_parser parser;
-    //            return parser.parse(data);
-    //        });
-    //    geometry_data.push_back(file_contents);*/
-    //}
-
-    //io::basic_file_descriptor database_file{ "E:\\Projects\\avis\\assets\\maps\\point_cloud.adf" };
-    //io::basic_file_descriptor index_file{ "E:\\Projects\\avis\\assets\\maps\\point_cloud.aif" };
-    //data::point_cloud database{ index_file, database_file };
-
-    //for (std::future<geometry::data_store>& data_store : geometry_data)
-    //{
-    //    geometry::data_store ds = data_store.get();
-    //}
-
-    return 0;
 }
