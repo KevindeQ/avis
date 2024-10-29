@@ -34,6 +34,9 @@
         "value": "x64",
         "strategy": "external"
       },
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.8.0/msvc2022_64"
+      },
       "vendor": {
         "microsoft.com/VisualStudioSettings/CMake/1.0": {
           "hostOS": [ "Windows" ]

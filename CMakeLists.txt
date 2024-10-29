@@ -70,12 +70,19 @@ if (CMAKE_BUILD_TYPE AND
 endif()
 
 set(AVIS_SRC_DIR     ${CMAKE_CURRENT_SOURCE_DIR})
+set(AVIS_APPS_DIR    ${CMAKE_CURRENT_SOURCE_DIR}/apps)
 set(AVIS_LIB_DIR     ${AVIS_SRC_DIR}/lib/avis)
 set(AVIS_INCLUDE_DIR ${AVIS_SRC_DIR}/include)
 set(AVIS_ASSETS_DIR  ${AVIS_SRC_DIR}/assets)
 
+# Find Qt6 libraries and add them as required dependency
+find_package(Qt6 6.8 COMPONENTS Core Quick Gui REQUIRED)
+qt_standard_project_setup(REQUIRES 6.8)
+
 # Include additional support CMake files
-include(${AVIS_SRC_DIR}/cmake/ShaderSupport.cmake)
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${AVIS_SRC_DIR}/cmake")
+include(ShaderSupport)
+include(WinDeployQT)
 
 # Define options to control the inclusion and default build behavior for components which may
 # not strictly be necessary (tools, tests).
