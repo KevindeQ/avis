@@ -1,16 +1,16 @@
 #ifndef VISUALIZER_H
 #define VISUALIZER_H
 
-#include "avis/middleware/basic_app.h"
-#include "avis/middleware/geometry/data_store.h"
-#include "avis/middleware/input/input_context.h"
-#include "avis/middleware/input/input_decoder.h"
-#include "avis/middleware/input/input_state.h"
-#include "avis/middleware/window.h"
-#include "avis/runtime/data/point_cloud.h"
-#include "avis/runtime/io/io_context.h"
-#include "avis/runtime/io/io_service.h"
-#include "avis/runtime/parallel/thread_pool.h"
+#include "avis/basic_app.h"
+#include "avis/geometry/data_store.h"
+#include "avis/input/input_context.h"
+#include "avis/input/input_decoder.h"
+#include "avis/input/input_state.h"
+#include "avis/window.h"
+#include "avis/data/point_cloud.h"
+#include "avis/io/io_context.h"
+#include "avis/io/io_service.h"
+#include "avis/parallel/thread_pool.h"
 #include "camera.h"
 #include "camera_controller.h"
 

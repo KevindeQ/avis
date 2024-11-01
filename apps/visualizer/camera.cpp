@@ -1,6 +1,6 @@
 #include "camera.h"
 
-#include "avis/core/common.h"
+#include "avis/common.h"
 
 void basic_camera::look_at(const Eigen::Vector3f position_world, const Eigen::Vector3f target, const Eigen::Vector3f up)
 {

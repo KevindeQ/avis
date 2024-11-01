@@ -1,7 +1,7 @@
 #ifndef CAMERA_CONTROLLER_H
 #define CAMERA_CONTROLLER_H
 
-#include "avis/core/common.h"
+#include "avis/common.h"
 #include "camera.h"
 
 class camera_controller

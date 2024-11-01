@@ -1,11 +1,11 @@
 #include "visualizer.h"
 
-#include "avis/middleware/data_formats/ply/ply_parser.h"
-#include "avis/middleware/input/input_device_controller_dualsense.h"
-#include "avis/middleware/input/input_device_keyboard.h"
-#include "avis/middleware/input/input_device_mouse.h"
-#include "avis/middleware/input/input_state.h"
-#include "avis/middleware/runtime.h"
+#include "avis/data_formats/ply/ply_parser.h"
+#include "avis/input/input_device_controller_dualsense.h"
+#include "avis/input/input_device_keyboard.h"
+#include "avis/input/input_device_mouse.h"
+#include "avis/input/input_state.h"
+#include "avis/runtime.h"
 
 visualizer::visualizer(basic_app_config& config) :
     basic_app(config),

@@ -41,37 +41,35 @@ target_link_libraries(AVIS_LIB
 
 target_sources(AVIS_LIB
 	PRIVATE
-		core/streams/binary_stream.cpp
-		core/streams/memory_stream.cpp
-		core/streams/text_stream.cpp
-		core/unique_handle.cpp
-		middleware/configuration/configuration_parser.cpp
-		middleware/configuration/ini_parser.cpp
-		middleware/data_formats/json/json_parser.cpp
-		middleware/data_formats/json/json_tokenizer.cpp
-		middleware/data_formats/ply/ply_parser.cpp
-		middleware/geometry/data_layout.cpp
-		middleware/geometry/data_store.cpp
-		middleware/input/details/input_wrapper.cpp
-		middleware/input/input_device_controller_dualsense.cpp
-		middleware/input/input_device_keyboard.cpp
-		middleware/input/input_device_mouse.cpp
-		middleware/platform/basic_window.cpp
-		middleware/platform/basic_window_messages.cpp
-		middleware/configuration.cpp
-		middleware/runtime.cpp
-		middleware/step_timer.cpp
-		middleware/window.cpp
-		runtime/data/data_provider.cpp
-		runtime/data/page_controller.cpp
-		runtime/data/page_view.cpp
-		runtime/data/point_cloud.cpp
-		runtime/io/file_descriptor.cpp
-		runtime/io/io_context.cpp
-		runtime/io/io_request.cpp
-		runtime/io/io_service.cpp
-		runtime/io/operation_context.cpp
-		runtime/parallel/thread_pool.cpp)
+		configuration.cpp
+		configuration/configuration_parser.cpp
+		configuration/ini_parser.cpp
+		data/page_controller.cpp
+		data/page_view.cpp
+		data/point_cloud.cpp
+		data_formats/json/json_parser.cpp
+		data_formats/json/json_tokenizer.cpp
+		data_formats/ply/ply_parser.cpp
+		geometry/data_layout.cpp
+		geometry/data_store.cpp
+		input/details/input_wrapper.cpp
+		input/input_device_controller_dualsense.cpp
+		input/input_device_keyboard.cpp
+		input/input_device_mouse.cpp
+		io/file_descriptor.cpp
+		io/io_context.cpp
+		io/io_request.cpp
+		io/io_service.cpp
+		io/operation_context.cpp
+		parallel/thread_pool.cpp
+		platform/basic_window.cpp
+		platform/basic_window_messages.cpp
+		runtime.cpp
+		step_timer.cpp
+		streams/memory_stream.cpp
+		utils/unique_handle.cpp
+		window.cpp
+)
 
 # Build HLSL shaders
 enable_build_shaders(AVIS_LIB)
