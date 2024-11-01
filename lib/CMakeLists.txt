@@ -41,34 +41,34 @@ target_link_libraries(AVIS_LIB
 
 target_sources(AVIS_LIB
 	PRIVATE
-		configuration.cpp
-		configuration/configuration_parser.cpp
-		configuration/ini_parser.cpp
-		data/page_controller.cpp
-		data/page_view.cpp
-		data/point_cloud.cpp
-		data_formats/json/json_parser.cpp
-		data_formats/json/json_tokenizer.cpp
-		data_formats/ply/ply_parser.cpp
-		geometry/data_layout.cpp
-		geometry/data_store.cpp
-		input/details/input_wrapper.cpp
-		input/input_device_controller_dualsense.cpp
-		input/input_device_keyboard.cpp
-		input/input_device_mouse.cpp
-		io/file_descriptor.cpp
-		io/io_context.cpp
-		io/io_request.cpp
-		io/io_service.cpp
-		io/operation_context.cpp
-		parallel/thread_pool.cpp
-		platform/basic_window.cpp
-		platform/basic_window_messages.cpp
-		runtime.cpp
-		step_timer.cpp
-		streams/memory_stream.cpp
-		utils/unique_handle.cpp
-		window.cpp
+		avis/configuration.cpp
+		avis/configuration/configuration_parser.cpp
+		avis/configuration/ini_parser.cpp
+		avis/data/page_controller.cpp
+		avis/data/page_view.cpp
+		avis/data/point_cloud.cpp
+		avis/data_formats/json/json_parser.cpp
+		avis/data_formats/json/json_tokenizer.cpp
+		avis/data_formats/ply/ply_parser.cpp
+		avis/geometry/data_layout.cpp
+		avis/geometry/data_store.cpp
+		avis/input/details/input_wrapper.cpp
+		avis/input/input_device_controller_dualsense.cpp
+		avis/input/input_device_keyboard.cpp
+		avis/input/input_device_mouse.cpp
+		avis/io/file_descriptor.cpp
+		avis/io/io_context.cpp
+		avis/io/io_request.cpp
+		avis/io/io_service.cpp
+		avis/io/operation_context.cpp
+		avis/parallel/thread_pool.cpp
+		avis/platform/basic_window.cpp
+		avis/platform/basic_window_messages.cpp
+		avis/runtime.cpp
+		avis/step_timer.cpp
+		avis/streams/memory_stream.cpp
+		avis/utils/unique_handle.cpp
+		avis/window.cpp
 )
 
 # Build HLSL shaders
