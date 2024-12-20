@@ -52,6 +52,8 @@ target_sources(AVIS_LIB
 		avis/data_formats/ply/ply_parser.cpp
 		avis/geometry/data_layout.cpp
 		avis/geometry/data_store.cpp
+		avis/graphics/render_device.cpp
+		avis/graphics/root_signature.cpp
 		avis/input/details/input_wrapper.cpp
 		avis/input/input_device_controller_dualsense.cpp
 		avis/input/input_device_keyboard.cpp
@@ -64,6 +66,9 @@ target_sources(AVIS_LIB
 		avis/parallel/thread_pool.cpp
 		avis/platform/basic_window.cpp
 		avis/platform/basic_window_messages.cpp
+		avis/render_graph/render_pass.cpp
+		avis/render_graph/render_pass_builder.cpp
+		avis/render_graph/render_pipeline.cpp
 		avis/runtime.cpp
 		avis/step_timer.cpp
 		avis/streams/memory_stream.cpp
