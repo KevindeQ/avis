@@ -2,13 +2,65 @@
 #define IO_IO_SERVICE_H
 
 #include "avis/common.h"
-#include "avis/streams/memory_stream.h"
-#include "avis/io/file_descriptor.h"
-#include "avis/io/io_read_request.h"
-#include "avis/io/io_request.h"
+#include "avis/parallel/thread_pool.h"
+
+#include "asio/as_tuple.hpp"
+#include "asio/co_spawn.hpp"
+#include "asio/io_context.hpp"
+#include "asio/random_access_file.hpp"
+#include "asio/use_awaitable.hpp"
+#include "asio/use_future.hpp"
 
 namespace io
 {
+    /*class binary_reader
+    {
+    public:
+        binary_reader(std::span<std::uint8_t> data);
+
+        [[nodiscard]] std::uint8_t read_uint8();
+        [[nodiscard]] std::uint16_t read_uint16();
+        [[nodiscard]] std::uint32_t read_uint32();
+        [[nodiscard]] std::uint64_t read_uint64();
+
+        [[nodiscard]] std::int8_t read_int8();
+        [[nodiscard]] std::int16_t read_int16();
+        [[nodiscard]] std::int32_t read_int32();
+        [[nodiscard]] std::int64_t read_int64();
+
+    private:
+    };*/
+
+    template<typename result_type>
+    class read_handle
+    {
+    public:
+        read_handle(std::future<result_type> handle);
+
+        result_type get();
+
+        void wait() const;
+
+    private:
+        std::future<result_type> result_handle;
+    };
+
+    template<typename result_type>
+    read_handle<result_type>::read_handle(std::future<result_type> handle) : result_handle{ std::move(handle) }
+    {}
+
+    template<typename result_type>
+    result_type read_handle<result_type>::get()
+    {
+        return result_handle.get();
+    }
+
+    template<typename result_type>
+    void read_handle<result_type>::wait() const
+    {
+        result_handle.wait();
+    }
+
     class io_service
     {
     public:
@@ -21,38 +73,47 @@ namespace io
         io_service& operator=(const io_service&) = delete;
         io_service& operator=(io_service&&) = default;
 
-        std::future<streams::memory_stream> async_read_file(file_descriptor descriptor);
+        // TODO: Allow any container to be used as result type
+        read_handle<std::vector<unsigned char>> read_file_async(const std::filesystem::path& file);
 
-        template<typename result_t>
-        std::future<result_t> async_read_file(
-            file_descriptor descriptor, std::function<result_t(const streams::memory_stream& stream)> converter);
-
-        std::future<void> async_write_file(file_descriptor descriptor);
-
-    private:
-        void operation_servicing_main();
-
-        void enqueue_request(std::unique_ptr<basic_io_request>&& request);
-        void process_request(const std::unique_ptr<basic_io_request>& request);
+        template<typename return_type>
+        read_handle<return_type> read_structured_file_async(
+            const std::filesystem::path& file, std::function<return_type(std::span<unsigned char>)> type_converter);
 
     private:
-        std::queue<std::unique_ptr<basic_io_request>> ops_queue_;
-        std::mutex ops_queue_mutex_;
-        std::condition_variable ops_queue_cv_;
-        bool stop_service_;
+        template<typename return_type>
+        asio::awaitable<return_type> read_file_wrapper(
+            const std::filesystem::path file, std::function<return_type(std::span<unsigned char>)> type_converter);
+
+        std::vector<unsigned char> identity_type_converter(std::span<unsigned char> file_contents);
+
+        asio::io_context execution_context;
+        asio::executor_work_guard<asio::io_context::executor_type> execution_context_guard;
     };
 
-    template<typename result_t>
-    std::future<result_t> io_service::async_read_file(
-        file_descriptor descriptor, std::function<result_t(const streams::memory_stream& stream)> converter)
+    template<typename return_type>
+    read_handle<return_type> io_service::read_structured_file_async(
+        const std::filesystem::path& file, std::function<return_type(std::span<unsigned char>)> type_converter)
     {
-        std::unique_ptr<io_read_request<result_t>> new_request =
-            std::make_unique<io_read_request<result_t>>(descriptor, converter);
-        std::future<result_t> response = new_request->get_future();
+        asio::io_context::executor_type executor = execution_context.get_executor();
+        std::future<return_type> result_future =
+            asio::co_spawn(executor, read_file_wrapper(file, type_converter), asio::use_future);
+        return read_handle<return_type>{ std::move(result_future) };
+    }
 
-        enqueue_request(std::move(new_request));
+    template<typename return_type>
+    asio::awaitable<return_type> io_service::read_file_wrapper(
+        const std::filesystem::path file, std::function<return_type(std::span<unsigned char>)> type_converter)
+    {
+        asio::random_access_file file_handle{ execution_context, file.string(), asio::random_access_file::read_only };
 
-        return response;
+        std::vector<std::uint8_t> buffer{};
+        buffer.resize(file_handle.size());
+
+        auto [error_code, bytes_read] =
+            co_await file_handle.async_read_some_at(0, asio::buffer(buffer), asio::as_tuple(asio::use_awaitable));
+
+        co_return type_converter(buffer);
     }
 } // namespace io
 

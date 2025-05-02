@@ -27,6 +27,7 @@ target_compile_definitions(AVIS_LIB
 target_include_directories(AVIS_LIB
 	PUBLIC
 		${AVIS_INCLUDE_DIR}
+		ASIO
 		Eigen3::Eigen
 	PRIVATE
 		xxHash::xxhash
@@ -34,6 +35,7 @@ target_include_directories(AVIS_LIB
 
 target_link_libraries(AVIS_LIB
 	PUBLIC
+		ASIO
 		Eigen3::Eigen
 	PRIVATE
 		xxHash::xxhash
@@ -58,11 +60,7 @@ target_sources(AVIS_LIB
 		avis/input/input_device_controller_dualsense.cpp
 		avis/input/input_device_keyboard.cpp
 		avis/input/input_device_mouse.cpp
-		avis/io/file_descriptor.cpp
-		avis/io/io_context.cpp
-		avis/io/io_request.cpp
 		avis/io/io_service.cpp
-		avis/io/operation_context.cpp
 		avis/parallel/thread_pool.cpp
 		avis/platform/basic_window.cpp
 		avis/platform/basic_window_messages.cpp

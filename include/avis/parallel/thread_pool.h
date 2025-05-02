@@ -32,7 +32,7 @@ namespace parallel
         };
 
     public:
-        explicit thread_pool(std::size_t thread_count = std::thread::hardware_concurrency());
+        explicit thread_pool(std::size_t max_thread_count = std::thread::hardware_concurrency());
         thread_pool(const thread_pool&) = delete;
         thread_pool(thread_pool&&) = default;
         ~thread_pool();
@@ -49,6 +49,8 @@ namespace parallel
             std::invoke_result_t<callable_t, arguments_t...>,
             std::future<std::invoke_result_t<callable_t, arguments_t...>>>>
             execute(callable_t callable, arguments_t&&... arguments);
+
+        std::size_t thread_count() const;
 
     private:
         void thread_main();

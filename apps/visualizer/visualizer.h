@@ -8,7 +8,6 @@
 #include "avis/input/input_state.h"
 #include "avis/window.h"
 #include "avis/data/point_cloud.h"
-#include "avis/io/io_context.h"
 #include "avis/io/io_service.h"
 #include "avis/parallel/thread_pool.h"
 #include "camera.h"
@@ -139,7 +138,6 @@ private:
     camera_controller global_camera_controller;
 
     parallel::thread_pool threads;
-    io::io_context file_context;
     io::io_service file_load_service;
 
     visualizer_input_state current_inputs;

@@ -6,7 +6,7 @@
 #include "avis/data/page_controller.h"
 #include "avis/data/page_view.h"
 #include "avis/data/serializer.h"
-#include "avis/io/file_descriptor.h"
+//#include "avis/io/file_descriptor.h"
 
 namespace data
 {
@@ -69,14 +69,14 @@ namespace data
         using record_type = record_t;
         using index_type = data_index_t;
 
-        data_provider(io::basic_file_descriptor& data, io::basic_file_descriptor& index);
+        data_provider(/*io::basic_file_descriptor& data, io::basic_file_descriptor& index*/);
 
         std::vector<record_type> query();
 
     private:
-        io::basic_file_descriptor file_data;
+        /*io::basic_file_descriptor file_data;*/
         page_controller data_page_controller;
-        io::basic_file_descriptor file_index;
+        /*io::basic_file_descriptor file_index;*/
         page_controller index_page_controller;
     };
 
@@ -229,11 +229,11 @@ namespace data
 
     template<typename record_t, typename data_index_t>
     data_provider<record_t, data_index_t>::data_provider(
-        io::basic_file_descriptor& data, io::basic_file_descriptor& index) :
-        file_data{ data },
-        data_page_controller{ data, 8192 },
-        file_index{ index },
-        index_page_controller{ index, 8192 }
+        /*io::basic_file_descriptor& data, io::basic_file_descriptor& index*/)/* :*/
+        /*file_data{ data },*/
+        /*data_page_controller{ data, 8192 },*/
+        /*file_index{ index },*/
+        /*index_page_controller{ index, 8192 }*/
     {}
 
     template<typename record_t, typename data_index_t>

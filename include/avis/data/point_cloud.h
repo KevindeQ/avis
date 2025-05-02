@@ -5,7 +5,7 @@
 #include "avis/common.h"
 #include "avis/data/data_provider.h"
 #include "avis/data/spatial_index.h"
-#include "avis/io/file_descriptor.h"
+//#include "avis/io/file_descriptor.h"
 
 namespace data
 {
@@ -34,7 +34,7 @@ namespace data
     class point_cloud
     {
     public:
-        point_cloud(io::basic_file_descriptor& database_file, io::basic_file_descriptor& index_file);
+        point_cloud(/*io::basic_file_descriptor& database_file, io::basic_file_descriptor& index_file*/);
 
         std::vector<point_record> fetch_data(const Eigen::Vector3f& position);
 

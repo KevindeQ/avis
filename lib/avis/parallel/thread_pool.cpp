@@ -4,14 +4,14 @@
 
 namespace parallel
 {
-    thread_pool::thread_pool(std::size_t thread_count) :
+    thread_pool::thread_pool(std::size_t max_thread_count) :
         threads_{},
         callables_{},
         callables_mutex_{},
         callables_cv_{},
         stop_threads_{false}
     {
-        for (std::size_t thread_index = 0; thread_index < thread_count; ++thread_index)
+        for (std::size_t thread_index = 0; thread_index < max_thread_count; ++thread_index)
         {
             threads_.push_back(std::move(std::thread{&thread_pool::thread_main, this}));
         }
@@ -26,6 +26,11 @@ namespace parallel
         {
             thread.join();
         }
+    }
+
+    std::size_t thread_pool::thread_count() const
+    {
+        return threads_.size();
     }
 
     void thread_pool::thread_main()

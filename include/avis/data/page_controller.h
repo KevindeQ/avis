@@ -3,15 +3,15 @@
 
 #include "avis/common.h"
 #include "avis/data/page_view.h"
-#include "avis/io/file_descriptor.h"
+//#include "avis/io/file_descriptor.h"
 
 namespace data
 {
     class page_controller
     {
     public:
-        page_controller(io::basic_file_descriptor& file);
-        page_controller(io::basic_file_descriptor& file, const std::size_t page_size_in_bytes);
+        page_controller(/*io::basic_file_descriptor& file*/);
+        page_controller(/*io::basic_file_descriptor& file, */const std::size_t page_size_in_bytes);
 
         page_view fetch_page(const std::size_t page_index);
         page_view allocate_page();
@@ -25,7 +25,7 @@ namespace data
 
         page_view internal_allocate_page(const std::size_t offset, const std::size_t size);
 
-        io::basic_file_descriptor& descriptor;
+        /*io::basic_file_descriptor& descriptor;*/
         std::size_t page_size;
         page_view header_page;
 

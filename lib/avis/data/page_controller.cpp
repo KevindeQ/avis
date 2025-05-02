@@ -2,17 +2,17 @@
 
 namespace data
 {
-    page_controller::page_controller(io::basic_file_descriptor& file) :
-        descriptor{ file },
+    page_controller::page_controller(/*io::basic_file_descriptor& file*/) :
+        /*descriptor{ file },*/
         page_size{ page_size_default },
         header_page{}
     {
         load_header();
     }
 
-    page_controller::page_controller(io::basic_file_descriptor& file, const std::size_t page_size_in_bytes) :
-        descriptor{ file },
-        page_size{ page_size_in_bytes },
+    page_controller::page_controller(/*io::basic_file_descriptor& file,*/ const std::size_t page_size_in_bytes) :
+        /*descriptor{ file },
+        page_size{ page_size_in_bytes },*/
         header_page{}
     {
         initialize_empty_file();
@@ -218,7 +218,8 @@ namespace data
             throw std::runtime_error{ "Offset must be a multiple of page size" };
         }
 
-        std::span<unsigned char> view = descriptor.acquire_view(offset, size);
-        return page_view{ (offset / page_size) - 1, view };
+        /*std::span<unsigned char> view = descriptor.acquire_view(offset, size);
+        return page_view{ (offset / page_size) - 1, view };*/
+        return page_view{};
     }
 } // namespace data

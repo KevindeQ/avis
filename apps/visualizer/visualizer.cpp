@@ -28,7 +28,7 @@ visualizer::visualizer(basic_app_config& config) :
     global_camera_controller{},
 
     threads{ 3 },
-    file_load_service{ threads, 3 },
+    file_load_service{ threads, threads.thread_count() },
 
     current_inputs{},
     input_decoder{},
@@ -148,133 +148,126 @@ void visualizer::on_update(const step_timer& timer)
 
 void visualizer::on_render()
 {
-    //// Command list allocators can only be reset when the associated
-    //// command lists have finished execution on the GPU; apps should use
-    //// fences to determine GPU execution progress.
-    // throw_if_failed(command_allocators[frame_index]->Reset());
+    // Command list allocators can only be reset when the associated
+    // command lists have finished execution on the GPU; apps should use
+    // fences to determine GPU execution progress.
+     throw_if_failed(command_allocators[frame_index]->Reset());
 
-    //// However, when ExecuteCommandList() is called on a particular command
-    //// list, that command list can then be reset at any time and must be before
-    //// re-recording.
-    // throw_if_failed(command_list->Reset(command_allocators[frame_index].get(), pipeline_state.get()));
+    // However, when ExecuteCommandList() is called on a particular command
+    // list, that command list can then be reset at any time and must be before
+    // re-recording.
+     throw_if_failed(command_list->Reset(command_allocators[frame_index].get(), pipeline_state.get()));
 
-    //// Set necessary state.
-    // command_list->SetGraphicsRootSignature(root_signature.get());
+    // Set necessary state.
+     command_list->SetGraphicsRootSignature(root_signature.get());
 
-    // std::array<ID3D12DescriptorHeap*, 1> descriptor_heaps{ { heap_cbv.get() } };
-    // command_list->SetDescriptorHeaps(descriptor_heaps.size(), descriptor_heaps.data());
-    // command_list->SetGraphicsRootDescriptorTable(0, heap_cbv->GetGPUDescriptorHandleForHeapStart());
+     std::array<ID3D12DescriptorHeap*, 1> descriptor_heaps{ { heap_cbv.get() } };
+     command_list->SetDescriptorHeaps(descriptor_heaps.size(), descriptor_heaps.data());
+     command_list->SetGraphicsRootDescriptorTable(0, heap_cbv->GetGPUDescriptorHandleForHeapStart());
 
-    // command_list->RSSetViewports(1, &viewport);
-    // command_list->RSSetScissorRects(1, &scissor_rect);
+     command_list->RSSetViewports(1, &viewport);
+     command_list->RSSetScissorRects(1, &scissor_rect);
 
-    //// Indicate that the back buffer will be used as a render target.
-    // D3D12_RESOURCE_BARRIER barrier_render_target{};
-    // barrier_render_target.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    // barrier_render_target.Transition.pResource = render_targets[frame_index].get();
-    // barrier_render_target.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    // barrier_render_target.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    // barrier_render_target.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    // barrier_render_target.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    // command_list->ResourceBarrier(1, &barrier_render_target);
+    // Indicate that the back buffer will be used as a render target.
+     D3D12_RESOURCE_BARRIER barrier_render_target{};
+     barrier_render_target.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+     barrier_render_target.Transition.pResource = render_targets[frame_index].get();
+     barrier_render_target.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+     barrier_render_target.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     barrier_render_target.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     barrier_render_target.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+     command_list->ResourceBarrier(1, &barrier_render_target);
 
-    // D3D12_CPU_DESCRIPTOR_HANDLE handle_rtv{};
-    // handle_rtv.ptr = heap_rtv->GetCPUDescriptorHandleForHeapStart().ptr +
-    //                  static_cast<std::int64_t>(frame_index) * static_cast<std::uint64_t>(descriptor_size_rtv);
-    // command_list->OMSetRenderTargets(1, &handle_rtv, FALSE, nullptr);
+     D3D12_CPU_DESCRIPTOR_HANDLE handle_rtv{};
+     handle_rtv.ptr = heap_rtv->GetCPUDescriptorHandleForHeapStart().ptr +
+                      static_cast<std::int64_t>(frame_index) * static_cast<std::uint64_t>(descriptor_size_rtv);
+     command_list->OMSetRenderTargets(1, &handle_rtv, FALSE, nullptr);
 
-    //// Record commands.
-    // const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
-    // command_list->ClearRenderTargetView(handle_rtv, clearColor, 0, nullptr);
-    // command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
-    // command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
-    // command_list->DrawInstanced(vertices.size(), 1, 0, 0);
+    // Record commands.
+     const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
+     command_list->ClearRenderTargetView(handle_rtv, clearColor, 0, nullptr);
+     command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+     command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
+     command_list->DrawInstanced(vertices.size(), 1, 0, 0);
 
-    //// Indicate that the back buffer will now be used to present.
-    // D3D12_RESOURCE_BARRIER barrier_render_present{};
-    // barrier_render_present.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    // barrier_render_present.Transition.pResource = render_targets[frame_index].get();
-    // barrier_render_present.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    // barrier_render_present.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    // barrier_render_present.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    // barrier_render_present.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    // command_list->ResourceBarrier(1, &barrier_render_present);
+    // Indicate that the back buffer will now be used to present.
+     D3D12_RESOURCE_BARRIER barrier_render_present{};
+     barrier_render_present.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+     barrier_render_present.Transition.pResource = render_targets[frame_index].get();
+     barrier_render_present.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     barrier_render_present.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+     barrier_render_present.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     barrier_render_present.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+     command_list->ResourceBarrier(1, &barrier_render_present);
 
-    // throw_if_failed(command_list->Close());
+     throw_if_failed(command_list->Close());
 
-    //// Execute the command list.
-    // ID3D12CommandList* ppCommandLists[] = { command_list.get() };
-    // command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+    // Execute the command list.
+     ID3D12CommandList* ppCommandLists[] = { command_list.get() };
+     command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
-    //// Present the frame.
-    // throw_if_failed(swap_chain->Present(1, 0));
+    // Present the frame.
+     throw_if_failed(swap_chain->Present(1, 0));
 
-    // move_to_next_frame();
+     move_to_next_frame();
 
-    struct pass_data
-    {
-        /*graphics::virtual_resource res1;
-        graphics::virtual_resource res2;*/
-    };
+    //struct pass_data
+    //{
+    //    /*graphics::virtual_resource res1;
+    //    graphics::virtual_resource res2;*/
+    //};
 
-    render_graph::render_pipeline pipeline{};
-    auto resource_data1 = pipeline.add_graphics_pass<pass_data>(
-        "test 1",
-        [&](render_graph::render_pass_builder& builder, pass_data& data)
-        {
-            /*data.res1 = builder.create_buffer();
-            data.res2 = builder.create_texture();*/
-        },
-        [=](const pass_data& data, render_graph::resource_bag& resources, graphics::graphics_context& context)
-        {
-            /*context.configure_pipeline();*/
-            /*context.set_render_target();*/
-            /*context.set_vertex_buffer();*/
-            /*context.draw_instanced(3, 1, 0, 0);*/
-        });
+    //render_graph::render_pipeline pipeline{};
+    //auto resource_data1 = pipeline.add_graphics_pass<pass_data>(
+    //    "test 1",
+    //    [&](render_graph::render_pass_builder& builder, pass_data& data)
+    //    {
+    //        /*data.res1 = builder.create_buffer();
+    //        data.res2 = builder.create_texture();*/
+    //    },
+    //    [=](const pass_data& data, render_graph::resource_bag& resources, graphics::graphics_context& context)
+    //    {
+    //        /*context.configure_pipeline();*/
+    //        /*context.set_render_target();*/
+    //        /*context.set_vertex_buffer();*/
+    //        /*context.draw_instanced(3, 1, 0, 0);*/
+    //    });
 
-    auto resource_data2 = pipeline.add_compute_pass<pass_data>(
-        "test 2",
-        [&](render_graph::render_pass_builder& builder, pass_data& data)
-        {
-            /*data.res2 = builder.read(resource_data1.res1);
-            data.res3 = builder.write(resource_data1.res2);*/
-        },
-        [=](const pass_data& data, render_graph::resource_bag& resources, graphics::compute_context& context)
-        {
-            /*context.configure_pipeline(pso_cs_draw_point_cloud);
-            context.dispatch(1, 1, 1);*/
-        });
+    //auto resource_data2 = pipeline.add_compute_pass<pass_data>(
+    //    "test 2",
+    //    [&](render_graph::render_pass_builder& builder, pass_data& data)
+    //    {
+    //        /*data.res2 = builder.read(resource_data1.res1);
+    //        data.res3 = builder.write(resource_data1.res2);*/
+    //    },
+    //    [=](const pass_data& data, render_graph::resource_bag& resources, graphics::compute_context& context)
+    //    {
+    //        /*context.configure_pipeline(pso_cs_draw_point_cloud);
+    //        context.dispatch(1, 1, 1);*/
+    //    });
 
-    auto resource_data3 = pipeline.add_copy_pass<pass_data>(
-        "test 3",
-        [&](render_graph::render_pass_builder& builder, pass_data& data)
-        {
-            /*data.res1 = builder.create_texture();
-            data.res2 = builder.write(resource_data2.res3);*/
-        },
-        [=](const pass_data& data, render_graph::resource_bag& resources, graphics::copy_context& context) {
+    //auto resource_data3 = pipeline.add_copy_pass<pass_data>(
+    //    "test 3",
+    //    [&](render_graph::render_pass_builder& builder, pass_data& data)
+    //    {
+    //        /*data.res1 = builder.create_texture();
+    //        data.res2 = builder.write(resource_data2.res3);*/
+    //    },
+    //    [=](const pass_data& data, render_graph::resource_bag& resources, graphics::copy_context& context) {
 
-        });
+    //    });
 
-    pipeline.build();
-    pipeline.execute();
+    //pipeline.build();
+    //pipeline.execute();
 }
 
 void visualizer::load_content()
 {
-    /*io::file_descriptor test_file =
-        file_context.create_descriptor("E:\\Projects\\D3D12TechDemo\\data\\models\\buddha\\buddha.obj");*/
-    /*std::future<file_output> test_file_contents = file_load_service.async_read_file<file_output>(
-        test_file, [](const streams::memory_stream & data) { return file_output{}; });*/
-    /*std::future<file_output> test_file_contents =
-        file_load_service.async_read_file<file_output>(test_file, file_parser{});*/
-
     std::filesystem::path folder_lidar_data{
         "E:\\Data\\KITTI-360\\data_3d_semantics\\train\\2013_05_28_drive_0000_sync\\static"
     };
 
-    std::vector<std::future<geometry::data_store>> promises_data{};
+    std::vector<io::read_handle<geometry::data_store>> handles{};
 
     std::size_t count = 0;
     std::size_t max_count = 10;
@@ -288,21 +281,21 @@ void visualizer::load_content()
 
         if (directory_entry.is_regular_file())
         {
-            io::file_descriptor ply_file = file_context.create_descriptor(directory_entry);
-            std::future<geometry::data_store> data_promise = file_load_service.async_read_file<geometry::data_store>(
-                ply_file,
-                [](const streams::memory_stream& data)
-                {
-                    data_formats::ply::ply_parser parser;
-                    return parser.parse(data);
-                });
-            promises_data.push_back(std::move(data_promise));
+            io::read_handle<geometry::data_store> result =
+                file_load_service.read_structured_file_async<geometry::data_store>(
+                    directory_entry,
+                    [](std::span<unsigned char> data)
+                    {
+                        data_formats::ply::ply_parser parser;
+                        return parser.parse(streams::memory_stream{ data });
+                    });
+            handles.push_back(std::move(result));
         }
 
         count += 1;
     }
 
-    for (std::future<geometry::data_store>& promise : promises_data)
+    for (io::read_handle<geometry::data_store>& promise : handles)
     {
         geometry::data_store geometry_data = promise.get();
         load_vertices(geometry_data);
@@ -639,30 +632,16 @@ void visualizer::load_assets()
         com_ptr<ID3DBlob> vertexShader;
         com_ptr<ID3DBlob> pixelShader;
 
-        io::file_descriptor file_cso_vs = file_context.create_descriptor(".\\assets\\cso\\triangle_vs.cso");
-        std::future<std::vector<unsigned char>> shader_ref_vs =
-            file_load_service.async_read_file<std::vector<unsigned char>>(
-                file_cso_vs,
-                [&](const streams::memory_stream& stream)
-                {
-                    std::span<unsigned char> bytes = stream.data();
-                    return std::vector<unsigned char>{ bytes.begin(), bytes.end() };
-                });
+        io::read_handle<std::vector<unsigned char>> shader_ref_vs =
+            file_load_service.read_file_async(".\\assets\\cso\\triangle_vs.cso");
         std::vector<unsigned char> bytes_vs = shader_ref_vs.get();
 
         D3D12_SHADER_BYTECODE byte_code_vs{};
         byte_code_vs.pShaderBytecode = bytes_vs.data();
         byte_code_vs.BytecodeLength = bytes_vs.size();
 
-        io::file_descriptor file_cso_ps = file_context.create_descriptor(".\\assets\\cso\\triangle_ps.cso");
-        std::future<std::vector<unsigned char>> shader_ref_ps =
-            file_load_service.async_read_file<std::vector<unsigned char>>(
-                file_cso_ps,
-                [&](const streams::memory_stream& stream)
-                {
-                    std::span<unsigned char> bytes = stream.data();
-                    return std::vector<unsigned char>{ bytes.begin(), bytes.end() };
-                });
+        io::read_handle<std::vector<unsigned char>> shader_ref_ps =
+            file_load_service.read_file_async(".\\assets\\cso\\triangle_ps.cso");
         std::vector<unsigned char> bytes_ps = shader_ref_ps.get();
 
         D3D12_SHADER_BYTECODE byte_code_ps{};
@@ -968,8 +947,3 @@ int __stdcall wWinMain(
 
     return engine.execute<visualizer>(configuration);
 }
-
-// file_output file_parser::operator()(const streams::memory_stream& data)
-//{
-//     return file_output{};
-// }

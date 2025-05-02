@@ -1,78 +1,42 @@
 #include "avis/io/io_service.h"
 
 #include "avis/common.h"
-#include "avis/io/io_context.h"
-#include "avis/io/io_write_request.h"
 
 namespace io
 {
-    io_service::io_service(parallel::thread_pool& threads, std::size_t max_thread_count) : stop_service_{false}
+    io_service::io_service(parallel::thread_pool& threads, std::size_t max_thread_count) :
+        execution_context{},
+        execution_context_guard{ asio::make_work_guard(execution_context) }
     {
-        for (std::size_t thread_index = 0; thread_index < max_thread_count; ++thread_index)
+        for (std::size_t index = 0; index < max_thread_count; ++index)
         {
-            threads.execute([this]() { operation_servicing_main(); });
+            threads.execute([this]() { execution_context.run(); });
         }
     }
 
     io_service::~io_service()
     {
-        stop_service_ = true;
-        ops_queue_cv_.notify_all();
+        // Allow the io_context to finish all work before stopping
+        execution_context_guard.reset();
+
+        // Stop execution as soon as possible
+        execution_context.stop();
     }
 
-    std::future<streams::memory_stream> io_service::async_read_file(file_descriptor descriptor)
+    read_handle<std::vector<unsigned char>> io_service::read_file_async(const std::filesystem::path& file)
     {
-        std::unique_ptr<io_read_request<streams::memory_stream>> new_request =
-            std::make_unique<io_read_request<streams::memory_stream>>(descriptor);
-        std::future<streams::memory_stream> response = new_request->get_future();
-
-        enqueue_request(std::move(new_request));
-
-        return response;
+        asio::io_context::executor_type executor = execution_context.get_executor();
+        std::future<std::vector<unsigned char>> result_future = asio::co_spawn(
+            executor,
+            read_file_wrapper<std::vector<unsigned char>>(
+                file,
+                [=](std::span<unsigned char> file_contents) { return this->identity_type_converter(file_contents); }),
+            asio::use_future);
+        return read_handle<std::vector<unsigned char>>{ std::move(result_future) };
     }
 
-    std::future<void> io_service::async_write_file(file_descriptor descriptor)
+    std::vector<unsigned char> io_service::identity_type_converter(std::span<unsigned char> file_contents)
     {
-        std::unique_ptr<io_write_request<void>> new_request = std::make_unique<io_write_request<void>>(descriptor);
-        std::future<void> response = new_request->get_future();
-
-        enqueue_request(std::move(new_request));
-
-        return response;
-    }
-
-    void io_service::operation_servicing_main()
-    {
-        while (true)
-        {
-            std::unique_lock<std::mutex> lock(ops_queue_mutex_);
-            ops_queue_cv_.wait(lock, [this]() { return stop_service_ || !ops_queue_.empty(); });
-
-            if (stop_service_ && ops_queue_.empty())
-            {
-                lock.unlock();
-                break;
-            }
-
-            std::unique_ptr<basic_io_request> request = std::move(ops_queue_.front());
-            ops_queue_.pop();
-
-            lock.unlock();
-
-            process_request(request);
-        }
-    }
-
-    void io_service::enqueue_request(std::unique_ptr<basic_io_request>&& request)
-    {
-        std::scoped_lock<std::mutex> lock{ops_queue_mutex_};
-
-        ops_queue_.push(std::forward<std::unique_ptr<basic_io_request>>(request));
-        ops_queue_cv_.notify_one();
-    }
-
-    void io_service::process_request(const std::unique_ptr<basic_io_request>& request)
-    {
-        request->process();
+        return { file_contents.begin(), file_contents.end() };
     }
 } // namespace io
