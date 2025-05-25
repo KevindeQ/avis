@@ -45,8 +45,6 @@ target_link_libraries(AVIS_LIB
 target_sources(AVIS_LIB
 	PRIVATE
 		avis/configuration.cpp
-		avis/configuration/configuration_parser.cpp
-		avis/configuration/ini_parser.cpp
 		avis/data/page_controller.cpp
 		avis/data/page_view.cpp
 		avis/data/point_cloud.cpp
