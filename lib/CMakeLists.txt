@@ -38,6 +38,7 @@ target_link_libraries(AVIS_LIB
 		ASIO
 		Eigen3::Eigen
 	PRIVATE
+		ryml::ryml
 		xxHash::xxhash
 )
 

@@ -1,0 +1,43 @@
+!yamlscript/v0:  # data mode
+
+:use common: :all
+:: workflow-setup()
+
+items =::
+    runs-on: windows-${{matrix.os}}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - {std: 11, name: vs2019/64, os: 2019, gen: Visual Studio 16 2019, arch:   x64}
+        - {std: 11, name: vs2019/32, os: 2019, gen: Visual Studio 16 2019, arch: Win32}
+        - {std: 17, name: vs2019/64, os: 2019, gen: Visual Studio 16 2019, arch:   x64}
+        - {std: 17, name: vs2019/32, os: 2019, gen: Visual Studio 16 2019, arch: Win32}
+        - {std: 11, name: vs2022/64, os: 2022, gen: Visual Studio 17 2022, arch:   x64}
+        - {std: 11, name: vs2022/32, os: 2022, gen: Visual Studio 17 2022, arch: Win32}
+        - {std: 17, name: vs2022/64, os: 2022, gen: Visual Studio 17 2022, arch:   x64}
+        - {std: 17, name: vs2022/32, os: 2022, gen: Visual Studio 17 2022, arch: Win32}
+        - {std: 20, name: vs2022/64, os: 2022, gen: Visual Studio 17 2022, arch:   x64}
+        - {std: 20, name: vs2022/32, os: 2022, gen: Visual Studio 17 2022, arch: Win32}
+
+jobs:
+
+  vsdebug:
+    :: setup-job('windows' 'vsdebug')
+    name: ${{matrix.name}}bit/c++${{matrix.std}}/debug
+    :: items
+    steps:
+    - :: checkout-action       #   generator         architecture      buildtype shared cflags
+    - :: run-vs-manual-with-flags('${{matrix.gen}}' '${{matrix.arch}}' 'Debug'   'ON'  '/MDd /Zi /Ob0 /Od /RTC1')
+    - :: run-vs-manual-with-flags('${{matrix.gen}}' '${{matrix.arch}}' 'Debug'   'OFF' '/MDd /Zi /Ob0 /Od /RTC1')
+    - :: run-vs-manual-with-flags('${{matrix.gen}}' '${{matrix.arch}}' 'Release' 'OFF' '/MD /Os /DNDEBUG')
+
+  vsrelease:
+    :: setup-job('windows' 'vsrelease')
+    name: ${{matrix.name}}bit/c++${{matrix.std}}/release
+    :: items
+    steps:
+    - :: checkout-action       #   generator         architecture      buildtype shared cflags
+    - :: run-vs-manual-with-flags('${{matrix.gen}}' '${{matrix.arch}}' 'Release' 'OFF' '/MD /O1 /Ob1 /DNDEBUG')
+    - :: run-vs-manual-with-flags('${{matrix.gen}}' '${{matrix.arch}}' 'Release' 'OFF' '/MD /O2 /Ob2 /DNDEBUG')
+    - :: run-vs-manual-with-flags('${{matrix.gen}}' '${{matrix.arch}}' 'Release' 'OFF' '/MD /O3 /Ob3 /DNDEBUG')
