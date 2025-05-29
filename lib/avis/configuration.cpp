@@ -1,41 +1,78 @@
 #include "avis/configuration.h"
 
 #include "avis/common.h"
-#include "avis/configuration/configuration_parser.h"
-#include "avis/configuration/ini_parser.h"
+
+#include <ryml.hpp>
+#include <ryml_std.hpp>
+
+engine_configuration engine_configuration::construct_from_yaml(const std::span<unsigned char> file_contents)
+{
+    return engine_configuration{};
+}
 
 configuration_builder::configuration_builder() :
-    // TODO: Think about making number of threads configurable
-    threads{max_thread_count},
-    file_load_service{threads, max_thread_count}
+    root_path{},
+    config_file_handles{},
+
+    threads{ max_thread_count },
+    file_load_service{ threads, max_thread_count }
 {}
 
-void configuration_builder::use_root_path(const std::filesystem::path& root_path)
+void configuration_builder::use_root_path(const std::filesystem::path& path)
 {
-    root_path_ = root_path;
+    root_path = path;
 }
 
-void configuration_builder::configure_from_json(const std::filesystem::path& config_file)
+void configuration_builder::use_exe_as_root()
 {
-    /*io::file_descriptor new_descriptor = file_context.create_descriptor(config_file);
-    std::future<engine_configuration> file_view = file_load_service.async_read_file<engine_configuration>(
-        new_descriptor, [this](const streams::memory_stream& stream) { return parse_json_configuration(stream); });
-    config_files_.push_back(std::move(file_view));*/
+    std::wstring buffer;
+    buffer.resize(MAX_PATH);
+
+    // Keep growing the buffer until GetModuleFileNameW has enough space to store the path
+    unsigned long bytes_copied = 0;
+    do
+    {
+        bytes_copied = GetModuleFileNameW(NULL, buffer.data(), buffer.size());
+        if (bytes_copied >= buffer.size())
+        {
+            unsigned long error_code = GetLastError();
+            if (error_code == ERROR_INSUFFICIENT_BUFFER)
+            {
+                buffer.resize(buffer.size() + MAX_PATH);
+            }
+            else
+            {
+                throw std::system_error{ std::error_code{ static_cast<int>(error_code), std::system_category() } };
+            }
+        }
+    }
+    while (bytes_copied >= buffer.size());
+
+    // Truncate buffer to remove excess space
+    buffer.resize(bytes_copied);
+
+    root_path = std::filesystem::path{ buffer }.remove_filename();
 }
 
-void configuration_builder::configure_from_ini(const std::filesystem::path& config_file)
+void configuration_builder::configure_from_yaml(const std::filesystem::path& config_file)
 {
-    /*io::file_descriptor new_descriptor = file_context.create_descriptor(config_file);
-    std::future<engine_configuration> file_view = file_load_service.async_read_file<engine_configuration>(
-        new_descriptor, [this](const streams::memory_stream& stream) { return parse_ini_configuration(stream); });
-    config_files_.push_back(std::move(file_view));*/
+    std::filesystem::path file_path = config_file;
+    if (config_file.is_relative())
+    {
+        file_path = root_path / config_file;
+    }
+
+    io::read_handle<engine_configuration> handle = file_load_service.read_structured_file_async<engine_configuration>(
+        file_path,
+        [this](std::span<unsigned char> contents) { return engine_configuration::construct_from_yaml(contents); });
+    config_file_handles.push_back(std::move(handle));
 }
 
 void configuration_builder::configure_from_commandline(const char* argv[], const std::uint32_t argc) {}
 
 engine_configuration configuration_builder::build()
 {
-    for (auto& config_file : config_files_)
+    for (auto& config_file : config_file_handles)
     {
         try
         {
@@ -48,23 +85,7 @@ engine_configuration configuration_builder::build()
         }
     }
 
-    config_files_.clear();
+    config_file_handles.clear();
 
     return engine_configuration{};
 }
-
-//engine_configuration configuration_builder::parse_json_configuration(const streams::memory_stream& stream)
-//{
-//    return engine_configuration();
-//}
-//
-//engine_configuration configuration_builder::parse_ini_configuration(const streams::memory_stream& stream)
-//{
-//    std::span<unsigned char> data = stream.data();
-//    std::string text{reinterpret_cast<char*>(data.data()), data.size()};
-//
-//    configuration::ini_parser parser;
-//    configuration::configuration config = parser.parse(text);
-//
-//    return engine_configuration();
-//}

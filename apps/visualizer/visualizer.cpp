@@ -929,9 +929,8 @@ int __stdcall wWinMain(
     engine_builder.configure_engine(
         [](configuration_builder& builder)
         {
-            // builder.use_root_path("");
-            // builder.configure_from_json("E:\\Projects\\D3D12TechDemo\\build\\bin\\Debug\\test.txt");
-            // builder.configure_from_ini("");
+            builder.use_exe_as_root();
+            builder.configure_from_yaml("assets\\configuration\\visualizer.yaml");
             // builder.configure_from_commandline();
         });
     engine_builder.configure_logging(
