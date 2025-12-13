@@ -12,6 +12,8 @@
 #include "avis/parallel/thread_pool.h"
 #include "camera.h"
 #include "camera_controller.h"
+#include "events/event_dispatcher.h"
+#include "measurements/measurement.h"
 
 enum class input_actions
 {
@@ -75,6 +77,10 @@ private:
     void update_viewport_and_scissor();
 
     void configure_input();
+
+    // Handle incoming sensor measurements
+    void handle_measurement_imu();
+    void handle_measurement_gps();
 
 private:
     struct float3
@@ -144,6 +150,8 @@ private:
     visualizer_input_decoder input_decoder;
     visualizer_input_context global_input_context;
     visualizer_input_context movement_input_context;
+
+    events::event_dispatcher<measurements::measurement> measurements_bus;
 
     static constexpr double dead_zone_magnitude = 0.04f;
 };

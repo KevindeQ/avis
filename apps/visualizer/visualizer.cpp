@@ -33,7 +33,9 @@ visualizer::visualizer(basic_app_config& config) :
     current_inputs{},
     input_decoder{},
     global_input_context{},
-    movement_input_context{}
+    movement_input_context{},
+
+    measurements_bus{}
 {
     configure_rendering(false);
     configure_window_resize();
@@ -57,6 +59,10 @@ visualizer::~visualizer()
 
 void visualizer::on_update(const step_timer& timer)
 {
+    // Process all buffered measurements
+    measurements_bus.process_events();
+
+    // Handle user inputs
     if (current_inputs.contains(input_actions::exit_app))
     {
         render_window.close();
@@ -151,114 +157,114 @@ void visualizer::on_render()
     // Command list allocators can only be reset when the associated
     // command lists have finished execution on the GPU; apps should use
     // fences to determine GPU execution progress.
-     throw_if_failed(command_allocators[frame_index]->Reset());
+    throw_if_failed(command_allocators[frame_index]->Reset());
 
     // However, when ExecuteCommandList() is called on a particular command
     // list, that command list can then be reset at any time and must be before
     // re-recording.
-     throw_if_failed(command_list->Reset(command_allocators[frame_index].get(), pipeline_state.get()));
+    throw_if_failed(command_list->Reset(command_allocators[frame_index].get(), pipeline_state.get()));
 
     // Set necessary state.
-     command_list->SetGraphicsRootSignature(root_signature.get());
+    command_list->SetGraphicsRootSignature(root_signature.get());
 
-     std::array<ID3D12DescriptorHeap*, 1> descriptor_heaps{ { heap_cbv.get() } };
-     command_list->SetDescriptorHeaps(descriptor_heaps.size(), descriptor_heaps.data());
-     command_list->SetGraphicsRootDescriptorTable(0, heap_cbv->GetGPUDescriptorHandleForHeapStart());
+    std::array<ID3D12DescriptorHeap*, 1> descriptor_heaps{ { heap_cbv.get() } };
+    command_list->SetDescriptorHeaps(descriptor_heaps.size(), descriptor_heaps.data());
+    command_list->SetGraphicsRootDescriptorTable(0, heap_cbv->GetGPUDescriptorHandleForHeapStart());
 
-     command_list->RSSetViewports(1, &viewport);
-     command_list->RSSetScissorRects(1, &scissor_rect);
+    command_list->RSSetViewports(1, &viewport);
+    command_list->RSSetScissorRects(1, &scissor_rect);
 
     // Indicate that the back buffer will be used as a render target.
-     D3D12_RESOURCE_BARRIER barrier_render_target{};
-     barrier_render_target.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-     barrier_render_target.Transition.pResource = render_targets[frame_index].get();
-     barrier_render_target.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-     barrier_render_target.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-     barrier_render_target.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-     barrier_render_target.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-     command_list->ResourceBarrier(1, &barrier_render_target);
+    D3D12_RESOURCE_BARRIER barrier_render_target{};
+    barrier_render_target.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier_render_target.Transition.pResource = render_targets[frame_index].get();
+    barrier_render_target.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier_render_target.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier_render_target.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier_render_target.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    command_list->ResourceBarrier(1, &barrier_render_target);
 
-     D3D12_CPU_DESCRIPTOR_HANDLE handle_rtv{};
-     handle_rtv.ptr = heap_rtv->GetCPUDescriptorHandleForHeapStart().ptr +
-                      static_cast<std::int64_t>(frame_index) * static_cast<std::uint64_t>(descriptor_size_rtv);
-     command_list->OMSetRenderTargets(1, &handle_rtv, FALSE, nullptr);
+    D3D12_CPU_DESCRIPTOR_HANDLE handle_rtv{};
+    handle_rtv.ptr = heap_rtv->GetCPUDescriptorHandleForHeapStart().ptr +
+                     static_cast<std::int64_t>(frame_index) * static_cast<std::uint64_t>(descriptor_size_rtv);
+    command_list->OMSetRenderTargets(1, &handle_rtv, FALSE, nullptr);
 
     // Record commands.
-     const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
-     command_list->ClearRenderTargetView(handle_rtv, clearColor, 0, nullptr);
-     command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
-     command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
-     command_list->DrawInstanced(vertices.size(), 1, 0, 0);
+    const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
+    command_list->ClearRenderTargetView(handle_rtv, clearColor, 0, nullptr);
+    command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+    command_list->IASetVertexBuffers(0, 1, &vertex_buffer_view);
+    command_list->DrawInstanced(vertices.size(), 1, 0, 0);
 
     // Indicate that the back buffer will now be used to present.
-     D3D12_RESOURCE_BARRIER barrier_render_present{};
-     barrier_render_present.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-     barrier_render_present.Transition.pResource = render_targets[frame_index].get();
-     barrier_render_present.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-     barrier_render_present.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-     barrier_render_present.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-     barrier_render_present.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-     command_list->ResourceBarrier(1, &barrier_render_present);
+    D3D12_RESOURCE_BARRIER barrier_render_present{};
+    barrier_render_present.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier_render_present.Transition.pResource = render_targets[frame_index].get();
+    barrier_render_present.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier_render_present.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    barrier_render_present.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier_render_present.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    command_list->ResourceBarrier(1, &barrier_render_present);
 
-     throw_if_failed(command_list->Close());
+    throw_if_failed(command_list->Close());
 
     // Execute the command list.
-     ID3D12CommandList* ppCommandLists[] = { command_list.get() };
-     command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+    ID3D12CommandList* ppCommandLists[] = { command_list.get() };
+    command_queue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
     // Present the frame.
-     throw_if_failed(swap_chain->Present(1, 0));
+    throw_if_failed(swap_chain->Present(1, 0));
 
-     move_to_next_frame();
+    move_to_next_frame();
 
-    //struct pass_data
+    // struct pass_data
     //{
-    //    /*graphics::virtual_resource res1;
-    //    graphics::virtual_resource res2;*/
-    //};
+    //     /*graphics::virtual_resource res1;
+    //     graphics::virtual_resource res2;*/
+    // };
 
-    //render_graph::render_pipeline pipeline{};
-    //auto resource_data1 = pipeline.add_graphics_pass<pass_data>(
-    //    "test 1",
-    //    [&](render_graph::render_pass_builder& builder, pass_data& data)
-    //    {
-    //        /*data.res1 = builder.create_buffer();
-    //        data.res2 = builder.create_texture();*/
-    //    },
-    //    [=](const pass_data& data, render_graph::resource_bag& resources, graphics::graphics_context& context)
-    //    {
-    //        /*context.configure_pipeline();*/
-    //        /*context.set_render_target();*/
-    //        /*context.set_vertex_buffer();*/
-    //        /*context.draw_instanced(3, 1, 0, 0);*/
+    // render_graph::render_pipeline pipeline{};
+    // auto resource_data1 = pipeline.add_graphics_pass<pass_data>(
+    //     "test 1",
+    //     [&](render_graph::render_pass_builder& builder, pass_data& data)
+    //     {
+    //         /*data.res1 = builder.create_buffer();
+    //         data.res2 = builder.create_texture();*/
+    //     },
+    //     [=](const pass_data& data, render_graph::resource_bag& resources, graphics::graphics_context& context)
+    //     {
+    //         /*context.configure_pipeline();*/
+    //         /*context.set_render_target();*/
+    //         /*context.set_vertex_buffer();*/
+    //         /*context.draw_instanced(3, 1, 0, 0);*/
+    //     });
+
+    // auto resource_data2 = pipeline.add_compute_pass<pass_data>(
+    //     "test 2",
+    //     [&](render_graph::render_pass_builder& builder, pass_data& data)
+    //     {
+    //         /*data.res2 = builder.read(resource_data1.res1);
+    //         data.res3 = builder.write(resource_data1.res2);*/
+    //     },
+    //     [=](const pass_data& data, render_graph::resource_bag& resources, graphics::compute_context& context)
+    //     {
+    //         /*context.configure_pipeline(pso_cs_draw_point_cloud);
+    //         context.dispatch(1, 1, 1);*/
+    //     });
+
+    // auto resource_data3 = pipeline.add_copy_pass<pass_data>(
+    //     "test 3",
+    //     [&](render_graph::render_pass_builder& builder, pass_data& data)
+    //     {
+    //         /*data.res1 = builder.create_texture();
+    //         data.res2 = builder.write(resource_data2.res3);*/
+    //     },
+    //     [=](const pass_data& data, render_graph::resource_bag& resources, graphics::copy_context& context) {
+
     //    });
 
-    //auto resource_data2 = pipeline.add_compute_pass<pass_data>(
-    //    "test 2",
-    //    [&](render_graph::render_pass_builder& builder, pass_data& data)
-    //    {
-    //        /*data.res2 = builder.read(resource_data1.res1);
-    //        data.res3 = builder.write(resource_data1.res2);*/
-    //    },
-    //    [=](const pass_data& data, render_graph::resource_bag& resources, graphics::compute_context& context)
-    //    {
-    //        /*context.configure_pipeline(pso_cs_draw_point_cloud);
-    //        context.dispatch(1, 1, 1);*/
-    //    });
-
-    //auto resource_data3 = pipeline.add_copy_pass<pass_data>(
-    //    "test 3",
-    //    [&](render_graph::render_pass_builder& builder, pass_data& data)
-    //    {
-    //        /*data.res1 = builder.create_texture();
-    //        data.res2 = builder.write(resource_data2.res3);*/
-    //    },
-    //    [=](const pass_data& data, render_graph::resource_bag& resources, graphics::copy_context& context) {
-
-    //    });
-
-    //pipeline.build();
-    //pipeline.execute();
+    // pipeline.build();
+    // pipeline.execute();
 }
 
 void visualizer::load_content()
@@ -311,6 +317,12 @@ void visualizer::load_content()
         Eigen::Vector3f{ -3678.0, 114.0f, -904.0f },
         Eigen::Vector3f::UnitY());
     global_camera_controller = camera_controller{ &global_camera };
+
+    // Route incoming measurements to the appropriate handling functions
+    measurements_bus.on_event<measurements::measurement_imu>(
+        "imu", [this](const measurements::measurement_imu& measurement) { this->handle_measurement_imu(); });
+    measurements_bus.on_event<measurements::measurement_gps>(
+        "gps", [this](const measurements::measurement_gps& measurement) { this->handle_measurement_gps(); });
 }
 
 void visualizer::load_vertices(const geometry::data_store& geometry_data)
@@ -921,6 +933,10 @@ void visualizer::configure_input()
             return DefWindowProcW(render_window.native_handle(), WM_INPUT, wparam, lparam);
         });
 }
+
+void visualizer::handle_measurement_imu() {}
+
+void visualizer::handle_measurement_gps() {}
 
 int __stdcall wWinMain(
     _In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nShowCmd)

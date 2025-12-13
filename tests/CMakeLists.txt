@@ -24,12 +24,13 @@ set_target_properties(AVIS_TESTS
 
 target_link_libraries(AVIS_TESTS
 	PRIVATE
+		AVIS_LIB
+
 		Catch2::Catch2WithMain)
 
 target_sources(AVIS_TESTS
 	PRIVATE
-		unit_tests.cpp
-)
+		tests_circular_buffer.cpp)
 
 include(CTest)
 add_test(NAME "Avis Tests" COMMAND AVIS_TESTS)

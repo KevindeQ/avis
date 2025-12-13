@@ -48,6 +48,8 @@ target_sources(AVIS_LIB
 		avis/data/page_controller.cpp
 		avis/data/page_view.cpp
 		avis/data/point_cloud.cpp
+		avis/data/serialization/memory_view_reader.cpp
+		avis/data/serialization/memory_view_writer.cpp
 		avis/data_formats/json/json_parser.cpp
 		avis/data_formats/json/json_tokenizer.cpp
 		avis/data_formats/ply/ply_parser.cpp

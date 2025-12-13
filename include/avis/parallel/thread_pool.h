@@ -83,11 +83,11 @@ namespace parallel
         std::future<std::invoke_result_t<callable_t, arguments_t...>>>>
         thread_pool::execute(callable_t callable, arguments_t&&... arguments)
     {
-        std::packaged_task<std::invoke_result_t<callable_t, arguments_t>> callable_wrapper{
+        std::packaged_task<std::invoke_result_t<callable_t, arguments_t...>> callable_wrapper{
             [lambda_callable = std::move(callable),
              lambda_arguments = std::make_tuple(std::forward<arguments>(arguments)...)]() mutable
             { std::apply(std::move(lambda_callable), std::move(lambda_arguments)); }};
-        std::future<std::invoke_result_t<callable_t, arguments_t>> callable_result = callable_wrapper.get_future();
+        std::future<std::invoke_result_t<callable_t, arguments_t...>> callable_result = callable_wrapper.get_future();
 
         enqueue_callable(std::move(callable_wrapper));
 
