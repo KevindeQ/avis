@@ -1,0 +1,2 @@
+from data_trace.types.type_gps import GpsTypeDeclaration
+from data_trace.types.type_orientation import OrientationTypeDeclaration

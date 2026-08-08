@@ -1,0 +1,35 @@
+version: 1
+disable_existing_loggers: true
+
+
+formatters:
+    standard:
+        format: "%(asctime)s | %(module)s | %(levelname)s - %(message)s"
+    error:
+        format: "%(levelname)s <PID %(process)d:%(processName)s> %(name)s.%(funcName)s(): %(message)s"
+
+handlers:
+    console:
+        class: logging.StreamHandler
+        level: INFO
+        formatter: standard
+        stream: ext://sys.stdout
+
+    log_file:
+        class: logging.handlers.RotatingFileHandler
+        level: DEBUG
+        formatter: standard
+        filename: debug.log
+        maxBytes: 10485760 # 10MB
+        encoding: utf8
+
+root:
+    level: NOTSET
+    handlers: [console]
+    propogate: yes
+
+loggers:
+    data_trace:
+        level: DEBUG
+        handlers: [console, log_file]
+        propogate: no

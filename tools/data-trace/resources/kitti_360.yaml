@@ -1,0 +1,34 @@
+version: 1
+
+pack:
+  root_directory: D:/Projects/avis/data/
+
+  definitions:
+    - name: Pose
+      root_directory: D:/Data/KITTI-360
+      
+      output: D:/Projects/avis/data/pose.bin
+      output_format: pack
+      output_format_arguments:
+        page_size: 8192
+
+      data_streams:
+        - name: Position
+          files: [ data_poses_oxts/2013_05_28_drive_0000_extract/oxts/data/*.txt ]
+
+          input_format: oxts
+          type_declaration: gps
+          mapping:
+            x: lat
+            y: lon
+            z: alt
+
+        - name: Orientation
+          files: [ data_poses_oxts/2013_05_28_drive_0000_extract/oxts/data/*.txt ]
+
+          input_format: oxts
+          type_declaration: orientation
+          mapping:
+            rotation_x: roll
+            rotation_y: pitch
+            rotation_z: yaw
