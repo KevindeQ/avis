@@ -100,16 +100,18 @@ Cpp11BracedListStyle: false
 #   - KJ_IF_MAYBE
 IncludeBlocks:   Regroup
 IncludeCategories:
-  - Regex:    '^"[[:alnum:].]+.h"$'
-    Priority: 10
   - Regex:    '^"avis\/'
     Priority: 20
-  - Regex:    '^<(asio|eigen|entt|h3|stdexec)\/.+(.h|.hpp)?>$'
+  - Regex:    '^<(asio|eigen|entt|exec|h3|stdexec)\/.+(.h|.hpp)?>$'
     Priority: 30
-  - Regex:    '^<Qt.+>$'
+  - Regex:    '^<(Qt|Q).+>$'
     Priority: 30
-  - Regex:    '^<.*>$'
+  - Regex:    '^<catch2\/.+\.hpp>$'
     Priority: 40
+  - Regex:    '^"[[:alnum:]\_\/]+.h"$'
+    Priority: 10
+  - Regex:    '^<.*>$'
+    Priority: 50
 # IncludeIsMainRegex: '(Test)?$'
 # IncludeIsMainSourceRegex: ''
 # IndentAccessModifiers: false
