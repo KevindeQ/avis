@@ -42,7 +42,6 @@ Each task document has an **Open points** section. They are collected here so th
 | Document | Open point |
 |---|---|
 | 00 | A fully offline fresh configure needs Catch2 vendored and stdexec added without its rapids-cmake download (Task 0 only guarantees the new libraries add no downloads) |
-| 01 | Where generic error codes such as `pool_exhausted` are defined (proposal: one `avis::generic_errc` enum in `error.h`) |
 | 03 | The design reads a victim's inbox with `try_pop` from thieves, but a Vyukov queue is single-consumer (proposal: serialise the consumer side with a try-lock) |
 | 03 | How exceptions inside `then` bodies become `avis::error` "at the scheduler boundary" (stdexec delivers `std::exception_ptr`) |
 | 03 | How "`sync_wait` from a worker asserts" is enforced (stdexec's `sync_wait` can't be hooked for arbitrary senders) |

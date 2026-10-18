@@ -47,6 +47,8 @@ target_link_libraries(AVIS_LIB
 
 target_sources(AVIS_LIB
 	PRIVATE
+		error.cpp
+		log.cpp
 		virtual_clock_state.cpp
 
 		scene/semantic_scene_graph.cpp

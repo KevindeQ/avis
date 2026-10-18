@@ -45,7 +45,7 @@ struct thread_record
 ## 2.3 Thread wrapper
 The function actually run by `std::thread`:
 
-1. Set the thread-local current index (§2.4) and the thread-local thread name used by the log formatter (task 1.2).
+1. Set the thread-local current index (§2.4), and call `avis::log::set_thread_name("avis-<name>")` so the log pattern's `[t:…]` field shows the thread's role (task 1.2).
 2. `SetThreadDescription(GetCurrentThread(), L"avis-<name>")` (convert with `MultiByteToWideChar`).
 3. Apply `priority` (`SetThreadPriority`, map `thread_priority` → `THREAD_PRIORITY_*`) and `affinity_mask` (`SetThreadAffinityMask`). A failure here is logged as a warning, not fatal.
 4. `state = running`, then call `body(stop_source.get_token())` inside `try { … } catch (...) { exit_error = make_error(std::current_exception()); log error with the thread name; }`.

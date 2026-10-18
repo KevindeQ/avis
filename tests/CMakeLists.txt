@@ -34,8 +34,11 @@ target_link_libraries(AVIS_TESTS
 
 target_sources(AVIS_TESTS
 	PRIVATE
+		test_error.cpp
 		test_external_dependencies.cpp
 		test_finite_state_machine.cpp
+		test_helpers.cpp
+		test_log.cpp
 		test_observables.cpp)
 
 include(CTest)
