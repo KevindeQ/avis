@@ -26,10 +26,15 @@ target_link_libraries(AVIS_TESTS
 	PRIVATE
 		AVIS_LIB
 
+		# Private dependencies of AVIS_LIB, linked directly for test_external_dependencies.cpp
+		fastgltf::fastgltf
+		yaml-cpp::yaml-cpp
+
 		Catch2::Catch2WithMain)
 
 target_sources(AVIS_TESTS
 	PRIVATE
+		test_external_dependencies.cpp
 		test_finite_state_machine.cpp
 		test_observables.cpp)
 

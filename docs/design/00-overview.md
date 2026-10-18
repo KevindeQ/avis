@@ -145,14 +145,15 @@ All Avis **library** features are built into **one CMake target, `AVIS_LIB`**. F
 | Eigen 5.0.1 | Math | `external/` | Existing |
 | stdexec | Sender/receiver | `external/` | Existing |
 | ASIO 1.36.0 | Async file IO | `external/` | Existing |
-| Catch2 3.x | Unit tests | FetchContent | Existing |
+| Catch2 3.4.0 | Unit tests | `FetchContent` in `tests/CMakeLists.txt` (needs the network on a fresh configure, [13 §4](13-build-and-quality.md#4-dependency-management)) | Existing |
 | **zenoh-c + zenoh-cpp (1.x)** | Inter-process communication | `external/` (prebuilt zenoh-c release + header-only zenoh-cpp) | **New** |
 | **Jolt Physics (5.x)** | Shadow vehicle physics and collision queries | `external/` | **New** |
-| **yaml-cpp (0.8.x)** | Scenario and configuration files | `external/` | **New** |
-| **fastgltf (+ simdjson)** | glTF 2.0 loading | `external/` | **New** |
-| **spdlog** | Logging | `external/` | **New** |
+| yaml-cpp 0.9.0 | Scenario and configuration files, shader manifest | `external/yaml-cpp-0.9.0` | Existing |
+| fastgltf 0.9.1 | glTF 2.0 loading | `external/fastgltf-0.9.1` | Existing |
+| simdjson 4.6.11 | JSON parser used by fastgltf only ([13 §4](13-build-and-quality.md#4-dependency-management)) | `external/simdjson-4.6.11` | Existing |
+| spdlog 1.17.0 | Logging | `external/spdlog-1.17.0` | Existing |
 | **xxHash (0.8.x)** | xxh3 hashes: shader manifest, sequence-pack verification, `--record-hashes` determinism files, asset deduplication | `external/` (header-only, `XXH_INLINE_ALL`) | **New** |
 | H3 4.4.1 | Not used in iteration 1 (kept for future geo indexing) | `external/` | Existing |
 | Windows Imaging Component | PNG/JPEG decoding (dataset images, glTF textures) | OS | Built in |
 
-New dependencies are vendored in `external/` with pinned versions, as the existing ones are. The choices are discussed in [99](99-decisions-and-open-questions.md).
+New dependencies are vendored in `external/` with pinned versions, as the existing ones are. Versions, licences and build options of everything in `external/` are listed in [`external/README.md`](../../external/README.md). The choices are discussed in [99](99-decisions-and-open-questions.md).

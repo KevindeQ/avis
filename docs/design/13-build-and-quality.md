@@ -35,6 +35,8 @@ All Avis library features build into **one CMake target, `AVIS_LIB`** (a static 
 
 `AVIS_LIB` links: stdexec, asio, spdlog, zenoh-cpp/zenoh-c, EnTT, Eigen, fastgltf, yaml-cpp, xxHash, D3D12MemoryAllocator, `d3d12.lib`, `dxgi.lib`, `dxguid.lib`. Public include directory: `include/`.
 
+spdlog is linked `PUBLIC`, because `include/avis/log.h` exposes `spdlog::logger`. yaml-cpp and fastgltf are linked `PRIVATE`: no public Avis header includes them, so applications and tests don't inherit their include paths. An application that parses its own YAML (`visualizer.yaml`, `driver.yaml`, [01 §7](01-system-architecture.md#7-configuration)) links `yaml-cpp::yaml-cpp` itself.
+
 | Feature | Namespace | Location | Document |
 |---|---|---|---|
 | Error type, logging, enum flags, virtual clock, FSM | `avis`, `avis::log` | `include/avis/*.h` | [01 §6](01-system-architecture.md#6-error-handling-policy), [03](03-simulation-core.md) |
@@ -63,14 +65,27 @@ Sources mirror the headers under `lib/avis/<feature>/`.
 **Why the SDK isn't part of `AVIS_LIB`:** plug-ins only need the C header and must **not** link the Avis library (D-06: any compiler, any language). `AVIS_DRIVER_SDK` contains no compiled code. It just exposes `include/avis/driver_sdk/` as an include path, and it's the one CMake target outside `AVIS_LIB` that has headers under `include/avis/`.
 
 ### 2.2 Options
+Options declared in the root `CMakeLists.txt`. Each component has an *include* switch (are its targets generated at all) and a *build* switch (are they part of the default `all` build):
+
 | Option | Default | Effect |
 |---|---|---|
-| `AVIS_BUILD_TESTS` | ON | Unit tests |
-| `AVIS_BUILD_VISUALIZER` | ON | Requires Qt |
-| `AVIS_BUILD_DRIVER` | ON | |
-| `AVIS_BUILD_EXAMPLE_PLUGINS` | ON | |
-| `AVIS_SHADER_DEBUG` | ON in Debug | `-Zi -Qembed_debug -Od` |
-| `AVIS_ENABLE_ASAN` | OFF | `/fsanitize=address` |
+| `AVIS_INCLUDE_APPS` | ON | Generates the application targets (`add_subdirectory(apps)`): the subdirectories listed in `apps/CMakeLists.txt`. Today that's only `visualizer`; the Driver, stepper and example plug-ins are added there as they're built. |
+| `AVIS_BUILD_APPS` | ON | Builds the application targets by default. If OFF, the targets are generated but built only on request. **Declared but not wired up yet:** nothing reads it. |
+| `AVIS_INCLUDE_TESTS` | ON | Generates `AVIS_TESTS` (`add_subdirectory(tests)`) |
+| `AVIS_BUILD_TESTS` | **OFF** | Builds the unit tests by default. **Declared but not wired up yet:** nothing reads it, so the tests build whenever `AVIS_INCLUDE_TESTS` is ON. |
+
+Wiring the two *build* switches up means marking the targets `EXCLUDE_FROM_ALL` when the switch is OFF (for example `set_target_properties(AVIS_TESTS PROPERTIES EXCLUDE_FROM_ALL $<NOT:$<BOOL:${AVIS_BUILD_TESTS}>>)`, or passing `EXCLUDE_FROM_ALL` to `add_subdirectory`).
+
+Qt 6.11 is found with `find_package(Qt6 … REQUIRED)` **before** these options are evaluated, so every configure needs Qt, even with `AVIS_INCLUDE_APPS=OFF`. Making Qt optional for library-and-test builds (moving `find_package(Qt6)` under `if(AVIS_INCLUDE_APPS)`) is needed for CI runners without Qt (§10).
+
+Planned options, not in `CMakeLists.txt` yet:
+
+| Option | Default | Effect |
+|---|---|---|
+| `AVIS_SHADER_DEBUG` | ON in Debug | `-Zi -Qembed_debug -Od` for DXC (§3) |
+| `AVIS_ENABLE_ASAN` | OFF | `/fsanitize=address` on Avis targets |
+
+There are no per-application switches: the Visualizer, Driver, stepper and example plug-ins are all covered by `AVIS_INCLUDE_APPS` / `AVIS_BUILD_APPS`.
 
 ## 3. Shader build pipeline
 `avis_add_shaders(TARGET <target> SOURCES <files> OUTPUT_DIRECTORY <directory> [DEFINES …] [INCLUDE_DIRECTORIES …])`. Shaders are application data: the Visualizer calls it with `OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/data/shaders/visualizer` and `INCLUDE_DIRECTORIES data/shaders/visualizer/include` ([11 §13](11-renderer.md#13-shaders-location-and-build)). The Avis library contains no shaders.
@@ -94,6 +109,12 @@ Sources mirror the headers under `lib/avis/<feature>/`.
 - **xxHash** is vendored header-only and used for every xxh3 hash on the C++ side, so C++ and the Python tools (`xxhash` package) produce identical values. The shader-manifest script (`cmake -P`) can't call a C library, so the manifest hashes are computed by a tiny host tool built from the same header before the shaders.
 - **CRC-32** (IEEE 802.3 polynomial, as `zlib.crc32` in Python) for the `.avs` record index is a small table-driven function in `AVIS_LIB` (`include/avis/dataset/crc32.h`). It needs no dependency.
 - **fastgltf** brings simdjson. That JSON parser is internal to glTF loading (glTF is a JSON format) and isn't used for any Avis file format: Avis's own files are YAML or binary.
+  - Unless a `simdjson::simdjson` target already exists, fastgltf 0.9.1 **downloads** the simdjson 4.6.11 single-header amalgamation from GitHub at configure time, into its own source tree (`external/fastgltf-0.9.1/deps/simdjson`). That breaks offline builds and modifies a vendored directory. So simdjson is vendored too, as the full source tree `external/simdjson-4.6.11/`. `external/CMakeLists.txt` adds it with `add_subdirectory` (static, `SIMDJSON_DEVELOPER_MODE=OFF`, `SIMDJSON_INSTALL=OFF`) **before** `add_subdirectory(fastgltf-0.9.1)`, so simdjson's own `simdjson::simdjson` target exists and fastgltf links it instead of downloading.
+  - Options: `FASTGLTF_COMPILE_AS_CPP20=ON`, `FASTGLTF_ENABLE_INSTALL=OFF`; tests, examples and docs stay off (their defaults).
+- **spdlog** is built as a compiled static library (`spdlog::spdlog`) with `SPDLOG_USE_STD_FORMAT=ON`, so Avis uses `std::format` only and the bundled fmt isn't compiled. `SPDLOG_INSTALL=OFF`, `SPDLOG_BUILD_EXAMPLE=OFF`.
+- **yaml-cpp** is built as a static library (`yaml-cpp::yaml-cpp`) with `YAML_CPP_BUILD_TOOLS=OFF`, `YAML_CPP_BUILD_CONTRIB=OFF`, `YAML_CPP_BUILD_TESTS=OFF`, `YAML_CPP_INSTALL=OFF`, `YAML_CPP_FORMAT_SOURCE=OFF`, `YAML_BUILD_SHARED_LIBS=OFF`. `YAML_MSVC_SHARED_RT` stays `ON` (`/MD`), matching the rest of the build.
+- Third-party option values are set in `external/CMakeLists.txt` right before the matching `add_subdirectory`, as is already done for Eigen, EnTT and H3.
+- **Configure-time downloads that remain.** A fresh configure still needs the network: `external/stdexec`'s own `CMakeLists.txt` downloads `RAPIDS.cmake` and `execution.bs` with `file(DOWNLOAD)` and pulls rapids-cmake, CPM and icm, and Catch2 comes through `FetchContent` (§6). Once a build folder is populated, re-configuring with `-DFETCHCONTENT_FULLY_DISCONNECTED=ON` works offline. A fully offline fresh configure needs Catch2 vendored and stdexec added through a plain `INTERFACE` target instead of its own CMake project.
 - Qt is deployed with the existing `WinDeployQT.cmake`.
 - Python tools use `uv` lockfiles (`uv.lock`), with one project per tool under `tools/`.
 

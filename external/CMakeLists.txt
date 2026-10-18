@@ -35,3 +35,31 @@ set(ENABLE_LIBFUZZER OFF)
 add_subdirectory(h3-4.4.1 EXCLUDE_FROM_ALL)
 
 add_subdirectory(stdexec EXCLUDE_FROM_ALL)
+
+# Set simdjson build options. Must come before fastgltf: it links the existing simdjson::simdjson
+# target instead of downloading its own copy at configure time.
+set(SIMDJSON_DEVELOPER_MODE OFF)
+set(SIMDJSON_INSTALL OFF)
+set(SIMDJSON_BUILD_STATIC_LIB OFF)
+add_subdirectory(simdjson-4.6.11 EXCLUDE_FROM_ALL)
+
+# Set fastgltf build options
+set(FASTGLTF_COMPILE_AS_CPP20 ON)
+set(FASTGLTF_ENABLE_INSTALL OFF)
+add_subdirectory(fastgltf-0.9.1 EXCLUDE_FROM_ALL)
+
+# Set spdlog build options
+set(SPDLOG_USE_STD_FORMAT ON)
+set(SPDLOG_BUILD_SHARED OFF)
+set(SPDLOG_BUILD_EXAMPLE OFF)
+set(SPDLOG_INSTALL OFF)
+add_subdirectory(spdlog-1.17.0 EXCLUDE_FROM_ALL)
+
+# Set yaml-cpp build options
+set(YAML_CPP_BUILD_TOOLS OFF)
+set(YAML_CPP_BUILD_CONTRIB OFF)
+set(YAML_CPP_BUILD_TESTS OFF)
+set(YAML_CPP_INSTALL OFF)
+set(YAML_CPP_FORMAT_SOURCE OFF)
+set(YAML_BUILD_SHARED_LIBS OFF)
+add_subdirectory(yaml-cpp-0.9.0 EXCLUDE_FROM_ALL)

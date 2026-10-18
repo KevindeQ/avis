@@ -22,15 +22,10 @@ target_compile_definitions(AVIS_LIB
 		$<IF:$<CONFIG:Debug>,ENGINE_BUILD_DEBUG,ENGINE_BUILD_RELEASE>
 )
 
+# Third-party include directories come with the linked targets below
 target_include_directories(AVIS_LIB
 	PUBLIC
 		${AVIS_INCLUDE_DIR}
-
-		ASIO
-		Eigen3::Eigen
-		EnTT::EnTT
-		h3
-		STDEXEC::stdexec
 )
 
 target_link_libraries(AVIS_LIB
@@ -40,6 +35,14 @@ target_link_libraries(AVIS_LIB
 		EnTT::EnTT
 		h3
 		STDEXEC::stdexec
+
+		# Public because include/avis/log.h exposes spdlog::logger
+		spdlog::spdlog
+
+	PRIVATE
+		# No public Avis header includes these
+		fastgltf::fastgltf
+		yaml-cpp::yaml-cpp
 )
 
 target_sources(AVIS_LIB
