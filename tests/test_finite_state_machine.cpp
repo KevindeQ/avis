@@ -2,8 +2,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <variant>
 #include <type_traits>
+#include <variant>
 
 // Test model
 struct context
@@ -72,7 +72,7 @@ using test_fsm = avis::state_machine<
 // Tests
 // --------------------------------------------------
 
-TEST_CASE("fsm performs basic transitions", "[fsm]")
+TEST_CASE("fsm performs basic transitions", "[avis::finite_state_machine]")
 {
     test_fsm fsm{ idle{}, context{} };
 
@@ -87,7 +87,7 @@ TEST_CASE("fsm performs basic transitions", "[fsm]")
     REQUIRE(std::holds_alternative<idle>(fsm.state()));
 }
 
-TEST_CASE("fsm ignores invalid transitions", "[fsm]")
+TEST_CASE("fsm ignores invalid transitions", "[avis::finite_state_machine]")
 {
     test_fsm fsm{ idle{}, context{} };
 
@@ -97,7 +97,7 @@ TEST_CASE("fsm ignores invalid transitions", "[fsm]")
     REQUIRE(std::holds_alternative<idle>(fsm.state()));
 }
 
-TEST_CASE("fsm respects guard conditions", "[fsm]")
+TEST_CASE("fsm respects guard conditions", "[avis::finite_state_machine]")
 {
     context ctx;
     ctx.energy = 0; // guard should fail
@@ -110,7 +110,7 @@ TEST_CASE("fsm respects guard conditions", "[fsm]")
     REQUIRE(std::holds_alternative<idle>(fsm.state()));
 }
 
-TEST_CASE("fsm modifies context during transitions", "[fsm]")
+TEST_CASE("fsm modifies context during transitions", "[avis::finite_state_machine]")
 {
     test_fsm fsm{ idle{}, context{ 100, 0 } };
 
@@ -121,7 +121,7 @@ TEST_CASE("fsm modifies context during transitions", "[fsm]")
     REQUIRE(fsm.context().score == 5);
 }
 
-TEST_CASE("fsm handles multi-step transitions", "[fsm]")
+TEST_CASE("fsm handles multi-step transitions", "[avis::finite_state_machine]")
 {
     test_fsm fsm{ idle{}, context{} };
 
@@ -135,7 +135,7 @@ TEST_CASE("fsm handles multi-step transitions", "[fsm]")
     REQUIRE(std::holds_alternative<running>(fsm.state()));
 }
 
-TEST_CASE("entry and exit hooks are called", "[fsm]")
+TEST_CASE("entry and exit hooks are called", "[avis::finite_state_machine]")
 {
     idle i;
     context ctx{};
@@ -150,7 +150,7 @@ TEST_CASE("entry and exit hooks are called", "[fsm]")
     REQUIRE(std::holds_alternative<running>(fsm.state()));
 }
 
-TEST_CASE("state variant contains all expected states", "[fsm]")
+TEST_CASE("state variant contains all expected states", "[avis::finite_state_machine]")
 {
     using state = typename test_fsm::state_type;
 

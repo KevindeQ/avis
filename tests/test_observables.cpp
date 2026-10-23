@@ -10,7 +10,7 @@ public:
     public:
         observable get_return_object()
         {
-            return { };
+            return {};
         }
 
         std::suspend_never initial_suspend() noexcept
