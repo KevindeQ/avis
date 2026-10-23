@@ -9,7 +9,7 @@
 
 The four libraries are already in `external/` but aren't built or linked. This task wires them in once, so later tasks just use them. It changes no Avis behaviour.
 
-> **Status (2026-10-18): done**, except that the Release tests haven't run (see Acceptance criteria). MSVC 14.51 (Visual Studio 18), CMake 4.3.3, Ninja, presets `windows-debug` and `windows-release`.
+> **Status (2026-10-18): done.** MSVC 14.51 (Visual Studio 18), CMake 4.3.3, Ninja, presets `windows-debug` and `windows-release`.
 
 ## 0.1 simdjson (for fastgltf)
 fastgltf 0.9.1's `cmake/dependencies.cmake` downloads simdjson from GitHub at configure time unless a `simdjson::simdjson` target already exists ([13 §4](../design/13-build-and-quality.md#4-dependency-management)). The full simdjson **4.6.11** source tree is vendored in `external/simdjson-4.6.11/` (the version fastgltf pins as `SIMDJSON_TARGET_VERSION`). Its own CMake project defines `simdjson::simdjson`, so it only has to be added before fastgltf.
@@ -98,7 +98,7 @@ A fresh configure still needs the network, and not because of this task: `extern
 - [x] 0.1 and 0.6 hold: fastgltf uses the vendored simdjson, a disconnected re-configure of an already-populated build folder succeeds, and nothing is written into `external/`.
 - [x] `AVIS_LIB`, the Visualizer and `avis_tests` build in Debug and Release.
 - [x] The smoke tests and the full suite pass in **Debug** (13 test cases, 28 assertions).
-- [ ] The tests pass in **Release**: not run yet. Windows Application Control (Smart App Control) blocks the unsigned Release `avis_tests.exe` on the development machine ("An Application Control policy has blocked this file"), while the Debug binary runs. Run them on a machine or runner where the policy allows it.
+- [x] The tests pass in **Release**. At first Windows Application Control blocked the unsigned Release `avis_tests.exe` on the development machine; later Release builds ran, and the full suite passed (checked during Task 3).
 - [x] [00 §6](../design/00-overview.md#6-third-party-dependencies): spdlog, yaml-cpp, fastgltf and simdjson are marked *Existing*.
 
 ## Open points

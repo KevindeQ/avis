@@ -9,13 +9,13 @@
 
 The thread pool, task system and runtime all report failures through `avis::error` and log through `avis::log`. Neither exists yet, so they come first.
 
-> **Status (2026-10-18): done.** Debug: all 26 test cases pass, also in random order over repeated runs. Release builds; its tests are blocked from running on the development machine by Windows Application Control (see [Task 0](00-external-dependencies.md#acceptance-criteria)). Decisions made while implementing are listed under *As implemented*.
+> **Status (2026-10-18): done.** Debug: all 26 test cases pass, also in random order over repeated runs. Release builds and passes too (run later, during Task 3). Decisions made while implementing are listed under *As implemented*.
 
 ## 1.1 Error type
 - [x] Create `include/avis/error.h` with `avis::error_domain`, `avis::error` and `avis::result<T> = std::expected<T, error>` exactly as in [01 §6.2](../design/01-system-architecture.md#62-error-type).
 - [x] Add a `std::formatter<avis::error>` that prints `"[<domain>:<code>] <message> (<file>:<line>)"`. Add a `to_string(error_domain)`.
 - [x] Add `avis::runtime_error : std::runtime_error` carrying an `avis::error`, for the unrecoverable paths (`runtime` construction failure, [14 §2](../design/14-library-runtime.md#2-api)).
-- [x] Add `avis::error make_error(std::exception_ptr, std::source_location = current())`: rethrows and catches `avis::runtime_error` (keeps its error), `std::system_error` (keeps the code), `std::exception` (`what()`), and `...` (`"unknown exception"`). The thread pool ([06 §3.3](../design/06-thread-pool.md#33-body-contract)) and the task system ([15 §4.4](../design/15-task-system.md#44-error-type)) both use it.
+- [x] Add `avis::error make_error(std::exception_ptr, std::source_location = current())`: rethrows and catches `avis::runtime_error` (keeps its error), `std::system_error` (keeps the code), `std::exception` (`what()`), and `...` (`"unknown exception"`). The thread pool ([06 §3.3](../design/06-thread-pool.md#33-body-contract)) and the task system ([15 §4.4](../design/15-parallel-scheduler.md#42-error-type)) both use it.
 - [x] Define the generic error codes the thread pool needs (see Open points): at least `pool_exhausted`, `pool_stopping`, `invalid_configuration`, `cancelled`.
 
 **Tests** (`tests/test_error.cpp`): formatting, `source_location` captured at the call site, `make_error` for each exception category.
