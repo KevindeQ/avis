@@ -35,12 +35,17 @@ target_link_libraries(AVIS_TESTS
 target_sources(AVIS_TESTS
 	PRIVATE
 		helpers/allocation_failure.cpp
+		test_asio_senders_receivers.cpp
 		test_error.cpp
 		test_external_dependencies.cpp
 		test_finite_state_machine.cpp
 		test_helpers.cpp
+		test_io_context.cpp
 		test_log.cpp
 		test_observables.cpp
+		test_parallel_backend.cpp
+		test_runtime.cpp
+		test_runtime_configuration.cpp
 		test_thread_pool.cpp)
 
 include(CTest)

@@ -19,6 +19,7 @@
 | Header | Type | Purpose |
 |---|---|---|
 | `avis/io/io_context.h` | `avis::io::io_context` | Owns the `asio::io_context` and runs it on `io.threads` long-running threads of the thread pool it's given. The runtime creates the default instance, reached through `avis::runtime::io_context()` ([14](14-library-runtime.md)). Replaces the current `io_executor`, which spawns its own threads. |
+| `avis/io/io_configuration.h` | `avis::io::io_configuration` | Number of IO threads (`threads`, default 1). Free of asio, so `runtime_configuration.h` can include it ([14 §3](14-library-runtime.md#3-configuration)) |
 | `avis/io/asio_scheduler.h` | `avis::io::scheduler` | stdexec scheduler whose `schedule()` completes on the IO thread |
 | `avis/io/asio_use_sender.h` | `avis::io::use_sender` | ASIO completion token that turns any async ASIO operation into a stdexec sender (existing) |
 | `avis/io/file.h` | `avis::io::file` | Random-access async file handle |

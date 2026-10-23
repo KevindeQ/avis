@@ -1,4 +1,4 @@
-// Smoke tests for the vendored external libraries (docs/tasks/00-external-dependencies.md). They only
+// Smoke tests for the vendored external libraries. They only
 // check that each library is built, linked and usable, so a broken integration fails here and not in
 // the first feature that uses it.
 
@@ -19,20 +19,20 @@ TEST_CASE("spdlog formats with std::format", "[external][spdlog]")
     spdlog::logger logger{ "external-test", sink };
     logger.set_pattern("[%n] [%l] %v");
 
-    logger.info("io_threads={} task_workers={}", 1, 6);
+    logger.info("io_threads={} parallel_workers={}", 1, 6);
 
     const auto lines = sink->last_formatted();
     REQUIRE(lines.size() == 1);
-    CHECK(lines.front().starts_with("[external-test] [info] io_threads=1 task_workers=6"));
+    CHECK(lines.front().starts_with("[external-test] [info] io_threads=1 parallel_workers=6"));
 }
 
 TEST_CASE("yaml-cpp parses a mapping", "[external][yaml-cpp]")
 {
-    const YAML::Node root = YAML::Load("runtime: { io_threads: 1, task_workers: 0 }");
+    const YAML::Node root = YAML::Load("runtime: { io_threads: 1, parallel_workers: 0 }");
 
     REQUIRE(root["runtime"].IsMap());
     CHECK(root["runtime"]["io_threads"].as<int>() == 1);
-    CHECK(root["runtime"]["task_workers"].as<int>() == 0);
+    CHECK(root["runtime"]["parallel_workers"].as<int>() == 0);
     CHECK_FALSE(root["logging"].IsDefined());
 }
 

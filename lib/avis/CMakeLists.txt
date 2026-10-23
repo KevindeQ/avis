@@ -49,7 +49,11 @@ target_sources(AVIS_LIB
 	PRIVATE
 		error.cpp
 		log.cpp
+		runtime.cpp
+		runtime_configuration.cpp
 		virtual_clock_state.cpp
+
+		io/io_context.cpp
 
 		scene/semantic_scene_graph.cpp
 
