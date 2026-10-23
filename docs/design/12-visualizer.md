@@ -134,7 +134,7 @@ The Avis renderer has **no dedicated render thread**. Frames are produced by a s
 
 ```text
 when_all(begin_frame(), next_frame_tick(), shared_slot_free())
-  → continues_on(task scheduler) → prepare (extract snapshot, interpolate, build + compile graph)
+  → continues_on(parallel scheduler) → prepare (extract snapshot, interpolate, build + compile graph)
   → let_value: render_graph::execute (bulk recording, submit)
   → present_to_shared + signal produced fence → end_frame
   → re-arm the next frame (unless stop was requested)
@@ -145,7 +145,7 @@ in parallel, per frame: when_reached(produced, n) → publish latest_completed �
 - `next_frame_tick()` is an `asio::steady_timer` sender on the IO context. It paces frames at the display refresh rate reported by the window's screen, or at `render.maximum_fps`, and at 5 fps when the window is minimised or occluded.
 - `shared_slot_free()` is the **CPU-side gate** of the interop ring (§3.3, rule 1). It completes with a free slot index: inline when one is free (the normal case), otherwise through `when_reached(consumed, …)` on the IO context. It never issues a GPU wait, so Qt not rendering can't stall the Avis queues.
 - Publishing a frame to Qt is a separate small sender per frame (`when_reached(produced, n)`), spawned into the same async scope. The next frame doesn't wait for it.
-- No stage blocks a thread: GPU completion and timers resume the chain from IO completions, and CPU work runs on task workers.
+- No stage blocks a thread: GPU completion and timers resume the chain from IO completions, and CPU work runs on parallel workers.
 - The chain keeps running while the simulation is paused, so camera motion stays fluid.
 - Errors (device lost) arrive on `set_error`, and `frame_loop` turns them into the fatal-error path (§7). Stopping requests stop on the scope's stop source; the chain finishes its current frame and completes with `set_stopped`. The controller then waits for the scope to drain at shutdown.
 
@@ -242,7 +242,7 @@ Available in every clock state, from *File → Screenshot* and a toolbar button 
 |---|---|---|
 | *Viewport* | F12 | The 3D viewport at its current pixel size, rendered by the Avis renderer ([11 §12.1](11-renderer.md#121-screenshot-capture)). No Qt UI. The debug blit is included only if *Include debug view* is ticked. |
 | *Custom resolution…* | Shift+F12 | A dialog with width and height (presets 1920×1080, 2560×1440, 3840×2160, 7680×4320, or the last used value) and *Include debug view*. Rendered offscreen with 8-sample accumulation ([11 §12.1](11-renderer.md#121-screenshot-capture)). |
-| *Window with UI* | Ctrl+F12 | The whole window, panels included, through `QQuickWindow::grabWindow()` on the GUI thread. The viewport shows the frame Qt is currently displaying. The `QImage` is saved as PNG on a task worker. |
+| *Window with UI* | Ctrl+F12 | The whole window, panels included, through `QQuickWindow::grabWindow()` on the GUI thread. The viewport shows the frame Qt is currently displaying. The `QImage` is saved as PNG on a parallel worker. |
 
 - When the file is written, a toast shows the file name with *Open* and *Show in folder*. Errors (VRAM limit, disk) appear as a toast and in the log.
 - Configuration (`visualizer.yaml` → `screenshots`):

@@ -177,7 +177,7 @@ Interpolation per entity:
 | No reading of wall-clock time in simulation logic (pacing only) | Both |
 | A single seeded PRNG per subsystem, seeded from `scenario.random_seed` mixed with a subsystem id via SplitMix64. Use `std::mt19937_64` or PCG32, never `std::random_device` | Driver plug-ins, oracle noise |
 | Sensor samples selected by integer timestamp intervals `(t_{k-1}, t_k]` | Driver replay |
-| Results must not depend on thread timing. Parallel work (Driver tasks, threads a plug-in creates itself) combines results in a fixed order, for example by index | Driver, plug-ins |
+| Results must not depend on thread timing. Parallel work (Driver work on the parallel scheduler, threads a plug-in creates itself) combines results in a fixed order, for example by index | Driver, plug-ins |
 | Jolt Physics: built with `JPH_CROSS_PLATFORM_DETERMINISTIC`, fixed step = `delta_time` (substeps fixed), bodies added in deterministic order | Shadow vehicle |
 | World-state diffs are published in a stable order (entities sorted by `entity_id`), and the Visualizer applies them in stream-sequence order | Driver scene publisher, Visualizer `apply_result` |
 | Floating-point environment: default rounding, `/fp:precise` | Both |

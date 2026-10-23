@@ -110,7 +110,7 @@ The existing `scene_graph` (generational slot map, first-child/next-sibling link
 - `transform` is TRS (`Vector3f position`, `Quaternionf rotation`, `Vector3f scale`). Composition order is `T · R · S`.
   > The existing `transform::to_matrix()` composes `scale → rotate → translate` through `Eigen::Affine3f`, which applies them in the wrong order for TRS. The target implementation builds the matrix as `Translation · Rotation · Scaling`.
 - **Dirty propagation:** `set_local` flags only the node. `update_transforms` walks from the roots depth-first with an explicit stack, carrying an "ancestor dirty" bit, so it touches every node at most once per update and skips clean subtrees.
-- Iteration 1 runs propagation single-threaded on the simulation thread; at 10k nodes it costs about 0.1 ms. Root-level subtrees could later be split across the task system with `bulk` ([15](15-task-system.md)).
+- Iteration 1 runs propagation single-threaded on the simulation thread; at 10k nodes it costs about 0.1 ms. Root-level subtrees could later be split across the parallel scheduler with `bulk` ([15](15-parallel-scheduler.md)).
 - World transforms are stored as `Eigen::Affine3f` (or `Matrix4f`) relative to the scenario origin ([04 §4.4](04-scenario-and-dataset.md#44-coordinate-frames-and-precision)).
 
 ### 4.2 Typical hierarchy
@@ -152,7 +152,7 @@ public:
 };
 ```
 - Assets are deduplicated by canonical path plus a content hash.
-- Loading pipeline: **IO layer** read → **fastgltf** parse (task-system worker) → image decode via **WIC** (task-system workers, one task per image), or direct use of DDS/KTX2 BCn if present. The decoded CPU data stays in the cache. GPU upload and mip generation (compute downsample for PNG/JPEG) are done by the renderer's residency cache when the asset first appears in a snapshot ([11 §3.6](11-renderer.md#36-gpu-residency)).
+- Loading pipeline: **IO layer** read → **fastgltf** parse (parallel worker) → image decode via **WIC** (parallel workers, one operation per image), or direct use of DDS/KTX2 BCn if present. The decoded CPU data stays in the cache. GPU upload and mip generation (compute downsample for PNG/JPEG) are done by the renderer's residency cache when the asset first appears in a snapshot ([11 §3.6](11-renderer.md#36-gpu-residency)).
 - `mesh_asset` holds the geometry already converted to the Avis vertex format ([11 §3.2](11-renderer.md#32-geometry)) and the axis convention (glTF Y-up → Avis Z-up, [00 §4.1](00-overview.md#41-coordinate-systems-and-units)).
 - `material_asset` = glTF `pbrMetallicRoughness` + `normalTexture` + `occlusionTexture` + `emissiveTexture` + `alphaMode`/`alphaCutoff`/`doubleSided`. The `KHR_materials_emissive_strength` and `KHR_texture_transform` extensions are supported, and other extensions are ignored with a warning.
 - Supported glTF features: `.gltf` + `.bin` and `.glb`, node hierarchy (imported as child scene-graph nodes), multiple primitives. **Not** supported in iteration 1: skinning, morph targets, animations, cameras, punctual lights (`KHR_lights_punctual` could be added later).

@@ -34,6 +34,9 @@ set(BUILD_GENERATORS OFF)
 set(ENABLE_LIBFUZZER OFF)
 add_subdirectory(h3-4.4.1 EXCLUDE_FROM_ALL)
 
+# Set stdexec build options. AVIS_LIB defines the parallel scheduler backend itself, so stdexec's default
+# backend library must stay off
+set(STDEXEC_BUILD_PARALLEL_SCHEDULER OFF CACHE BOOL "" FORCE)
 add_subdirectory(stdexec EXCLUDE_FROM_ALL)
 
 # Set simdjson build options. Must come before fastgltf: it links the existing simdjson::simdjson

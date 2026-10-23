@@ -9,7 +9,7 @@
 | Tests | `tests/test_thread_pool.cpp` |
 | Prerequisites | [Task 1](01-foundations.md) (`avis::error`, `make_error`, `avis::log`) |
 
-> **Status (2026-10-18): done.** All 12 thread pool tests pass in Debug, Release and an AddressSanitizer build, also in random order over repeated runs (40 in Debug, 40 in Release). The separation check passes and is registered with CTest. Decisions made while implementing are under *As implemented*.
+> **Status (2026-10-18): done.** All 12 thread pool tests pass in Debug, Release and an AddressSanitizer build, also in random order over repeated runs (40 in Debug, 40 in Release). The separation check was removed later (2026-10-23). Decisions made while implementing are under *As implemented*.
 
 The pool is a bounded set of named, long-lived OS threads, one *body* each. It has **no queues, no scheduler and no stdexec**. Its headers must never include task-system or stdexec headers ([06 §5](../design/06-thread-pool.md#5-relation-to-the-parallel-scheduler)).
 
@@ -84,7 +84,7 @@ Map one-to-one to [06 §6](../design/06-thread-pool.md#6-testing):
 - [x] No leaked threads: the process thread count after `~thread_pool` equals the count before construction (helper from task 1.3).
 
 ## 2.7 Separation check
-- [x] Add `tools/checks/check-threading-includes.ps1` that fails if `include/avis/threading/thread_pool.h`, `thread_handle.h` or `lib/avis/threading/thread_pool.cpp`, `thread_handle.cpp` include `task_system.h`, `task_scheduler.h`, `work_stealing_deque.h` or any `<stdexec/…>` / `<exec/…>` header ([13 §9](../design/13-build-and-quality.md#9-coding-standards)). Register it as a CTest test so it runs without CI.
+- ~~Add `tools/checks/check-threading-includes.ps1` that fails if `include/avis/threading/thread_pool.h`, `thread_handle.h` or `lib/avis/threading/thread_pool.cpp`, `thread_handle.cpp` include `task_system.h`, `task_scheduler.h`, `work_stealing_deque.h` or any `<stdexec/…>` / `<exec/…>` header ([13 §9](../design/13-build-and-quality.md#9-coding-standards)). Register it as a CTest test so it runs without CI.~~ Removed (2026-10-23): the script and its CTest test are gone.
 
 ## As implemented
 - **Structure (refactored after review, 2026-10-20):** everything about one thread lives in the private class `detail::pool_thread` (`lib/avis/threading/pool_thread.h/.cpp`): the `std::thread`, name, index, stop source, `thread_state`, OS id and exit error, plus the thread wrapper (`run()`), the private `configure_os_thread()` that sets the OS thread's description, priority and affinity, and the two `static thread_local` members behind `current()` and `current_index()`. `thread_priority` and `to_win32_priority()` live in their own files, the public `include/avis/threading/thread_priority.h` (which needs no `<windows.h>`: the function returns the `THREAD_PRIORITY_*` value as `int`) and `lib/avis/threading/thread_priority.cpp`. It is shared by the pool and the body's `thread_handle`, so a handle may outlive its pool. `pool_thread::start()` creates it behind a `shared_ptr` and launches the OS thread, which holds its own reference while it runs. `thread_pool` keeps only the pool-wide state as direct members (configuration, mutex, thread list, used indices, running counter, stopping flag) with no pimpl. When its body returns, before `on_exit`, the thread calls a `release_index` callback that `thread_pool::start()` passes to `pool_thread::start()` (a lambda calling the private `thread_pool::release_index()`). So `pool_thread` holds no pointer to the pool and needs no `friend` access (changed after review, 2026-10-20). `thread_pool` is explicitly non-movable, because the callback captures `this`. `thread_options` and `thread_body` live in the public `include/avis/threading/thread_options.h`, included by both `thread_pool.h` and `pool_thread.h`, so `pool_thread` doesn't depend on `thread_pool` at all (2026-10-20).
@@ -96,10 +96,9 @@ Map one-to-one to [06 §6](../design/06-thread-pool.md#6-testing):
 - **`join_warning`** logs once on `core`, for example `thread pool: threads still running 50 ms after the stop request: avis-stubborn (os id 1234, stop_requested)`, then waits without a timeout.
 - **`request_stop()`** signals the records outside the pool mutex, because stop callbacks run inline and may call back into the pool.
 - **Extra tests** beyond §2.6: destroying one handle stops only its body; the slot is already free when `on_exit` runs (a restart from `on_exit` succeeds).
-- **CTest:** `include(CTest)` lives in `tests/CMakeLists.txt`, so run `ctest --test-dir out/build/<preset>/tests` to include the separation check.
 - **ASan:** there is no `AVIS_ENABLE_ASAN` option yet. The ASan run used a separate build folder configured with `-fsanitize=address` (and without `/RTC1`) for the C and C++ flags.
 
 ## Acceptance criteria
 - [x] All tests in 2.6 pass in Debug and Release, and under AddressSanitizer (a manually configured build, since `AVIS_ENABLE_ASAN` doesn't exist yet).
-- [x] The separation check passes, and fails on a forbidden include (checked with a scratch copy).
+- ~~The separation check passes, and fails on a forbidden include (checked with a scratch copy).~~ Removed with the check (2026-10-23).
 - [x] `thread_pool` has no static or global state other than the thread-local index and record pointer ([06 §3.1](../design/06-thread-pool.md#31-static-semantics-through-the-runtime)).

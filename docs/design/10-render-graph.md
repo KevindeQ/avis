@@ -112,7 +112,7 @@ namespace avis::graphics
 
         void reset();                                           // start a new frame: clears passes, resets the arena
         void compile();
-        // records (bulk on the task system) and submits; completes with the last graphics synchronization point
+        // records (bulk on the parallel scheduler) and submits; completes with the last graphics synchronization point
         auto execute(const rhi::frame_token& frame) -> sender_of<rhi::synchronization_point>;
 
         const graph_debug_information& debug_information() const;   // resources/passes for the debug UI (§9)
@@ -200,7 +200,7 @@ const gtao_data& gtao = graph.add_compute_pass<gtao_data>("gtao",
 ### 3.3 Rules for setup and execute
 - **Setup runs inside `add_*_pass`**, synchronously on the calling thread, before the call returns. No task is spawned, and setup lambdas run in declaration order. That keeps build overhead minimal and lets later passes read the returned `PassData` right away.
 - Setup must only declare resources through the builder and fill `PassData`. It records no GPU commands.
-- Execute lambdas run during execution, **possibly in parallel on task-system workers** (§7). They may only touch their context, the `resource_bag`, the pass data and data captured by value or const reference.
+- Execute lambdas run during execution, **possibly in parallel on parallel workers** (§7). They may only touch their context, the `resource_bag`, the pass data and data captured by value or const reference.
 - `PassData` and both callables are stored in the graph's `linear_arena` (§3.5), so they have stable addresses until the next `reset()`. `PassData` must be default-constructible. It may have a non-trivial destructor (the arena runs it).
 
 ### 3.4 Resource bag
@@ -328,10 +328,10 @@ auto render_one_frame(rhi::render_hardware_interface& hardware_interface,
                       rhi::graphics_pipeline_handle triangle_pipeline,
                       rhi::texture_handle output_texture)
 {
-    auto tasks = avis::runtime::task_system().get_scheduler();
+    auto parallel = stdexec::get_parallel_scheduler();
 
     return hardware_interface.begin_frame()                              // completes when a frame context is free
-         | stdexec::continues_on(tasks)
+         | stdexec::continues_on(parallel)
          | stdexec::let_value([&, triangle_pipeline, output_texture](rhi::frame_token& frame)
            {
                // ---- build ----
@@ -476,7 +476,7 @@ struct compiled_graph
 
 ## 7. Execution phase
 1. **Materialise:** for each transient resource, look up or create the placed resource in the pool, then allocate dynamic descriptors (SRV, UAV per mip) and RTV/DSV views. Imported resources map directly. The results fill the **`resource_bag`** (§3.4).
-2. **Record in parallel:** the ordered pass list (per queue) is split into **recording groups** of about 1 ms estimated GPU work. Estimates come from the previous frame's GPU timings; without timings, a group is 4 passes. Groups are recorded in parallel with `stdexec::bulk` on the default task system's scheduler ([15 §4.3](15-task-system.md#43-bulk)). `execute` returns a sender: the bulk is composed into the frame chain with `let_value`, so nothing waits on it ([09 §4.2](09-rhi.md#42-frame-contexts-sender-based-non-blocking)). Each group acquires its own command list of the matching queue type (`render_hardware_interface::acquire_command_list<Queue>`, [09 §4.3](09-rhi.md#43-command-lists-and-multi-threaded-recording)), and for each pass:
+2. **Record in parallel:** the ordered pass list (per queue) is split into **recording groups** of about 1 ms estimated GPU work. Estimates come from the previous frame's GPU timings; without timings, a group is 4 passes. Groups are recorded in parallel with `stdexec::bulk` on the parallel scheduler ([15 §4.1](15-parallel-scheduler.md#41-scheduler)). `execute` returns a sender: the bulk is composed into the frame chain with `let_value`, so nothing waits on it ([09 §4.2](09-rhi.md#42-frame-contexts-sender-based-non-blocking)). Each group acquires its own command list of the matching queue type (`render_hardware_interface::acquire_command_list<Queue>`, [09 §4.3](09-rhi.md#43-command-lists-and-multi-threaded-recording)), and for each pass:
    - emits the pass's barrier batch,
    - `begin_event(pass name)` and `begin_timing`,
    - calls the execute lambda with its pass data, the `resource_bag` and the pass context of the type fixed by its add function,

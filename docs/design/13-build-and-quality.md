@@ -41,7 +41,7 @@ spdlog is linked `PUBLIC`, because `include/avis/log.h` exposes `spdlog::logger`
 |---|---|---|---|
 | Error type, logging, enum flags, virtual clock, FSM | `avis`, `avis::log` | `include/avis/*.h` | [01 §6](01-system-architecture.md#6-error-handling-policy), [03](03-simulation-core.md) |
 | Library runtime | `avis` | `include/avis/runtime.h` | [14](14-library-runtime.md) |
-| Thread pool, task system (separate classes) | `avis::threading` | `include/avis/threading/` | [06](06-thread-pool.md), [15](15-task-system.md) |
+| Thread pool, parallel scheduler backend (independent) | `avis::threading` | `include/avis/threading/` | [06](06-thread-pool.md), [15](15-parallel-scheduler.md) |
 | Async IO | `avis::io` | `include/avis/io/` | [07](07-io-layer.md) |
 | Networking (Zenoh wrapper, framing, protocol messages) | `avis::network`, `avis::network::protocol` | `include/avis/network/` | [02](02-communication.md) |
 | Simulation time, clock state, scenario model | `avis::simulation` | `include/avis/simulation/` | [03](03-simulation-core.md), [04](04-scenario-and-dataset.md) |
@@ -131,7 +131,7 @@ Tools follow the existing `data-trace` layout (`pyproject.toml`, `src/<package>`
 ## 6. Testing strategy
 | Level | Scope | Tooling |
 |---|---|---|
-| Unit | runtime, thread pool, task system, IO, FSM, virtual clock, scene graph, snapshot buffer, render-graph compiler (null RHI), serializer, scenario validation, sequence-pack readers | Catch2, `AVIS_TESTS` |
+| Unit | runtime, thread pool, parallel scheduler backend, IO, FSM, virtual clock, scene graph, snapshot buffer, render-graph compiler (null RHI), serializer, scenario validation, sequence-pack readers | Catch2, `AVIS_TESTS` |
 | GPU integration | RHI resource and barrier smoke tests, small render-graph executions with readback, GTAO/TAA shader unit tests on synthetic inputs | Catch2 tag `[gpu]`, skipped when the capability gate fails |
 | Golden image | Render a fixed scenario frame (fixed camera, TAA off, fixed exposure) and compare to a reference PNG with a perceptual threshold (FLIP/PSNR). The golden images are produced with the renderer's own screenshot capture (11 §12.1), so that path is exercised too. | `[gpu][golden]`, references in `tests/data/golden/` |
 | Screenshot | The viewport capture equals a direct readback of `ldr_color` byte for byte; a custom-resolution capture has the requested size, its 8-sample accumulation is stable across runs, and its mean luminance matches the viewport capture within a tolerance; the PNG text chunks hold the expected metadata; requests over the size or VRAM limit are refused with a message | `[gpu]` |
@@ -161,7 +161,8 @@ A small **headless stepper** (`apps/stepper`, a CLI) implements the Visualizer s
 - `.clang-format` (existing) is enforced by `clang-format-all.ps1` and a CI check.
 - `clang-tidy` (from `tools/llvm`) runs with a curated profile: modernize, bugprone, performance, and readability-identifier-naming for `snake_case`.
 - Public headers must not include `<d3d12.h>`, `<dxgi*.h>`, Qt or Zenoh headers (except for app code). A CI grep rule enforces this for `include/avis/` ([09 §1](09-rhi.md#1-goals-and-constraints)).
-- `avis/threading/thread_pool.*` and `thread_handle.*` must not include task-system headers (`task_system.h`, `task_scheduler.h`, `work_stealing_deque.h`) or stdexec. A CI grep rule enforces this, which keeps the one-way dependency between the two classes ([06 §5](06-thread-pool.md#5-separation-from-the-task-system)).
+- `avis/threading/thread_pool.*` and `thread_handle.*` must not include the parallel scheduler headers (`parallel_configuration.h`, `parallel_backend.h`, `parallel_helpers.h`) or stdexec. This keeps the thread pool independent of the parallel scheduler ([06 §5](06-thread-pool.md#5-relation-to-the-parallel-scheduler)).
+- `STDEXEC_PARALLEL_SCHEDULER_HEADER_ONLY` stays undefined and stdexec's `STDEXEC_BUILD_PARALLEL_SCHEDULER` stays `OFF`, because `AVIS_LIB` provides the parallel scheduler backend ([15 §3.1](15-parallel-scheduler.md#31-replacing-the-backend-at-link-time)).
 - Every public API returning a failure path uses `avis::result<T>` or a sender with `set_error(avis::error)`.
 
 ### 9.1 One variable per declaration

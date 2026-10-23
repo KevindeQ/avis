@@ -1,9 +1,9 @@
-# Implementation tasks: library runtime, thread pool and task system
+# Implementation tasks: library runtime, thread pool and parallel scheduler
 
 These documents break the designs in [`docs/design`](../design) into ordered, reviewable implementation steps. They cover:
 
 - [06 — Thread Pool](../design/06-thread-pool.md)
-- [15 — Task System](../design/15-task-system.md)
+- [15 — Parallel Scheduler](../design/15-parallel-scheduler.md)
 - [14 — Library Runtime](../design/14-library-runtime.md)
 
 plus integrating the newly vendored external libraries (spdlog, yaml-cpp, fastgltf, simdjson) and the parts of [01 §6](../design/01-system-architecture.md#6-error-handling-policy), [07](../design/07-io-layer.md) and [13](../design/13-build-and-quality.md) these three depend on.
@@ -13,21 +13,21 @@ plus integrating the newly vendored external libraries (spdlog, yaml-cpp, fastgl
 | 0 | [00-external-dependencies.md](00-external-dependencies.md) | spdlog 1.17.0, yaml-cpp 0.9.0, fastgltf 0.9.1 and simdjson 4.6.11 built and linked, `external/README.md` | — |
 | 1 | [01-foundations.md](01-foundations.md) | `avis::error` / `avis::result<T>`, `avis::log`, test helpers | 0 |
 | 2 | [02-thread-pool.md](02-thread-pool.md) | `avis::threading::thread_pool`, `thread_handle` | 1 |
-| 3 | [03-task-system.md](03-task-system.md) | Work-stealing `avis::threading::task_system`, stdexec scheduler, `bulk` | 1, 2 |
+| 3 | [03-parallel-scheduler.md](03-parallel-scheduler.md) | `avis::threading::parallel_backend` behind `stdexec::get_parallel_scheduler()`, `into_internal_error`, `sync_wait`; removes the earlier task system | 1 |
 | 4 | [04-library-runtime.md](04-library-runtime.md) | Pool-hosted `avis::io::io_context`, `avis::runtime`, YAML runtime configuration | 0, 1, 2, 3 |
 
 ```mermaid
 flowchart LR
     ext[0. External libraries<br/>spdlog, yaml-cpp, fastgltf, simdjson] --> f[1. Foundations<br/>error, log]
     f --> tp[2. Thread pool]
-    tp --> ts[3. Task system]
+    f --> ps[3. Parallel scheduler backend]
     tp --> io[4a. io_context on the pool]
-    ts --> rt[4b. avis::runtime]
+    ps --> rt[4b. avis::runtime]
     io --> rt
     ext --> rt
 ```
 
-Phases 2 and 3 can overlap once the thread pool's `start` / `thread_handle` API is merged: the task system's lock-free building blocks (deque, inbox) don't need the pool at all.
+Tasks 2 and 3 are independent: the parallel workers belong to `exec::static_thread_pool`, not to the thread pool. Task 3 replaces an earlier task 3 that built a custom task system (design decision D-60); that version is in the git history.
 
 ## Conventions for every task
 - Code follows [13 §9](../design/13-build-and-quality.md#9-coding-standards): `snake_case`, **no abbreviations**, one variable per declaration, header guards in the style `AVIS_<DIRECTORY>_<FILE>_H`, members with a trailing `_`.
@@ -42,7 +42,6 @@ Each task document has an **Open points** section. They are collected here so th
 | Document | Open point |
 |---|---|
 | 00 | A fully offline fresh configure needs Catch2 vendored and stdexec added without its rapids-cmake download (Task 0 only guarantees the new libraries add no downloads) |
-| 03 | The design reads a victim's inbox with `try_pop` from thieves, but a Vyukov queue is single-consumer (proposal: serialise the consumer side with a try-lock) |
-| 03 | How exceptions inside `then` bodies become `avis::error` "at the scheduler boundary" (stdexec delivers `std::exception_ptr`) |
-| 03 | How "`sync_wait` from a worker asserts" is enforced (stdexec's `sync_wait` can't be hooked for arbitrary senders) |
+| 03 | A grep or clang-tidy rule banning `stdexec::sync_wait` in `lib/` and `apps/` |
+| 03 | Whether the frame chain's recording `bulk` needs the pool scheduler directly, if the type-erased parallel scheduler benchmarks too slow |
 | 04 | How much of the IO layer (doc 07) is in scope: this plan only migrates `io_executor` to a pool-hosted `io_context` |

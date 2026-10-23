@@ -367,7 +367,7 @@ struct draw_record                     // one per visible instance per frame
 3. **Sort the array** once with `std::ranges::sort`.
 4. **Index the groups:** a binary search per group start gives `draw_list::range(prefix)`, an empty span when no item has that prefix.
 
-- Building and sorting run **single-threaded** on the frame chain's prepare stage, one view after the other (one draw list per view). Splitting the sort over task-system workers isn't worth the orchestration overhead at these item counts.
+- Building and sorting run **single-threaded** on the frame chain's prepare stage, one view after the other (one draw list per view). Splitting the sort over parallel workers isn't worth the orchestration overhead at these item counts.
 - Because `(key, value)` is a total order, an LSD radix sort can later replace `std::ranges::sort` without changing any output. That's the planned optimisation if sorting ever shows up in profiles.
 - Expected cost: about 0.5 ms per 10k items on one core for `std::ranges::sort` on 16-byte items. With 10k instances, most of them casters in one or two cascades, a view holds roughly 25k items, which is about 1.2 ms (§15).
 
@@ -557,7 +557,7 @@ Screenshots of the 3D viewport are taken **inside the renderer**, so they contai
 
 **Viewport resolution** (`mode = viewport`), on the next frame:
 1. The renderer adds a `capture` copy pass to the main view, right after `overlay` (or after `debug_blit` when `include_debug_blit` is set). It copies `ldr_color` into an **imported `readback` buffer** (`copy_texture_to_buffer`), so the render graph places the barriers.
-2. The frame is submitted as usual. `when_complete` on its graphics synchronization point ([09 §4.1](09-rhi.md#41-queues)) resumes the capture on a task worker. Nothing waits.
+2. The frame is submitted as usual. `when_complete` on its graphics synchronization point ([09 §4.1](09-rhi.md#41-queues)) resumes the capture on a parallel worker. Nothing waits.
 3. The worker encodes a PNG with WIC. `ldr_color` already holds sRGB-encoded `RGBA8` values, so they're written as they are (alpha forced to 255). It then writes the file with the IO layer's atomic replace ([07 §4](07-io-layer.md#4-api)).
 
 **Custom resolution** (`mode = custom`, for example 3840 × 2160 for a slide or a poster):

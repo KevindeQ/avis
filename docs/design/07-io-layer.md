@@ -32,13 +32,13 @@
 flowchart LR
     caller[Caller thread<br/>any] -- sender chain --> op[ASIO async op<br/>random_access_file::async_read_some_at]
     op -- IOCP --> iot[IO threads<br/>long-running pool threads<br/>io_context.run]
-    iot -- "completion: set_value / set_error" --> cont["continues_on task scheduler"]
-    cont --> work[decode / parse on task workers]
+    iot -- "completion: set_value / set_error" --> cont["continues_on parallel scheduler"]
+    cont --> work[decode / parse on parallel workers]
 ```
 
 - ASIO on Windows uses **IOCP** (`ASIO_HAS_IOCP`) with `asio::random_access_file` / `asio::stream_file` (`ASIO_HAS_FILE`). Files are opened with `FILE_FLAG_OVERLAPPED`.
 - The IO context starts `io.threads` (default **1**, which is plenty for IOCP) long-running bodies on the thread pool through `thread_pool::start("io-<n>", …)`. Each body runs `io_context::run()`, which meets the "runs on a thread within the threadpool" requirement ([06](06-thread-pool.md)). A work guard keeps the context alive until shutdown, and a `std::stop_callback` on the body's stop token calls `io_context::stop()`.
-- CPU work after IO (decode, parse, checksum) is moved to the **task system** ([15](15-task-system.md)) with `stdexec::continues_on(avis::runtime::task_system().get_scheduler())`. IO threads only handle completions, so IOCP latency stays low no matter how heavy the decoding is.
+- CPU work after IO (decode, parse, checksum) is moved to the **parallel scheduler** ([15](15-parallel-scheduler.md)) with `stdexec::continues_on(stdexec::get_parallel_scheduler())`. IO threads only handle completions, so IOCP latency stays low no matter how heavy the decoding is.
 - ASIO completion handlers only complete the stdexec receiver. Nothing heavy runs inline in the handler.
 
 ## 4. API
@@ -79,7 +79,7 @@ namespace avis::io
 auto load_scenario_async(std::filesystem::path path)
 {
     return avis::io::read_file(path)
-         | stdexec::continues_on(avis::runtime::task_system().get_scheduler())
+         | stdexec::continues_on(stdexec::get_parallel_scheduler())
          | stdexec::then([](std::vector<std::byte> bytes) { return parse_scenario(bytes); });  // returns result<scenario>
 }
 ```

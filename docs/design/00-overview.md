@@ -15,7 +15,7 @@ This iteration builds a two-application system:
 - **Visualizer**: the application the user works in to open, edit and save a simulation run, connect to a Driver, control the simulation and view the results. It owns the virtual simulation clock and renders, in real time with a DirectX 12 deferred/forward renderer embedded in a Qt Quick UI, a scene that the Driver fills through messages. It is agnostic to the vehicle model and reads no datasets.
 - **Driver**: the vehicle-model host. It replays KITTI-360 sensor data, runs a perception module and the user's vehicle model, simulates a shadow vehicle with a kinematic model and a physics engine, and streams the changes of the world it knows about to the Visualizer. It advances in lockstep with the Visualizer.
 
-Both applications are built on the **Avis library**, a set of generic components: library runtime, thread pool, task system, async IO, scene management, RHI and render graph.
+Both applications are built on the **Avis library**, a set of generic components: library runtime, thread pool, parallel scheduler, async IO, scene management, RHI and render graph.
 
 ## 2. Document map
 
@@ -36,7 +36,7 @@ Both applications are built on the **Avis library**, a set of generic components
 | 12 | [Visualizer application](12-visualizer.md) | Qt Quick UI, QQuickRhiItem interop with shared handles, camera, panels, editing |
 | 13 | [Build, tooling & quality](13-build-and-quality.md) | CMake layout, dependencies, shader build, Python tools, logging, testing |
 | 14 | [Library runtime](14-library-runtime.md) | `avis::runtime`: configuration, default services and their static access, initialisation and shutdown order |
-| 15 | [Task system](15-task-system.md) | `avis::threading::task_system`: work-stealing task execution on pool threads, stdexec scheduler and `bulk` |
+| 15 | [Parallel scheduler](15-parallel-scheduler.md) | `stdexec::get_parallel_scheduler()` backed by the runtime's `exec::static_thread_pool`: work stealing, `bulk` |
 | 99 | [Decisions & open questions](99-decisions-and-open-questions.md) | Decision log, assumptions made on the user's behalf, items still to confirm |
 
 Suggested reading order: 00 → 01 → 02 → 03 → 04 → 05 for the system; 14 → 06 → 15 → 07 → 08 → 09 → 10 → 11 → 12 for the library and rendering.
@@ -101,7 +101,7 @@ All Avis **library** features are built into **one CMake target, `AVIS_LIB`**. F
 |---|---|---|
 | `avis` | Error type, runtime, virtual clock, FSM, enum flags | `AVIS_LIB` |
 | `avis::log` | Logging facade | `AVIS_LIB` |
-| `avis::threading` | Thread pool, task system (separate classes) | `AVIS_LIB` |
+| `avis::threading` | Thread pool, parallel scheduler backend (independent) | `AVIS_LIB` |
 | `avis::io` | Async IO | `AVIS_LIB` |
 | `avis::network`, `avis::network::protocol` | Zenoh wrapper, framing, protocol messages | `AVIS_LIB` |
 | `avis::simulation` | Simulation time, clock state, scenario model | `AVIS_LIB` |

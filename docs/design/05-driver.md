@@ -52,10 +52,10 @@ include/avis/driver_sdk/      # public plug-in SDK: avis_plugin.h (C ABI) + avis
 | Service thread (pool, long-running) | Runs the state machine and replies to queries. While a load or step is in progress it publishes the `driver_status` heartbeat every 500 ms ([02 §5.11](02-communication.md#511-driver_status-pubsub-best-effort)), reading the phase and counters from atomics the step executor updates. |
 | Step executor (pool, long-running) | Runs exactly one step at a time. All plug-in calls happen here (§5.6), and it publishes the step's scene stream messages before replying. |
 | IO threads (pool, long-running) | Async reads for prefetch ([07 §3](07-io-layer.md#3-execution-model)) |
-| Task-system workers (pool, long-running) | PNG decode for prefetch ([15](15-task-system.md)). They only ever run Driver code: the plug-in SDK offers no host-run parallelism (§5.6). |
+| Parallel workers (runtime's `exec::static_thread_pool`) | PNG decode for prefetch ([15](15-parallel-scheduler.md)). They only ever run Driver code: the plug-in SDK offers no host-run parallelism (§5.6). |
 | Plug-in threads (optional, owned by plug-ins) | Whatever threads a plug-in creates for its own parallel work (§5.6). They're not pool threads, and the host doesn't fault-isolate them. |
 
-All Driver threads except Main and Zenoh's are long-running threads on the default thread pool ([06](06-thread-pool.md)). Shutdown stops them in the order service → step executor. The runtime then stops the task system and IO.
+All Driver threads except Main and Zenoh's are long-running threads on the default thread pool ([06](06-thread-pool.md)). Shutdown stops them in the order service → step executor. The runtime then stops the parallel pool and IO.
 
 ## 3. Step pipeline
 
@@ -84,7 +84,7 @@ flowchart LR
 - `sensor_replay` opens the enabled `.avs` streams from the pack ([04 §4](04-scenario-and-dataset.md#4-sequence-pack-format)).
 - Simulation time is measured on the pack's **reference timeline** (`image_00` frame timestamps, t = 0 at `frames.start`, [04 §4.2a](04-scenario-and-dataset.md#42a-reference-timeline-framesavs)). Each stream keeps its own timestamps on that clock.
 - For step `k`, it collects every record with timestamp in `(t_{k-1}, t_k]` from each stream; step 0 covers `(−Δt, 0]`. With `delta_time` = 20 ms and sensors at 10 Hz, most steps carry no camera or lidar sample, and that's expected: the model sees a `sensor_frame` with empty optionals.
-- **Prefetch:** a sliding window (default 2 s of simulated time ahead) is read asynchronously through the IO layer and decoded on task-system workers (`continues_on` the task scheduler). PNGs are decoded with WIC into `RGB8`. The step executor only *waits* on a sample's future, so replay is deterministic whatever the prefetch timing.
+- **Prefetch:** a sliding window (default 2 s of simulated time ahead) is read asynchronously through the IO layer and decoded on parallel workers (`continues_on(stdexec::get_parallel_scheduler())`). PNGs are decoded with WIC into `RGB8`. The step executor only *waits* on a sample's future, so replay is deterministic whatever the prefetch timing.
 - Samples carry the **original absolute timestamp** and the sensor's calibration.
 
 ### 3.2 Ego estimate

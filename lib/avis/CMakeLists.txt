@@ -53,6 +53,8 @@ target_sources(AVIS_LIB
 
 		scene/semantic_scene_graph.cpp
 
+		threading/parallel_backend.cpp
+		threading/parallel_helpers.cpp
 		threading/pool_thread.cpp
 		threading/thread_handle.cpp
 		threading/thread_pool.cpp

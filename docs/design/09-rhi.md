@@ -227,7 +227,7 @@ std::optional<frame_token> render_hardware_interface::try_begin_frame();
 
 **How completion works:**
 1. `begin_frame()`'s operation state checks the fence values recorded by `end_frame` for context *N mod F*. If they are all complete, it completes **inline** with the token (the common case when the GPU keeps up).
-2. Otherwise it arms one Win32 event with `ID3D12Device1::SetEventOnMultipleFenceCompletion` (all of the context's queue fences, `D3D12_MULTIPLE_FENCE_WAIT_FLAG_ALL`). The event is waited on asynchronously with `asio::windows::object_handle::async_wait` on the default IO context ([07](07-io-layer.md)). When it fires, the IO thread completes the receiver. Continuations move to the task system with `continues_on`. **No thread sleeps on the fence.** The same mechanism implements `when_complete` and readback (§10).
+2. Otherwise it arms one Win32 event with `ID3D12Device1::SetEventOnMultipleFenceCompletion` (all of the context's queue fences, `D3D12_MULTIPLE_FENCE_WAIT_FLAG_ALL`). The event is waited on asynchronously with `asio::windows::object_handle::async_wait` on the default IO context ([07](07-io-layer.md)). When it fires, the IO thread completes the receiver. Continuations move to the parallel scheduler with `continues_on`. **No thread sleeps on the fence.** The same mechanism implements `when_complete` and readback (§10).
 3. Stop: a `stop_callback` cancels the `async_wait`, and the sender completes with `set_stopped()`.
 4. The context's command allocators are reset and its dynamic descriptor slice and frame allocator are rewound **in the completion**, before the token is delivered. Deferred releases tagged with that frame's points are freed at the same time.
 
@@ -243,9 +243,9 @@ std::optional<frame_token> render_hardware_interface::try_begin_frame();
 auto frame_once(renderer& renderer)
 {
     auto& hardware_interface = renderer.hardware_interface();
-    auto tasks = avis::runtime::task_system().get_scheduler();
+    auto parallel = stdexec::get_parallel_scheduler();
     return stdexec::when_all(hardware_interface.begin_frame(), renderer.next_frame_tick())  // context free + pacing timer
-         | stdexec::continues_on(tasks)
+         | stdexec::continues_on(parallel)
          | stdexec::then([&](frame_token frame) { return renderer.prepare(std::move(frame)); })   // extract, build, compile graph
          | stdexec::let_value([&](prepared_frame& frame) { return renderer.record(frame); })      // bulk over recording groups
          | stdexec::then([&](prepared_frame frame) { renderer.submit_and_end(std::move(frame)); });  // submit, end_frame
@@ -341,7 +341,11 @@ namespace avis::rhi
 - **Pipeline-aware root binding.** On a graphics list, `push_constants`, `set_pass_constants` and `set_view_constants` go to the graphics or compute root slots depending on the kind of the last `set_pipeline` call. Compute work on the graphics queue uses the same API. Both pipeline kinds use the global root signature (§6.3).
 - **Typed pipeline handles.** `graphics_pipeline_handle` and `compute_pipeline_handle` are distinct types (§9.2), so overload resolution picks the right `set_pipeline`.
 - **Lifetime.** `acquire_command_list` opens a list from the frame context's allocator pool. `queue<Queue>::submit` closes it. A list must be submitted within the frame it was acquired for, and lists and allocators are recycled when the frame context is reused (§4.2).
-- **Multi-threaded recording.** Allocators are pooled **per thread per frame per queue type**. The pool is picked by the dense per-thread index `avis::threading::thread_pool::current_index()` ([06 §3.4](06-thread-pool.md#34-options-and-hooks)), so acquiring a list is lock-free on the hot path. Every thread that records (the task-system workers) is a pool thread. Threads outside the pool (Qt threads, the main thread) use a shared, mutex-protected fallback pool. A list is used by one thread at a time.
+- **Multi-threaded recording.** Allocators are pooled **per thread per frame per queue type**. The pool is picked by an **RHI-owned per-thread slot** (D-64), not by a thread-pool or worker index, because the recording threads are the parallel scheduler's workers, which have no Avis index ([15 §6](15-parallel-scheduler.md#6-determinism-and-priorities)):
+  - A thread gets its slot on its first `acquire_command_list`: a `thread_local` slot number, taken from a process-wide atomic counter. Slots are dense and never reused; recording threads (parallel workers, the occasional main or test thread) live as long as the process, so the count stays small.
+  - Each `render_hardware_interface` keeps its per-slot allocator pools in a table that grows when it first sees a higher slot number. Growing takes a mutex and happens once per thread; after that, acquiring a list is lock-free.
+  - Any thread can record, so there's no separate fallback pool for threads outside the pool. A debug warning fires if the slot count passes 2 × `hardware_concurrency`, which points at threads being created per recording.
+  - A list is used by one thread at a time.
 - **Submission order** across lists is the caller's responsibility. The render graph handles it ([10 §7](10-render-graph.md#7-execution-phase)).
 - **Recording-only narrowed views.** A graphics list can hand out a view restricted to the compute or copy subset:
   ```cpp
@@ -589,7 +593,7 @@ result<compute_pipeline_handle>  render_hardware_interface::create_pipeline(cons
 ```
 - PSOs are built with pipeline state streams (`ID3D12Device2::CreatePipelineState`), always using the global root signature.
 - The cache is keyed by a hash of the description (shader blob hashes included). Lookup is lock-free for reads; inserts take a mutex.
-- The renderer creates all known PSOs at startup, in parallel, with a `stdexec::bulk` over the pipeline descriptions on the task system ([15](15-task-system.md)). No pipeline libraries or on-disk PSO caching.
+- The renderer creates all known PSOs at startup, in parallel, with a `stdexec::bulk` over the pipeline descriptions on the parallel scheduler ([15](15-parallel-scheduler.md)). No pipeline libraries or on-disk PSO caching.
 
 ## 10. Readback
 ```cpp
@@ -643,6 +647,6 @@ Debug flags come from `visualizer.yaml` (`render.debug_layer`, `render.gpu_valid
 | `acquire_command_list` | Thread-safe, lock-free per thread |
 | Recording into a `command_list<Queue>` | One thread at a time |
 | `begin_frame`, `end_frame`, `queue<Queue>::submit` | Never block. Called from any thread, but **serialised by the frame chain** (one frame stage at a time, asserted in debug builds) |
-| `when_complete`, `begin_frame` completion, readback | Completion on an IO thread, continued on the task system |
+| `when_complete`, `begin_frame` completion, readback | Completion on an IO thread, continued on the parallel scheduler |
 | `wait_idle` | The only blocking call: shutdown and tests |
 | Uploads (`upload_*`, `upload_*_async`) | Thread-safe (ring allocation is atomic) and never block. A full ring fails the synchronous form or delays the sender's completion. `flush_uploads` is called from the frame chain. |

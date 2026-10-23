@@ -189,7 +189,7 @@ The thread pool and the parallel scheduler ([15](15-parallel-scheduler.md)) are 
 | No queues, no scheduler, no stdexec | stdexec scheduler, work stealing and `bulk` from `exec::static_thread_pool` |
 | Creates the IO and application threads | `exec::static_thread_pool` creates its own workers |
 
-Neither side uses the other. The thread pool must stay free of stdexec, which a CI include check enforces ([13 §9](13-build-and-quality.md#9-coding-standards)): `thread_pool.*` and `thread_handle.*` must not include `parallel_configuration.h`, `parallel_backend.h`, `parallel_helpers.h` or any stdexec header. The check is `tools/checks/check-threading-includes.ps1`, registered as a CTest test.
+Neither side uses the other. The thread pool must stay free of stdexec ([13 §9](13-build-and-quality.md#9-coding-standards)): `thread_pool.*` and `thread_handle.*` must not include `parallel_configuration.h`, `parallel_backend.h`, `parallel_helpers.h` or any stdexec header.
 
 ## 6. Testing
 - Start and stop single bodies. Every handle `join()` returns after `request_stop()`.
