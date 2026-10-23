@@ -20,7 +20,7 @@ project(AVIS
   LANGUAGES C CXX ASM)
 
   # This C++ standard is required to build Avis
-set(AVIS_REQUIRED_CXX_STANDARD 20)
+set(AVIS_REQUIRED_CXX_STANDARD 23)
 
 # If the cache contains CMAKE_CXX_STANDARD it means that it's a old CMakeCache.txt and we can just inform
 # the user and then reset it.

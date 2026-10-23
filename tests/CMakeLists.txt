@@ -34,12 +34,14 @@ target_link_libraries(AVIS_TESTS
 
 target_sources(AVIS_TESTS
 	PRIVATE
+		helpers/allocation_failure.cpp
 		test_error.cpp
 		test_external_dependencies.cpp
 		test_finite_state_machine.cpp
 		test_helpers.cpp
 		test_log.cpp
-		test_observables.cpp)
+		test_observables.cpp
+		test_thread_pool.cpp)
 
 include(CTest)
 add_test(NAME "Avis Tests" COMMAND AVIS_TESTS)

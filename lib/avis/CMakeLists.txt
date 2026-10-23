@@ -52,4 +52,10 @@ target_sources(AVIS_LIB
 		virtual_clock_state.cpp
 
 		scene/semantic_scene_graph.cpp
+
+		threading/pool_thread.cpp
+		threading/thread_handle.cpp
+		threading/thread_pool.cpp
+		threading/thread_priority.cpp
+		threading/thread_state.cpp
 )

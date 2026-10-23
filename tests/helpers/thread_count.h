@@ -42,6 +42,17 @@ namespace avis::tests
         CloseHandle(snapshot);
         return count;
     }
+
+    // Number of kernel handles open in this process; an exited thread that was never joined keeps one open
+    inline std::size_t current_process_handle_count()
+    {
+        DWORD count = 0;
+        if (!GetProcessHandleCount(GetCurrentProcess(), &count))
+        {
+            throw std::runtime_error{ "GetProcessHandleCount failed" };
+        }
+        return count;
+    }
 } // namespace avis::tests
 
 #endif
