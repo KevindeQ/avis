@@ -58,7 +58,7 @@ namespace avis
     // std::system_error; any other exception becomes generic_errc::unhandled_exception.
     error make_error(std::exception_ptr exception, std::source_location location = std::source_location::current());
 
-    // Exception for unrecoverable conditions (01 §6.1), carrying an avis::error
+    // Exception for unrecoverable conditions, carrying an avis::error
     class runtime_error : public std::runtime_error
     {
     public:

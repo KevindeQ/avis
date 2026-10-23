@@ -27,7 +27,7 @@ namespace avis
         off
     };
 
-    // Owned by runtime_configuration (14 §3); defined here because avis::log is initialised from it
+    // Owned by runtime_configuration; defined here because avis::log is initialised from it
     struct logging_configuration
     {
         log_level default_level = log_level::info;
@@ -40,14 +40,14 @@ namespace avis
 
 namespace avis::log
 {
-    // Component loggers registered at initialisation (13 §7). Other names, such as "plugin.<name>",
+    // Component loggers registered at initialisation. Other names, such as "plugin.<name>",
     // are created on first use.
     inline constexpr std::array<std::string_view, 10> component_loggers{ "core",  "io",     "network", "rhi",
                                                                          "graph", "render", "scene",   "simulation",
                                                                          "ui",    "driver" };
 
     // Returns the named logger. Safe to call at any time and from any thread: before initialisation and
-    // after shutdown the logger has no output sinks and drops every message (14 §5).
+    // after shutdown the logger has no output sinks and drops every message.
     std::shared_ptr<spdlog::logger> get(std::string_view name);
 
     // Name shown in the "[t:...]" field of the log pattern for the calling thread. The thread pool sets it
