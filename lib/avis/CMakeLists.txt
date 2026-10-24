@@ -37,6 +37,7 @@ target_link_libraries(AVIS_LIB
 		ASIO
 		Eigen3::Eigen
 		EnTT::EnTT
+		D3D12MemoryAllocator
 		h3
 		STDEXEC::stdexec
 
