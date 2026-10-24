@@ -70,7 +70,7 @@ namespace avis
             state_->logging = true;
 
             state_->pool = std::make_unique<threading::thread_pool>(active.thread_pool);
-            state_->io = std::make_unique<io::io_context>(*state_->pool, active.io.threads);
+            state_->io = std::make_unique<io::io_context>(*state_->pool, active.io);
 
             state_->parallel_pool =
                 std::make_unique<exec::static_thread_pool>(static_cast<std::uint32_t>(active.parallel.workers));

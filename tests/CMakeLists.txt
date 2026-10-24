@@ -32,6 +32,11 @@ target_link_libraries(AVIS_TESTS
 
 		Catch2::Catch2WithMain)
 
+# White-box tests include private library headers (lib/avis/...), e.g. the IO operation registry
+target_include_directories(AVIS_TESTS
+	PRIVATE
+		${CMAKE_SOURCE_DIR}/lib)
+
 target_sources(AVIS_TESTS
 	PRIVATE
 		helpers/allocation_failure.cpp
@@ -45,6 +50,7 @@ target_sources(AVIS_TESTS
 		test_io_error.cpp
 		test_log.cpp
 		test_observables.cpp
+		test_operation_registry.cpp
 		test_parallel_backend.cpp
 		test_runtime.cpp
 		test_runtime_configuration.cpp

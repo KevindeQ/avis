@@ -53,6 +53,7 @@ target_sources(AVIS_LIB
 		runtime_configuration.cpp
 		virtual_clock_state.cpp
 
+		io/detail/operation_registry.cpp
 		io/error.cpp
 		io/io_context.cpp
 

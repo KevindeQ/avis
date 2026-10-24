@@ -1,6 +1,8 @@
 #ifndef AVIS_IO_ASIO_SCHEDULER_H
 #define AVIS_IO_ASIO_SCHEDULER_H
 
+#include "avis/error.h"
+
 #include <asio/any_io_executor.hpp>
 #include <asio/post.hpp>
 #include <stdexec/execution.hpp>
@@ -48,7 +50,7 @@ namespace avis::io
                 using sender_concept = stdexec::sender_tag;
                 using completion_signatures = stdexec::completion_signatures<
                     stdexec::set_value_t(),
-                    stdexec::set_error_t(std::exception_ptr),
+                    stdexec::set_error_t(avis::error),
                     stdexec::set_stopped_t()>;
 
                 template<stdexec::receiver Receiver>
@@ -69,9 +71,11 @@ namespace avis::io
 
                     void start() & noexcept
                     {
-                        if constexpr (!stdexec::unstoppable_token<stdexec::stop_token_of_t<stdexec::env_of_t<Receiver>>>)
+                        if constexpr (!stdexec::unstoppable_token<
+                                          stdexec::stop_token_of_t<stdexec::env_of_t<Receiver>>>)
                         {
-                            const stdexec::stoppable_token auto stop_token = stdexec::get_stop_token(stdexec::get_env(receiver_));
+                            const stdexec::stoppable_token auto stop_token =
+                                stdexec::get_stop_token(stdexec::get_env(receiver_));
                             if (stop_token.stop_requested())
                             {
                                 stdexec::set_stopped(std::move(receiver_));
@@ -85,7 +89,7 @@ namespace avis::io
                         }
                         catch (...)
                         {
-                            stdexec::set_error(std::move(receiver_), std::current_exception());
+                            stdexec::set_error(std::move(receiver_), avis::make_error(std::current_exception()));
                         }
                     }
 

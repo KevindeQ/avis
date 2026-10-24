@@ -30,6 +30,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -315,6 +317,85 @@ TEST_CASE("avis::threading::sync_wait refuses to block parallel work", "[paralle
     // Outside parallel work it waits as usual
     CHECK_FALSE(avis::threading::detail::in_parallel_work());
     CHECK(avis::threading::sync_wait(stdexec::schedule(scheduler)).has_value());
+}
+
+TEST_CASE("sync_wait_result turns the three channels into a result", "[parallel][sync_wait_result]")
+{
+    using avis::threading::sync_wait_result;
+
+    SECTION("one value")
+    {
+        STATIC_CHECK(std::is_same_v<decltype(sync_wait_result(stdexec::just(42))), avis::result<int>>);
+        const avis::result<int> result = sync_wait_result(stdexec::just(42));
+        REQUIRE(result.has_value());
+        CHECK(*result == 42);
+    }
+
+    SECTION("no value")
+    {
+        STATIC_CHECK(std::is_same_v<decltype(sync_wait_result(stdexec::just())), avis::result<void>>);
+        CHECK(sync_wait_result(stdexec::just()).has_value());
+    }
+
+    SECTION("several values")
+    {
+        const auto result = sync_wait_result(stdexec::just(1, std::string{ "two" }));
+        STATIC_CHECK(std::is_same_v<std::remove_cvref_t<decltype(result)>, avis::result<std::tuple<int, std::string>>>);
+        REQUIRE(result.has_value());
+        CHECK(std::get<0>(*result) == 1);
+        CHECK(std::get<1>(*result) == "two");
+    }
+
+    SECTION("avis::error passes through unchanged")
+    {
+        const avis::error original{ .domain = avis::error_domain::io, .code = 7, .message = "read failed" };
+        const avis::result<void> result = sync_wait_result(stdexec::just_error(original));
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().domain == avis::error_domain::io);
+        CHECK(result.error().code == 7);
+        CHECK(result.error().message == "read failed");
+    }
+
+    SECTION("an exception_ptr becomes an avis::error")
+    {
+        const avis::result<void> result =
+            sync_wait_result(stdexec::just_error(std::make_exception_ptr(std::runtime_error{ "boom" })));
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == static_cast<std::int32_t>(avis::generic_error_kind::unhandled_exception));
+        CHECK(result.error().message == "boom");
+    }
+
+    SECTION("a throwing continuation becomes an avis::error")
+    {
+        const avis::result<int> result = sync_wait_result(
+            stdexec::just(1) | stdexec::then([](int) -> int { throw std::runtime_error{ "parse failed" }; }));
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().message == "parse failed");
+    }
+
+    SECTION("stopped becomes generic_error_kind::cancelled")
+    {
+        const avis::result<void> result = sync_wait_result(stdexec::just_stopped());
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().domain == avis::error_domain::generic);
+        CHECK(result.error().code == static_cast<std::int32_t>(avis::generic_error_kind::cancelled));
+    }
+}
+
+TEST_CASE("sync_wait_result refuses to block parallel work", "[parallel][sync_wait_result]")
+{
+    avis::runtime runtime{ avis::tests::small_runtime_configuration(2) };
+
+    auto nested = stdexec::schedule(stdexec::get_parallel_scheduler()) |
+                  stdexec::then([] { return avis::threading::sync_wait_result(stdexec::just(1)).has_value(); });
+    CHECK_THROWS_AS(stdexec::sync_wait(std::move(nested)), std::logic_error);
+
+    // Outside parallel work it runs parallel work and waits as usual
+    const avis::result<bool> result = avis::threading::sync_wait_result(
+        stdexec::schedule(stdexec::get_parallel_scheduler()) |
+        stdexec::then([] { return avis::threading::detail::in_parallel_work(); }));
+    REQUIRE(result.has_value());
+    CHECK(*result);
 }
 
 TEST_CASE("the parallel scheduler design examples run", "[parallel]")

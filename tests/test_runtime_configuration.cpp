@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <string>
 #include <thread>
 
@@ -53,7 +54,7 @@ zenoh:
     multicast: true                         # answer scouting requests
     autoconnect: []                         # never initiate; the Visualizer scouts and connects
 runtime:
-  io_threads: 1
+  io_threads: 2                             # the Driver issues many prefetch reads
   parallel_workers: 0                       # 0 = max(1, hardware_concurrency - 2)
   thread_pool_capacity: 0                   # 0 = computed
 logging:
@@ -64,9 +65,24 @@ debug:
   zenoh_lease: 1h
 )");
     REQUIRE(configuration.has_value());
-    CHECK(configuration->io.threads == 1);
+    CHECK(configuration->io.threads == 2);
     CHECK(configuration->logging.default_level == avis::log_level::info);
     CHECK(configuration->logging.file.has_value());
+}
+
+TEST_CASE("the IO shutdown timeout parses in milliseconds", "[runtime_configuration]")
+{
+    const auto configured = avis::runtime_configuration::parse("runtime: { io_shutdown_timeout_ms: 250 }");
+    REQUIRE(configured.has_value());
+    CHECK(configured->io.shutdown_timeout == std::chrono::milliseconds{ 250 });
+
+    const auto zero = avis::runtime_configuration::parse("runtime: { io_shutdown_timeout_ms: 0 }");
+    REQUIRE(zero.has_value());
+    CHECK(zero->io.shutdown_timeout == std::chrono::milliseconds{ 0 });
+
+    const auto missing = avis::runtime_configuration::parse("runtime: { io_threads: 1 }");
+    REQUIRE(missing.has_value());
+    CHECK(missing->io.shutdown_timeout == std::chrono::milliseconds{ 1000 });
 }
 
 TEST_CASE("missing sections and keys keep the defaults", "[runtime_configuration]")
@@ -116,6 +132,8 @@ TEST_CASE("invalid values are parse errors with position and key path", "[runtim
     for (const auto& [text, expected] : {
              invalid_case{ "runtime:\n  io_threads: many\n", "2:15: runtime.io_threads: expected an unsigned integer" },
              invalid_case{ "runtime: { parallel_workers: -1 }", "runtime.parallel_workers" },
+             invalid_case{ "runtime:\n  io_shutdown_timeout_ms: soon\n",
+                           "2:27: runtime.io_shutdown_timeout_ms: expected an unsigned integer" },
              invalid_case{ "runtime: { thread_pool_capacity: [1, 2] }", "runtime.thread_pool_capacity" },
              invalid_case{ "logging:\n  level: loud\n", "2:10: logging.level: expected one of" },
              invalid_case{ "logging: { levels: { rhi: chatty } }", "logging.levels.rhi" },

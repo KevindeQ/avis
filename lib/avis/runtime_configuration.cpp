@@ -1,7 +1,10 @@
 #include "avis/runtime_configuration.h"
 
+#include <yaml-cpp/yaml.h>
+
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <format>
 #include <limits>
@@ -9,7 +12,6 @@
 #include <string>
 #include <thread>
 #include <utility>
-#include <yaml-cpp/yaml.h>
 
 namespace avis
 {
@@ -180,6 +182,14 @@ namespace avis
             {
                 return failure;
             }
+
+            auto shutdown_timeout_ms = static_cast<std::size_t>(configuration.io.shutdown_timeout.count());
+            if (auto failure = runtime.read_count("io_shutdown_timeout_ms", shutdown_timeout_ms))
+            {
+                return failure;
+            }
+            configuration.io.shutdown_timeout =
+                std::chrono::milliseconds{ static_cast<std::chrono::milliseconds::rep>(shutdown_timeout_ms) };
             if (auto failure = runtime.read_count("parallel_workers", configuration.parallel.workers))
             {
                 return failure;

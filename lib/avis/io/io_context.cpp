@@ -1,6 +1,9 @@
 #include "avis/io/io_context.h"
 
+#include "detail/operation_registry.h"
+
 #include "avis/error.h"
+#include "avis/log.h"
 #include "avis/threading/parallel_helpers.h"
 #include "avis/threading/thread_pool.h"
 
@@ -15,18 +18,20 @@ namespace avis::io
         thread_local const io_context* current_context = nullptr;
     } // namespace
 
-    io_context::io_context(threading::thread_pool& pool, const std::size_t threads) :
-        context_{ static_cast<int>(threads) },
-        guard_{ asio::make_work_guard(context_) }
+    io_context::io_context(threading::thread_pool& pool, const io_configuration& configuration) :
+        context_{ static_cast<int>(configuration.threads) },
+        operations_{ &asio::make_service<detail::operation_registry>(context_) },
+        guard_{ asio::make_work_guard(context_) },
+        shutdown_timeout_{ configuration.shutdown_timeout }
     {
-        if (threads == 0)
+        if (configuration.threads == 0)
         {
             throw runtime_error{ make_error(
                 generic_error_kind::invalid_configuration, "io_context: needs at least 1 thread") };
         }
 
-        threads_.reserve(threads);
-        for (std::size_t index = 0; index < threads; ++index)
+        threads_.reserve(configuration.threads);
+        for (std::size_t index = 0; index < configuration.threads; ++index)
         {
             auto handle = pool.start(std::format("io-{}", index), [this](const std::stop_token token) { run(token); });
             if (!handle)
@@ -58,8 +63,42 @@ namespace avis::io
 
     void io_context::request_stop() noexcept
     {
-        guard_.reset();
+        if (!stopping_.exchange(true))
+        {
+            // Cancelled operations complete with set_stopped on the IO threads, which keep running until stop()
+            operations_->close_and_cancel_all();
+            guard_.reset();
+
+            // Waiting on an IO thread would block the completions it waits for
+            if (current() != this && shutdown_timeout_.count() > 0)
+            {
+                try
+                {
+                    if (!operations_->wait_empty(shutdown_timeout_))
+                    {
+                        log::get("io")->warn(
+                            "io_context: {} operation(s) still running after the {} ms shutdown timeout; stopping "
+                            "without them",
+                            operations_->size(),
+                            shutdown_timeout_.count());
+                    }
+                }
+                catch (...)
+                {
+                    // Waiting or logging failed: stop without waiting
+                }
+            }
+        }
+        else
+        {
+            guard_.reset();
+        }
         context_.stop();
+    }
+
+    bool io_context::stopping() const noexcept
+    {
+        return stopping_.load();
     }
 
     const io_context* io_context::current() noexcept
