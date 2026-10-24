@@ -50,6 +50,7 @@ target_sources(AVIS_TESTS
 		test_helpers.cpp
 		test_io_context.cpp
 		test_io_error.cpp
+		test_io_public_headers.cpp
 		test_log.cpp
 		test_mapped_file.cpp
 		test_observables.cpp
