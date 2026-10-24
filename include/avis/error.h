@@ -40,7 +40,7 @@ namespace avis
     struct error
     {
         error_domain domain = error_domain::generic;
-        std::int32_t code = 0; // domain-specific code (e.g. HRESULT, errno, protocol status)
+        std::int32_t code = 0; // domain-specific code: generic_error_kind, io::error_kind, HRESULT, protocol status
         std::string message; // human-readable, already formatted
         std::source_location location = std::source_location::current();
     };

@@ -42,11 +42,13 @@ target_sources(AVIS_TESTS
 		test_finite_state_machine.cpp
 		test_helpers.cpp
 		test_io_context.cpp
+		test_io_error.cpp
 		test_log.cpp
 		test_observables.cpp
 		test_parallel_backend.cpp
 		test_runtime.cpp
 		test_runtime_configuration.cpp
+		test_sender_of.cpp
 		test_thread_pool.cpp)
 
 include(CTest)
