@@ -75,7 +75,7 @@ set(AVIS_INCLUDE_DIR ${AVIS_SRC_DIR}/include)
 #set(AVIS_ASSETS_DIR  ${AVIS_SRC_DIR}/assets)
 
 # Find Qt6 libraries and add them as required dependency
-find_package(Qt6 6.11 COMPONENTS Core Quick Gui REQUIRED)
+find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui GuiPrivate Qml Quick ShaderTools)
 qt_standard_project_setup(REQUIRES 6.11)
 
 # Include additional support CMake files
