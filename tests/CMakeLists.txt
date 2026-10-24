@@ -45,11 +45,13 @@ target_sources(AVIS_TESTS
 		test_enum_flags.cpp
 		test_error.cpp
 		test_external_dependencies.cpp
+		test_file_operations.cpp
 		test_finite_state_machine.cpp
 		test_helpers.cpp
 		test_io_context.cpp
 		test_io_error.cpp
 		test_log.cpp
+		test_mapped_file.cpp
 		test_observables.cpp
 		test_operation_registry.cpp
 		test_parallel_backend.cpp

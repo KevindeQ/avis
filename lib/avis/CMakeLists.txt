@@ -62,7 +62,9 @@ target_sources(AVIS_LIB
 		io/detail/file_sender.cpp
 		io/detail/operation_registry.cpp
 		io/error.cpp
+		io/file_operations.cpp
 		io/io_context.cpp
+		io/mapped_file.cpp
 
 		scene/semantic_scene_graph.cpp
 
