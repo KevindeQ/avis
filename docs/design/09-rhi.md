@@ -524,11 +524,11 @@ These map 1:1 to `D3D12_TEXTURE_BARRIER` / `D3D12_BUFFER_BARRIER` / `D3D12_GLOBA
 
 ### 8.1 Staging ring buffer
 - One persistently mapped `UPLOAD` buffer (default 64 MiB) used as a ring. Each allocation is tagged with the **copy-queue** synchronization point of the submission that consumes it. The tail advances past entries whose synchronization points have completed.
-- **Allocation never blocks a thread.** When a request doesn't fit, the synchronous call fails with `rhi::errc::upload_ring_full` instead of waiting. The asynchronous variant returns a sender that completes once enough of the ring has been retired: it waits on the oldest pending synchronization points with `when_complete` (§4.2, §10), so the wait happens on an IO completion, not on a sleeping thread. `wait_idle` stays the only blocking RHI call.
+- **Allocation never blocks a thread.** When a request doesn't fit, the synchronous call fails with `rhi::error_kind::upload_ring_full` instead of waiting. The asynchronous variant returns a sender that completes once enough of the ring has been retired: it waits on the oldest pending synchronization points with `when_complete` (§4.2, §10), so the wait happens on an IO completion, not on a sleeping thread. `wait_idle` stays the only blocking RHI call.
 - Requests larger than half the ring get a dedicated temporary upload buffer, freed through deferred destruction. They never wait for ring space.
 - API:
 ```cpp
-// non-blocking: fails with errc::upload_ring_full when the ring has no room right now
+// non-blocking: fails with error_kind::upload_ring_full when the ring has no room right now
 result<upload_ticket> upload_buffer(buffer_handle destination, std::uint64_t destination_offset, std::span<const std::byte> data);
 result<upload_ticket> upload_texture(texture_handle destination, std::span<const subresource_data> data);   // footprints computed internally
 

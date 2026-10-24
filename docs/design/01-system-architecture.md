@@ -195,7 +195,7 @@ namespace avis
     struct error
     {
         error_domain domain = error_domain::generic;
-        std::int32_t code = 0;             // domain-specific code (e.g. HRESULT, errno, protocol status)
+        std::int32_t code = 0;             // domain-specific code (e.g. generic_error_kind, io::error_kind, HRESULT, protocol status)
         std::string message;               // human-readable, already formatted
         std::source_location location = std::source_location::current();
     };
@@ -245,7 +245,7 @@ zenoh:
     multicast: true                         # answer scouting requests
     autoconnect: []                         # never initiate; the Visualizer scouts and connects
 runtime:
-  io_threads: 1
+  io_threads: 2                             # the Driver issues many prefetch reads (07 §3.1)
   parallel_workers: 0                       # 0 = max(1, hardware_concurrency - 2)
   thread_pool_capacity: 0                   # 0 = computed (14 §3.1)
 logging:

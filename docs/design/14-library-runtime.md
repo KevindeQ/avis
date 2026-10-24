@@ -81,7 +81,7 @@ namespace avis
     {
         logging_configuration                logging;
         threading::thread_pool_configuration thread_pool;        // capacity, join warning (06 §3)
-        io::io_configuration                 io;                 // threads of the default IO context (07 §3)
+        io::io_configuration                 io;                 // threads and shutdown timeout of the default IO context (07 §3)
         threading::parallel_configuration    parallel;           // workers of the parallel pool (15 §7)
         std::size_t application_threads = 0;              // long-running threads the application will start itself
 
@@ -103,7 +103,7 @@ capacity = io.threads + application_threads + 2 (headroom)
 | Application | `application_threads` | Defaults |
 |---|---|---|
 | Visualizer | 1 (simulation; the renderer has no thread of its own, it's a sender chain) | io 1, parallel workers `max(1, hardware_concurrency − 2)` |
-| Driver | 2 (service, step executor) | io 1, parallel workers `max(1, hardware_concurrency − 2)` |
+| Driver | 2 (service, step executor) | io 2 ([07 §3.1](07-io-layer.md#31-threading-one-strand-per-file)), parallel workers `max(1, hardware_concurrency − 2)` |
 | Tests | per fixture | small explicit values |
 
 The parallel workers are created by `exec::static_thread_pool`, not by the thread pool, so they don't count towards its capacity ([15 §1](15-parallel-scheduler.md#1-requirements)).
@@ -116,6 +116,7 @@ Application YAML ([01 §7](01-system-architecture.md#7-configuration)) feeds `ru
 ```yaml
 runtime:
   io_threads: 1
+  io_shutdown_timeout_ms: 1000  # drain limit for cancelled IO at shutdown (07 §3.3); 0 = don't wait
   parallel_workers: 0        # 0 = max(1, hardware_concurrency - 2)
   thread_pool_capacity: 0    # 0 = computed (§3.1)
 logging:
@@ -138,7 +139,7 @@ If a step fails, the steps already completed are rolled back in reverse order, a
 Applications are expected to have stopped **their own** long-running threads (by destroying their `thread_handle`s) and to have finished or cancelled their parallel work before the runtime is destroyed. Work still queued on the parallel pool at that point may never run, and its operations may never complete (D-63). The runtime then:
 
 1. **Parallel pool**: unpublish the backend (`get_parallel_scheduler()` throws from here on), detach it (earlier scheduler copies complete with `set_stopped()`), then destroy `exec::static_thread_pool`, which stops and joins its workers ([15 §5](15-parallel-scheduler.md#5-lifecycle)). This goes first, because parallel work may still issue IO.
-2. **IO**: stop accepting new operations, cancel outstanding ones (they complete with `set_stopped`), release the work guard, `io_context::stop()`, and join the IO bodies.
+2. **IO**: stop accepting new operations, cancel outstanding ones (they complete with `set_stopped`), release the work guard, let the cancelled operations drain for at most `io.shutdown_timeout`, `io_context::stop()`, and join the IO bodies ([07 §3.3](07-io-layer.md#33-shutdown)).
 3. **Unpublish** the instance pointer (the static accessors assert from here on). This happens only after the parallel pool and IO have stopped, so the last parallel work and IO completions can still use the accessors.
 4. **Thread pool**: destroying it runs the signal-all-then-join-all backstop for anything still running (an application thread that wasn't stopped), with the `join_warning` diagnostic ([06 §4.2](06-thread-pool.md#42-shutdown-as-specified)).
 5. **Logging**: flush sinks, then shut down.

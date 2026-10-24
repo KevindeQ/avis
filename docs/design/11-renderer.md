@@ -558,7 +558,7 @@ Screenshots of the 3D viewport are taken **inside the renderer**, so they contai
 **Viewport resolution** (`mode = viewport`), on the next frame:
 1. The renderer adds a `capture` copy pass to the main view, right after `overlay` (or after `debug_blit` when `include_debug_blit` is set). It copies `ldr_color` into an **imported `readback` buffer** (`copy_texture_to_buffer`), so the render graph places the barriers.
 2. The frame is submitted as usual. `when_complete` on its graphics synchronization point ([09 §4.1](09-rhi.md#41-queues)) resumes the capture on a parallel worker. Nothing waits.
-3. The worker encodes a PNG with WIC. `ldr_color` already holds sRGB-encoded `RGBA8` values, so they're written as they are (alpha forced to 255). It then writes the file with the IO layer's atomic replace ([07 §4](07-io-layer.md#4-api)).
+3. The worker encodes a PNG with WIC. `ldr_color` already holds sRGB-encoded `RGBA8` values, so they're written as they are (alpha forced to 255). It then writes the file with the IO layer's atomic replace ([07 §4.5](07-io-layer.md#45-whole-file-operations-avisiofile_operationsh)).
 
 **Custom resolution** (`mode = custom`, for example 3840 × 2160 for a slide or a poster):
 - The renderer adds a temporary offscreen **view** named `screenshot` ([10 §8](10-render-graph.md#8-multi-view)) at the requested size. It uses the main camera with the requested aspect ratio, keeping the vertical field of view.
