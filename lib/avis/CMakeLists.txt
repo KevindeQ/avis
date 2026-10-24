@@ -21,10 +21,9 @@ target_compile_definitions(AVIS_LIB
 		# newer APIs from <windows.h>, e.g. FileRenameInfoEx for POSIX-semantics renames.
 		_WIN32_WINNT=0x0A00
 
-		$<$<BOOL:${WIN32}>:ENGINE_PLATFORM_WINDOWS>
-		$<$<STREQUAL:${CMAKE_CXX_COMPILER_ID},MSVC>:ENGINE_COMPILER_MSVC>
-
-		$<IF:$<CONFIG:Debug>,ENGINE_BUILD_DEBUG,ENGINE_BUILD_RELEASE>
+		# Disable the usage of Qt specific keywords since they interfere with commonly
+		# used function names such as emit.
+		QT_NO_KEYWORDS
 )
 
 # Third-party include directories come with the linked targets below
