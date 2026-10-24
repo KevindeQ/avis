@@ -16,6 +16,11 @@ target_compile_definitions(AVIS_LIB
 	PUBLIC
 		UNICODE
 		_UNICODE
+
+		# Windows 10+ APIs (the minimum OS is Windows 11, D-05). Without it asio assumes Windows 7 (0x0601) and hides
+		# newer APIs from <windows.h>, e.g. FileRenameInfoEx for POSIX-semantics renames.
+		_WIN32_WINNT=0x0A00
+
 		$<$<BOOL:${WIN32}>:ENGINE_PLATFORM_WINDOWS>
 		$<$<STREQUAL:${CMAKE_CXX_COMPILER_ID},MSVC>:ENGINE_COMPILER_MSVC>
 
@@ -53,6 +58,8 @@ target_sources(AVIS_LIB
 		runtime_configuration.cpp
 		virtual_clock_state.cpp
 
+		io/async_file.cpp
+		io/detail/file_sender.cpp
 		io/detail/operation_registry.cpp
 		io/error.cpp
 		io/io_context.cpp

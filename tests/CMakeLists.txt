@@ -41,6 +41,7 @@ target_sources(AVIS_TESTS
 	PRIVATE
 		helpers/allocation_failure.cpp
 		test_asio_senders_receivers.cpp
+		test_async_file.cpp
 		test_enum_flags.cpp
 		test_error.cpp
 		test_external_dependencies.cpp
