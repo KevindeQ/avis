@@ -1,13 +1,14 @@
 #include "avis/log.h"
 
-#include <format>
-#include <mutex>
-#include <shared_mutex>
 #include <spdlog/pattern_formatter.h>
 #include <spdlog/sinks/dist_sink.h>
 #include <spdlog/sinks/msvc_sink.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+
+#include <format>
+#include <mutex>
+#include <shared_mutex>
 #include <utility>
 #include <vector>
 
