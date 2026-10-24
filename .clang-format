@@ -102,9 +102,11 @@ IncludeBlocks:   Regroup
 IncludeCategories:
   - Regex:    '^"avis\/'
     Priority: 20
-  - Regex:    '^<(asio|eigen|entt|exec|h3|stdexec)\/.+(.h|.hpp)?>$'
+  - Regex:    '^<(asio|eigen|entt|fastgltf|exec|h3|spdlog|stdexec|yaml-cpp)\/.+(.h|.hpp)?>$'
     Priority: 30
   - Regex:    '^<(Qt|Q).+>$'
+    Priority: 30
+  - Regex:    'D3D12MemAlloc.h'
     Priority: 30
   - Regex:    '^<catch2\/.+\.hpp>$'
     Priority: 40
