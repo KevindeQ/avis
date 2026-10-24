@@ -50,7 +50,7 @@ namespace avis
     {
         if (constructing_.exchange(true, std::memory_order_acq_rel))
         {
-            throw runtime_error{ make_error(generic_errc::already_exists, "runtime: another runtime is alive") };
+            throw runtime_error{ make_error(generic_error_kind::already_exists, "runtime: another runtime is alive") };
         }
 
         try

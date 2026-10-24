@@ -301,7 +301,7 @@ namespace avis
         if (configuration.io.threads == 0)
         {
             return std::unexpected{ make_error(
-                generic_errc::invalid_configuration, "runtime configuration: io.threads must be at least 1") };
+                generic_error_kind::invalid_configuration, "runtime configuration: io.threads must be at least 1") };
         }
 
         configuration.parallel.workers = resolve_worker_count(configuration.parallel.workers);
@@ -314,7 +314,7 @@ namespace avis
         else if (configuration.thread_pool.capacity < required)
         {
             return std::unexpected{ make_error(
-                generic_errc::invalid_configuration,
+                generic_error_kind::invalid_configuration,
                 std::format(
                     "runtime configuration: thread_pool.capacity {} is below the {} threads needed "
                     "(io.threads {} + application_threads {})",

@@ -25,7 +25,7 @@ namespace avis
     };
 
     // Codes of errors in error_domain::generic
-    enum class generic_errc : std::int32_t
+    enum class generic_error_kind : std::int32_t
     {
         ok = 0,
         invalid_configuration,
@@ -49,13 +49,13 @@ namespace avis
     using result = std::expected<T, error>;
 
     std::string_view to_string(error_domain domain) noexcept;
-    std::string_view to_string(generic_errc code) noexcept;
+    std::string_view to_string(generic_error_kind code) noexcept;
 
     error make_error(
-        generic_errc code, std::string message, std::source_location location = std::source_location::current());
+        generic_error_kind code, std::string message, std::source_location location = std::source_location::current());
 
     // Converts an exception into an error. Keeps the error of an avis::runtime_error and the code of a
-    // std::system_error; any other exception becomes generic_errc::unhandled_exception.
+    // std::system_error; any other exception becomes generic_error_kind::unhandled_exception.
     error make_error(std::exception_ptr exception, std::source_location location = std::source_location::current());
 
     // Exception for unrecoverable conditions, carrying an avis::error

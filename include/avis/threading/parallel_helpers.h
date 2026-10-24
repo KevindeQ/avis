@@ -68,7 +68,7 @@ namespace avis::threading
             }
             else
             {
-                return make_error(generic_errc::unhandled_exception, "unknown error type in a sender pipeline");
+                return make_error(generic_error_kind::unhandled_exception, "unknown error type in a sender pipeline");
             }
         }
     } // namespace detail

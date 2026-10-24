@@ -36,14 +36,14 @@ namespace avis::threading
         if (stopping_)
         {
             return std::unexpected{ make_error(
-                generic_errc::pool_stopping,
+                generic_error_kind::pool_stopping,
                 std::format("thread pool: can't start 'avis-{}', the pool is stopping", name)) };
         }
 
         if (!body)
         {
             return std::unexpected{ make_error(
-                generic_errc::logic_error,
+                generic_error_kind::logic_error,
                 std::format("thread pool: can't start 'avis-{}', the body is empty", name)) };
         }
 
@@ -53,7 +53,7 @@ namespace avis::threading
         if (free_index == used_indices_.end())
         {
             return std::unexpected{ make_error(
-                generic_errc::pool_exhausted,
+                generic_error_kind::pool_exhausted,
                 std::format(
                     "thread pool: can't start 'avis-{}', all {} threads are in use", name, configuration_.capacity)) };
         }

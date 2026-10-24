@@ -40,8 +40,9 @@ namespace avis::threading
         thread_pool(thread_pool&&) = delete; // running threads point at their pool
         thread_pool& operator=(thread_pool&&) = delete;
 
-        // Fails with generic_errc::pool_exhausted when capacity() bodies are running, with
-        // generic_errc::pool_stopping after request_stop(), and with generic_errc::logic_error for an empty body
+        // Fails with generic_error_kind::pool_exhausted when capacity() bodies are running, with
+        // generic_error_kind::pool_stopping after request_stop(), and with generic_error_kind::logic_error for an empty
+        // body
         result<thread_handle> start(std::string_view name, thread_body body, thread_options options = {});
 
         void request_stop() noexcept; // signals every running body

@@ -159,7 +159,7 @@ TEST_CASE("resolve rejects inconsistent configurations", "[runtime_configuration
     configuration.thread_pool.capacity = 4; // below 2 + 3
     auto resolved = avis::runtime_configuration::resolve(configuration);
     REQUIRE_FALSE(resolved.has_value());
-    CHECK(resolved.error().code == static_cast<std::int32_t>(avis::generic_errc::invalid_configuration));
+    CHECK(resolved.error().code == static_cast<std::int32_t>(avis::generic_error_kind::invalid_configuration));
 
     configuration.thread_pool.capacity = 5; // exactly enough is accepted
     CHECK(avis::runtime_configuration::resolve(configuration).has_value());
@@ -167,5 +167,5 @@ TEST_CASE("resolve rejects inconsistent configurations", "[runtime_configuration
     configuration.io.threads = 0;
     resolved = avis::runtime_configuration::resolve(configuration);
     REQUIRE_FALSE(resolved.has_value());
-    CHECK(resolved.error().code == static_cast<std::int32_t>(avis::generic_errc::invalid_configuration));
+    CHECK(resolved.error().code == static_cast<std::int32_t>(avis::generic_error_kind::invalid_configuration));
 }

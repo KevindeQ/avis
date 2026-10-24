@@ -22,7 +22,7 @@ namespace avis::io
         if (threads == 0)
         {
             throw runtime_error{ make_error(
-                generic_errc::invalid_configuration, "io_context: needs at least 1 thread") };
+                generic_error_kind::invalid_configuration, "io_context: needs at least 1 thread") };
         }
 
         threads_.reserve(threads);

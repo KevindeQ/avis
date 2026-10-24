@@ -43,10 +43,10 @@ TEST_CASE("error captures the source location where it is created", "[error]")
     SECTION("make_error with a generic code")
     {
         const auto expected_line = __LINE__ + 1;
-        const avis::error error = avis::make_error(avis::generic_errc::pool_exhausted, "no free slot");
+        const avis::error error = avis::make_error(avis::generic_error_kind::pool_exhausted, "no free slot");
 
         CHECK(error.domain == avis::error_domain::generic);
-        CHECK(error.code == static_cast<std::int32_t>(avis::generic_errc::pool_exhausted));
+        CHECK(error.code == static_cast<std::int32_t>(avis::generic_error_kind::pool_exhausted));
         CHECK(error.message == "no free slot");
         CHECK(ends_with_file(error.location, "test_error.cpp"));
         CHECK(error.location.line() == expected_line);
@@ -98,7 +98,7 @@ TEST_CASE("make_error converts exceptions", "[error]")
         {
             const auto expected_line = __LINE__ + 1;
             const avis::error error = avis::make_error(std::current_exception());
-            CHECK(error.code == static_cast<std::int32_t>(avis::generic_errc::unhandled_exception));
+            CHECK(error.code == static_cast<std::int32_t>(avis::generic_error_kind::unhandled_exception));
             CHECK(error.message == "invariant violated");
             CHECK(error.location.line() == expected_line);
         }
@@ -113,7 +113,7 @@ TEST_CASE("make_error converts exceptions", "[error]")
         catch (...)
         {
             const avis::error error = avis::make_error(std::current_exception());
-            CHECK(error.code == static_cast<std::int32_t>(avis::generic_errc::unhandled_exception));
+            CHECK(error.code == static_cast<std::int32_t>(avis::generic_error_kind::unhandled_exception));
             CHECK(error.message == "unknown exception");
         }
     }
@@ -121,33 +121,34 @@ TEST_CASE("make_error converts exceptions", "[error]")
     SECTION("no exception")
     {
         const avis::error error = avis::make_error(std::exception_ptr{});
-        CHECK(error.code == static_cast<std::int32_t>(avis::generic_errc::logic_error));
+        CHECK(error.code == static_cast<std::int32_t>(avis::generic_error_kind::logic_error));
     }
 }
 
 TEST_CASE("runtime_error exposes its error and message", "[error]")
 {
     const avis::runtime_error exception{ avis::make_error(
-        avis::generic_errc::invalid_configuration, "capacity too small") };
+        avis::generic_error_kind::invalid_configuration, "capacity too small") };
 
     CHECK(std::string_view{ exception.what() } == "capacity too small");
-    CHECK(exception.error().code == static_cast<std::int32_t>(avis::generic_errc::invalid_configuration));
+    CHECK(exception.error().code == static_cast<std::int32_t>(avis::generic_error_kind::invalid_configuration));
 }
 
 TEST_CASE("result carries a value or an error", "[error]")
 {
     const avis::result<int> value = 3;
-    const avis::result<int> failure = std::unexpected{ avis::make_error(avis::generic_errc::cancelled, "stopped") };
+    const avis::result<int> failure =
+        std::unexpected{ avis::make_error(avis::generic_error_kind::cancelled, "stopped") };
 
     CHECK(value.has_value());
     CHECK(*value == 3);
     REQUIRE_FALSE(failure.has_value());
-    CHECK(failure.error().code == static_cast<std::int32_t>(avis::generic_errc::cancelled));
+    CHECK(failure.error().code == static_cast<std::int32_t>(avis::generic_error_kind::cancelled));
 }
 
 TEST_CASE("domains and generic codes have names", "[error]")
 {
     CHECK(avis::to_string(avis::error_domain::generic) == "generic");
     CHECK(avis::to_string(avis::error_domain::protocol) == "protocol");
-    CHECK(avis::to_string(avis::generic_errc::pool_stopping) == "pool_stopping");
+    CHECK(avis::to_string(avis::generic_error_kind::pool_stopping) == "pool_stopping");
 }

@@ -87,7 +87,7 @@ TEST_CASE("capacity is enforced and slots are reused", "[thread_pool]")
 
     auto third = pool.start("third", wait_for_stop);
     REQUIRE_FALSE(third.has_value());
-    CHECK(code_of(third.error()) == static_cast<std::int32_t>(avis::generic_errc::pool_exhausted));
+    CHECK(code_of(third.error()) == static_cast<std::int32_t>(avis::generic_error_kind::pool_exhausted));
 
     first.request_stop();
     first.join();
@@ -103,7 +103,7 @@ TEST_CASE("start fails once the pool is stopping", "[thread_pool]")
 
     auto handle = pool.start("late", wait_for_stop);
     REQUIRE_FALSE(handle.has_value());
-    CHECK(code_of(handle.error()) == static_cast<std::int32_t>(avis::generic_errc::pool_stopping));
+    CHECK(code_of(handle.error()) == static_cast<std::int32_t>(avis::generic_error_kind::pool_stopping));
 }
 
 TEST_CASE("an exception escaping a body is contained", "[thread_pool]")
@@ -351,7 +351,7 @@ TEST_CASE("an empty body is rejected", "[thread_pool]")
 
     auto empty = pool.start("empty", avis::threading::thread_body{});
     REQUIRE_FALSE(empty.has_value());
-    CHECK(code_of(empty.error()) == static_cast<std::int32_t>(avis::generic_errc::logic_error));
+    CHECK(code_of(empty.error()) == static_cast<std::int32_t>(avis::generic_error_kind::logic_error));
     CHECK(pool.running() == 0);
 
     auto valid = pool.start("valid", wait_for_stop);

@@ -29,31 +29,31 @@ namespace avis
         return "unknown";
     }
 
-    std::string_view to_string(const generic_errc code) noexcept
+    std::string_view to_string(const generic_error_kind code) noexcept
     {
         switch (code)
         {
-        case generic_errc::ok:
+        case generic_error_kind::ok:
             return "ok";
-        case generic_errc::invalid_configuration:
+        case generic_error_kind::invalid_configuration:
             return "invalid_configuration";
-        case generic_errc::pool_exhausted:
+        case generic_error_kind::pool_exhausted:
             return "pool_exhausted";
-        case generic_errc::pool_stopping:
+        case generic_error_kind::pool_stopping:
             return "pool_stopping";
-        case generic_errc::cancelled:
+        case generic_error_kind::cancelled:
             return "cancelled";
-        case generic_errc::already_exists:
+        case generic_error_kind::already_exists:
             return "already_exists";
-        case generic_errc::logic_error:
+        case generic_error_kind::logic_error:
             return "logic_error";
-        case generic_errc::unhandled_exception:
+        case generic_error_kind::unhandled_exception:
             return "unhandled_exception";
         }
         return "unknown";
     }
 
-    error make_error(const generic_errc code, std::string message, const std::source_location location)
+    error make_error(const generic_error_kind code, std::string message, const std::source_location location)
     {
         return error{
             .domain = error_domain::generic,
@@ -67,7 +67,7 @@ namespace avis
     {
         if (!exception)
         {
-            return make_error(generic_errc::logic_error, "make_error called without an exception", location);
+            return make_error(generic_error_kind::logic_error, "make_error called without an exception", location);
         }
 
         try
@@ -89,11 +89,11 @@ namespace avis
         }
         catch (const std::exception& standard_exception)
         {
-            return make_error(generic_errc::unhandled_exception, standard_exception.what(), location);
+            return make_error(generic_error_kind::unhandled_exception, standard_exception.what(), location);
         }
         catch (...)
         {
-            return make_error(generic_errc::unhandled_exception, "unknown exception", location);
+            return make_error(generic_error_kind::unhandled_exception, "unknown exception", location);
         }
     }
 

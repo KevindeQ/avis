@@ -105,7 +105,7 @@ TEST_CASE("initialise applies the default and per-logger levels", "[log]")
 
         const auto second = avis::log::detail::initialise(configuration);
         REQUIRE_FALSE(second.has_value());
-        CHECK(second.error().code == static_cast<std::int32_t>(avis::generic_errc::already_exists));
+        CHECK(second.error().code == static_cast<std::int32_t>(avis::generic_error_kind::already_exists));
     }
 
     CHECK_FALSE(avis::log::detail::initialised());

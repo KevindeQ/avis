@@ -248,7 +248,7 @@ TEST_CASE("an exception in bulk completes with one error", "[parallel][bulk]")
     catch (const avis::error& error)
     {
         CHECK(error.message == "bulk failed");
-        CHECK(error.code == static_cast<std::int32_t>(avis::generic_errc::unhandled_exception));
+        CHECK(error.code == static_cast<std::int32_t>(avis::generic_error_kind::unhandled_exception));
     }
 }
 

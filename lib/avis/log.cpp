@@ -171,7 +171,8 @@ namespace avis::log
 
             if (registry.initialised)
             {
-                return std::unexpected{ make_error(generic_errc::already_exists, "logging is already initialised") };
+                return std::unexpected{ make_error(
+                    generic_error_kind::already_exists, "logging is already initialised") };
             }
 
             std::vector<spdlog::sink_ptr> outputs;

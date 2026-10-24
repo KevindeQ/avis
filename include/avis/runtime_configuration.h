@@ -22,7 +22,7 @@ namespace avis
         static result<runtime_configuration> parse(std::string_view yaml_text);
 
         // Fills in the computed values and rejects inconsistent ones with
-        // generic_errc::invalid_configuration: parallel.workers 0 becomes max(1, hardware_concurrency - 2),
+        // generic_error_kind::invalid_configuration: parallel.workers 0 becomes max(1, hardware_concurrency - 2),
         // thread_pool.capacity 0 becomes io.threads + application_threads + 2. avis::runtime resolves the
         // configuration it's given; runtime::configuration() returns the result.
         static result<runtime_configuration> resolve(runtime_configuration configuration);
