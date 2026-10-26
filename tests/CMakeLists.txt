@@ -42,6 +42,7 @@ target_sources(AVIS_TESTS
 		helpers/allocation_failure.cpp
 		test_asio_senders_receivers.cpp
 		test_async_file.cpp
+		test_check.cpp
 		test_enum_flags.cpp
 		test_error.cpp
 		test_external_dependencies.cpp
@@ -56,6 +57,7 @@ target_sources(AVIS_TESTS
 		test_observables.cpp
 		test_operation_registry.cpp
 		test_parallel_backend.cpp
+		test_rhi_public_headers.cpp
 		test_runtime.cpp
 		test_runtime_configuration.cpp
 		test_sender_of.cpp

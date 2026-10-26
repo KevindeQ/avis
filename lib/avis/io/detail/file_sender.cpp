@@ -63,7 +63,7 @@ namespace avis::io
 
     namespace
     {
-        using detail::current_exception_error;
+        using avis::detail::current_exception_error;
         using detail::safe_error;
 
         // asio passes each buffer size to ReadFile/WriteFile as a DWORD; larger requests are split by the loop

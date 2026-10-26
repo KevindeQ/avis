@@ -1,0 +1,39 @@
+// Compile-time check that the public RHI headers stay free of D3D12, DXGI, D3D12MemoryAllocator, <windows.h>, asio and
+// the IO layer (docs/design/09-rhi.md §2.1). These includes must come first in this file: anything included before
+// them could pull in one of those headers and hide a leak. Each step of docs/tasks/06-rhi.md adds its public headers.
+
+#include "avis/detail/receiver_stop_callback.h"
+
+#ifdef _WINDOWS_
+#    error "a public RHI header includes <windows.h>"
+#endif
+
+#ifdef __d3d12_h__
+#    error "a public RHI header includes <d3d12.h>"
+#endif
+
+// D3D12MemAlloc.h has no include guard of its own (#pragma once), so this checks a macro it always defines
+#ifdef D3D12MA_RECOMMENDED_ALLOCATOR_FLAGS
+#    error "a public RHI header includes D3D12MemAlloc.h"
+#endif
+
+// Every asio header includes asio/detail/config.hpp, so its include guard catches them all
+#if defined(ASIO_VERSION) || defined(ASIO_DETAIL_CONFIG_HPP)
+#    error "a public RHI header includes asio"
+#endif
+
+// The include guards of every header under include/avis/io/
+#if defined(AVIS_IO_ASIO_SCHEDULER_H) || defined(AVIS_IO_ASIO_USE_SENDER_H) || defined(AVIS_IO_ASYNC_FILE_H) || \
+    defined(AVIS_IO_DETAIL_FILE_SENDER_H) || defined(AVIS_IO_DETAIL_REGISTERED_OPERATION_H) ||                  \
+    defined(AVIS_IO_ERROR_H) || defined(AVIS_IO_FILE_OPERATIONS_H) || defined(AVIS_IO_IO_CONFIGURATION_H) ||    \
+    defined(AVIS_IO_IO_CONTEXT_H) || defined(AVIS_IO_MAPPED_FILE_H)
+#    error "a public RHI header includes the IO layer"
+#endif
+
+#include <catch2/catch_test_macros.hpp>
+
+TEST_CASE("the public RHI headers include neither D3D12, windows.h, asio nor the IO layer", "[rhi][unit][headers]")
+{
+    // The check is the #error directives above; reaching this test means the file compiled
+    SUCCEED();
+}

@@ -1,15 +1,16 @@
-#ifndef AVIS_IO_DETAIL_RECEIVER_STOP_CALLBACK_H
-#define AVIS_IO_DETAIL_RECEIVER_STOP_CALLBACK_H
+#ifndef AVIS_DETAIL_RECEIVER_STOP_CALLBACK_H
+#define AVIS_DETAIL_RECEIVER_STOP_CALLBACK_H
 
-// The optional stop callback that the IO operation states install on their receiver's stop token. Holds nothing when
-// the token can never stop (unstoppable_token), so those receivers pay for no callback.
+// The optional stop callback that sender operation states (IO, RHI) install on their receiver's stop token. Holds
+// nothing when the token can never stop (unstoppable_token), so those receivers pay for no callback.
+// Shared by the IO layer and the RHI (docs/design/16-shared-sender-helpers.md); includes neither of them.
 
 #include <stdexec/execution.hpp>
 
 #include <optional>
 #include <utility>
 
-namespace avis::io::detail
+namespace avis::detail
 {
     template<class Receiver, class Callback>
     class receiver_stop_callback
@@ -64,6 +65,6 @@ namespace avis::io::detail
 
         typename storage<stoppable>::type callback_;
     };
-} // namespace avis::io::detail
+} // namespace avis::detail
 
 #endif

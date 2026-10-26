@@ -6,8 +6,8 @@
 // implemented in lib/avis/io/detail/file_sender.cpp; the file's state (asio file, strand) is in the private
 // lib/avis/io/detail/async_file_state.h. Free of asio and <windows.h>.
 
+#include "avis/detail/receiver_stop_callback.h"
 #include "avis/error.h"
-#include "avis/io/detail/receiver_stop_callback.h"
 #include "avis/io/detail/registered_operation.h"
 #include "avis/sender_of.h"
 
@@ -144,7 +144,7 @@ namespace avis::io
                 }
             };
 
-            using stop_callback = receiver_stop_callback<Receiver, stop_function>;
+            using stop_callback = avis::detail::receiver_stop_callback<Receiver, stop_function>;
 
             Receiver receiver_;
             file_operation_kind kind_;

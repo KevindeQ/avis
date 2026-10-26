@@ -30,6 +30,11 @@ target_compile_definitions(AVIS_LIB
 target_include_directories(AVIS_LIB
 	PUBLIC
 		${AVIS_INCLUDE_DIR}
+
+	# Private helpers shared across components (lib/avis/detail/, e.g. "avis/detail/safe_error.h"), included the same
+	# way as in the white-box tests
+	PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
 target_link_libraries(AVIS_LIB
@@ -52,6 +57,8 @@ target_link_libraries(AVIS_LIB
 
 target_sources(AVIS_LIB
 	PRIVATE
+		detail/check.cpp
+
 		error.cpp
 		log.cpp
 		runtime.cpp

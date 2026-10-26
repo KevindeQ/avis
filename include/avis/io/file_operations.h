@@ -1,8 +1,8 @@
 #ifndef AVIS_IO_FILE_OPERATIONS_H
 #define AVIS_IO_FILE_OPERATIONS_H
 
+#include "avis/detail/receiver_stop_callback.h"
 #include "avis/error.h"
-#include "avis/io/detail/receiver_stop_callback.h"
 #include "avis/sender_of.h"
 
 #include <stdexec/execution.hpp>
@@ -192,7 +192,7 @@ namespace avis::io
                 }
             };
 
-            using stop_callback = receiver_stop_callback<Receiver, stop_function>;
+            using stop_callback = avis::detail::receiver_stop_callback<Receiver, stop_function>;
 
             Receiver receiver_;
             io_context* context_;
@@ -266,7 +266,7 @@ namespace avis::io
                 }
             };
 
-            using stop_callback = receiver_stop_callback<Receiver, stop_function>;
+            using stop_callback = avis::detail::receiver_stop_callback<Receiver, stop_function>;
 
             Receiver receiver_;
             io_context* context_;

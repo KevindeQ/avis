@@ -36,6 +36,8 @@
 
 namespace avis::io
 {
+    using avis::detail::current_exception_error;
+
     namespace
     {
         std::atomic<bool> atomic_replace_failure{ false };
