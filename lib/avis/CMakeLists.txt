@@ -75,6 +75,19 @@ target_sources(AVIS_LIB
 
 		rhi/error.cpp
 		rhi/formats.cpp
+		rhi/render_hardware_interface.cpp
+		rhi/d3d12/adapter_selector.cpp
+		rhi/d3d12/capability_gate.cpp
+		rhi/d3d12/check.cpp
+		rhi/d3d12/conversions/barriers.cpp
+		rhi/d3d12/conversions/formats.cpp
+		rhi/d3d12/conversions/pipelines.cpp
+		rhi/d3d12/conversions/queues.cpp
+		rhi/d3d12/conversions/resources.cpp
+		rhi/d3d12/conversions/samplers.cpp
+		rhi/d3d12/debug.cpp
+		rhi/d3d12/device.cpp
+		rhi/d3d12/device_state.cpp
 
 		threading/parallel_backend.cpp
 		threading/parallel_helpers.cpp

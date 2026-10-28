@@ -10,6 +10,7 @@
 #include "avis/rhi/memory.h"
 #include "avis/rhi/pipeline.h"
 #include "avis/rhi/queue.h"
+#include "avis/rhi/render_hardware_interface.h"
 #include "avis/rhi/resources.h"
 #include "avis/rhi/root_signature.h"
 #include "avis/rhi/types.h"

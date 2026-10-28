@@ -40,6 +40,7 @@ target_include_directories(AVIS_TESTS
 target_sources(AVIS_TESTS
 	PRIVATE
 		helpers/allocation_failure.cpp
+		helpers/rhi_fixture.cpp
 		test_asio_senders_receivers.cpp
 		test_async_file.cpp
 		test_check.cpp
@@ -57,6 +58,9 @@ target_sources(AVIS_TESTS
 		test_observables.cpp
 		test_operation_registry.cpp
 		test_parallel_backend.cpp
+		test_rhi_conversions.cpp
+		test_rhi_device.cpp
+		test_rhi_leaf_mutex.cpp
 		test_rhi_public_headers.cpp
 		test_rhi_types.cpp
 		test_runtime.cpp
