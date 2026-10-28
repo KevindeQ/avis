@@ -73,6 +73,8 @@ target_sources(AVIS_LIB
 		io/io_context.cpp
 		io/mapped_file.cpp
 
+		rhi/error.cpp
+		rhi/formats.cpp
 
 		threading/parallel_backend.cpp
 		threading/parallel_helpers.cpp

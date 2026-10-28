@@ -58,6 +58,7 @@ target_sources(AVIS_TESTS
 		test_operation_registry.cpp
 		test_parallel_backend.cpp
 		test_rhi_public_headers.cpp
+		test_rhi_types.cpp
 		test_runtime.cpp
 		test_runtime_configuration.cpp
 		test_sender_of.cpp

@@ -3,6 +3,16 @@
 // them could pull in one of those headers and hide a leak. Each step of docs/tasks/06-rhi.md adds its public headers.
 
 #include "avis/detail/receiver_stop_callback.h"
+#include "avis/rhi/barriers.h"
+#include "avis/rhi/configuration.h"
+#include "avis/rhi/error.h"
+#include "avis/rhi/formats.h"
+#include "avis/rhi/memory.h"
+#include "avis/rhi/pipeline.h"
+#include "avis/rhi/queue.h"
+#include "avis/rhi/resources.h"
+#include "avis/rhi/root_signature.h"
+#include "avis/rhi/types.h"
 
 #ifdef _WINDOWS_
 #    error "a public RHI header includes <windows.h>"
