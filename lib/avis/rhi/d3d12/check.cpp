@@ -89,4 +89,9 @@ namespace avis::rhi::d3d12
         return result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET ||
                result == DXGI_ERROR_DEVICE_HUNG;
     }
+
+    avis::error device_lost_error(const char* const message) noexcept
+    {
+        return avis::detail::safe_error(error_domain::rhi, static_cast<std::int32_t>(error_kind::device_lost), message);
+    }
 } // namespace avis::rhi::d3d12

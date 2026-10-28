@@ -1,8 +1,11 @@
 #include "rhi_fixture.h"
 
+#include "avis/rhi/completion_driver.h"
 #include "avis/rhi/d3d12/adapter_selector.h"
 #include "avis/rhi/d3d12/com_ptr.h"
 #include "avis/rhi/d3d12/d3d12.h"
+#include "avis/rhi/d3d12/device_state.h"
+#include "avis/rhi/d3d12/unique_handle.h"
 #include "avis/rhi/error.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -87,6 +90,19 @@ namespace avis::tests
             const auto errors = error_lines();
             CHECK(errors.empty());
         }
+    }
+
+    std::size_t test_rhi::wait_for(const rhi::synchronization_point point)
+    {
+        rhi::d3d12::device_queue& queue = rhi_->state().queues()[point.queue];
+        if (!queue.is_complete(point.value))
+        {
+            const rhi::d3d12::unique_handle event{ CreateEventW(nullptr, FALSE, FALSE, nullptr) };
+            REQUIRE(event);
+            REQUIRE(SUCCEEDED(queue.fence().SetEventOnCompletion(point.value, event.get())));
+            REQUIRE(WaitForSingleObject(event.get(), 10'000) == WAIT_OBJECT_0);
+        }
+        return rhi::completion_driver{ *rhi_ }.poll_completions();
     }
 
     std::vector<std::string> test_rhi::error_lines() const

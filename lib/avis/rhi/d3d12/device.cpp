@@ -140,25 +140,30 @@ namespace avis::rhi::d3d12
         return lost_.load(std::memory_order_acquire);
     }
 
-    void device::report_removed(const std::string_view operation)
+    void device::mark_removed(const std::string_view operation) noexcept
     {
         lost_.store(true, std::memory_order_release);
-        std::call_once(
-            removal_report_,
-            [&]
-            {
-                try
+        try
+        {
+            std::call_once(
+                removal_report_,
+                [&]
                 {
                     log::get("rhi")->error(
                         "the D3D12 device was removed during {}\n{}",
                         operation,
                         debug_.device_removed_report(*device_.get()));
-                }
-                catch (...)
-                {
-                    // The throw below still reports the removal
-                }
-            });
+                });
+        }
+        catch (...)
+        {
+            // The sticky flag still reports the removal
+        }
+    }
+
+    void device::report_removed(const std::string_view operation)
+    {
+        mark_removed(operation);
         throw device_lost{ rhi::make_error(
             error_kind::device_lost, std::format("{}: the D3D12 device was removed", operation)) };
     }

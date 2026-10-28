@@ -2,9 +2,11 @@
 
 #include "avis/rhi/d3d12/device_state.h"
 #include "avis/rhi/error.h"
+#include "avis/threading/parallel_helpers.h"
 
 #include <cstdint>
 #include <format>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -86,6 +88,20 @@ namespace avis::rhi
     const hardware_capabilities& render_hardware_interface::capabilities() const noexcept
     {
         return state_->device().capabilities();
+    }
+
+    void render_hardware_interface::wait_idle()
+    {
+        // Same per-thread check as sync_wait: a blocking wait on a parallel worker or inside a completion could
+        // deadlock the work it waits for (§15)
+        if (threading::detail::blocking_wait_forbidden())
+        {
+            throw std::logic_error{
+                "render_hardware_interface::wait_idle: blocking waits are not allowed on this thread (a parallel "
+                "worker, or inside a completion)"
+            };
+        }
+        state_->wait_idle();
     }
 
     d3d12::device_state& render_hardware_interface::state() noexcept

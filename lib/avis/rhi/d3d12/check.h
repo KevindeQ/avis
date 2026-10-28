@@ -41,6 +41,9 @@ namespace avis::rhi::d3d12
 
     // DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DEVICE_HUNG
     bool is_device_removed_code(HRESULT result) noexcept;
+
+    // The error senders complete with after device removal (§20.4): device_lost, "<message>"
+    avis::error device_lost_error(const char* message) noexcept;
 } // namespace avis::rhi::d3d12
 
 #endif

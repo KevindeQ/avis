@@ -8,8 +8,10 @@
 #include "log_capture.h"
 
 #include "avis/rhi/configuration.h"
+#include "avis/rhi/queue.h"
 #include "avis/rhi/render_hardware_interface.h"
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -50,6 +52,11 @@ namespace avis::tests
         {
             return *rhi_;
         }
+
+        // Deterministic GPU waits (docs/tasks/06-rhi.md, Conventions): waits on the point's queue fence with a private
+        // event, then calls completion_driver::poll_completions() and returns what it completed. Fails the test when
+        // the point isn't reached within 10 seconds.
+        std::size_t wait_for(rhi::synchronization_point point);
 
         // The captured "[error] ..." and "[critical] ..." lines
         std::vector<std::string> error_lines() const;

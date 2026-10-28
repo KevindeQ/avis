@@ -45,7 +45,11 @@ namespace avis::rhi::d3d12
         // Device removal (§20.4)
         bool lost() const noexcept;
 
-        // Sets lost, logs the DRED report once (whichever thread sees the removal first) and throws rhi::device_lost
+        // Sets lost and logs the DRED report once (whichever thread sees the removal first). For noexcept paths that
+        // detect a removal (a fence at UINT64_MAX, §23.2) and fail their waiters instead of throwing.
+        void mark_removed(std::string_view operation) noexcept;
+
+        // mark_removed, then throws rhi::device_lost
         [[noreturn]] void report_removed(std::string_view operation);
 
     private:

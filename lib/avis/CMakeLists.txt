@@ -73,12 +73,16 @@ target_sources(AVIS_LIB
 		io/io_context.cpp
 		io/mapped_file.cpp
 
+		rhi/completion_driver.cpp
 		rhi/error.cpp
 		rhi/formats.cpp
+		rhi/queue.cpp
 		rhi/render_hardware_interface.cpp
+		rhi/synchronization.cpp
 		rhi/d3d12/adapter_selector.cpp
 		rhi/d3d12/capability_gate.cpp
 		rhi/d3d12/check.cpp
+		rhi/d3d12/completion_tracker.cpp
 		rhi/d3d12/conversions/barriers.cpp
 		rhi/d3d12/conversions/formats.cpp
 		rhi/d3d12/conversions/pipelines.cpp
@@ -86,8 +90,12 @@ target_sources(AVIS_LIB
 		rhi/d3d12/conversions/resources.cpp
 		rhi/d3d12/conversions/samplers.cpp
 		rhi/d3d12/debug.cpp
+		rhi/d3d12/deferred_release.cpp
 		rhi/d3d12/device.cpp
+		rhi/d3d12/device_queues.cpp
 		rhi/d3d12/device_state.cpp
+		rhi/d3d12/gpu_wait_operation.cpp
+		rhi/d3d12/lifetime_manager.cpp
 
 		threading/parallel_backend.cpp
 		threading/parallel_helpers.cpp
