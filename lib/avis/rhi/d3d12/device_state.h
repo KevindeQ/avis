@@ -7,9 +7,11 @@
 #include "avis/error.h"
 #include "avis/rhi/configuration.h"
 #include "avis/rhi/d3d12/completion_tracker.h"
+#include "avis/rhi/d3d12/descriptor_heaps.h"
 #include "avis/rhi/d3d12/device.h"
 #include "avis/rhi/d3d12/device_queues.h"
 #include "avis/rhi/d3d12/lifetime_manager.h"
+#include "avis/rhi/d3d12/resource_manager.h"
 
 #include <cstddef>
 #include <memory>
@@ -32,7 +34,9 @@ namespace avis::rhi::d3d12
         d3d12::device& device() noexcept;
         device_queues& queues() noexcept;
         completion_tracker& completions() noexcept;
+        descriptor_heaps& descriptors() noexcept;
         lifetime_manager& lifetime() noexcept;
+        resource_manager& resources() noexcept;
 
         // completion_driver::poll_completions() (§5.2): the tracker, then lifetime housekeeping. When housekeeping
         // left ready releases (D-77), completion_tracker::signal, so the driver calls again.
@@ -48,11 +52,13 @@ namespace avis::rhi::d3d12
     private:
         device_state() = default;
 
-        // Construction order; destroyed in reverse. descriptors_ (6.6) goes between completions_ and lifetime_.
+        // Construction order (§19.3); destroyed in reverse
         std::unique_ptr<d3d12::device> device_;
         std::unique_ptr<device_queues> queues_;
         std::unique_ptr<completion_tracker> completions_;
+        std::unique_ptr<descriptor_heaps> descriptors_;
         std::unique_ptr<lifetime_manager> lifetime_;
+        std::unique_ptr<resource_manager> resources_;
     };
 } // namespace avis::rhi::d3d12
 

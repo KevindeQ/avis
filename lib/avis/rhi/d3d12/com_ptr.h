@@ -92,9 +92,9 @@ namespace avis::rhi
         template<class U>
         friend class ComPtr;
 
-        com_ptr() : internal_ptr_{ nullptr } {}
+        com_ptr() noexcept : internal_ptr_{ nullptr } {}
 
-        com_ptr(decltype(nullptr)) : internal_ptr_{ nullptr } {}
+        com_ptr(decltype(nullptr)) noexcept : internal_ptr_{ nullptr } {}
 
         template<typename convertible_ptr_t>
         com_ptr(convertible_ptr_t* other) : internal_ptr_{ other }
@@ -116,7 +116,7 @@ namespace avis::rhi
             internal_add_ref();
         }
 
-        com_ptr(com_ptr<ptr_t>&& other) : internal_ptr_{ other.internal_ptr_ }
+        com_ptr(com_ptr<ptr_t>&& other) noexcept : internal_ptr_{ other.internal_ptr_ }
         {
             other.internal_ptr_ = nullptr;
         }
@@ -126,7 +126,7 @@ namespace avis::rhi
             internal_release();
         }
 
-        com_ptr<ptr_t>& operator=(com_ptr<ptr_t> rhs)
+        com_ptr<ptr_t>& operator=(com_ptr<ptr_t> rhs) noexcept
         {
             swap(rhs);
             return *this;

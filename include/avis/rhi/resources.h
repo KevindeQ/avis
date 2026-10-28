@@ -1,17 +1,20 @@
 #ifndef AVIS_RHI_RESOURCES_H
 #define AVIS_RHI_RESOURCES_H
 
-// Resource descriptions, persistent views and copy footprints (docs/design/09-rhi.md §8.1, §8.3, §11.1). The
-// resources view follows with the resource manager.
+// Resource descriptions, persistent views, copy footprints and the resources view (docs/design/09-rhi.md §4.3, §8.1,
+// §8.3, §11.1). Free of D3D12 and <windows.h>.
 
 #include "avis/enum_flags.h"
+#include "avis/error.h"
 #include "avis/rhi/barriers.h"
 #include "avis/rhi/formats.h"
 #include "avis/rhi/types.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 
 namespace avis::rhi
@@ -140,6 +143,52 @@ namespace avis::rhi
         std::uint32_t row_count = 0; // block rows for BC formats
         std::uint64_t row_size = 0; // meaningful bytes per row
         std::uint64_t total_size = 0; // bytes the copy reads or writes
+    };
+
+    class render_hardware_interface;
+
+    namespace d3d12
+    {
+        class device_state;
+    } // namespace d3d12
+
+    // A view (§4.3): non-owning, copyable, built from the RHI and never outliving it. Textures, buffers and samplers;
+    // placed resources are created through memory (memory.h) and destroyed here like any other.
+    class resources
+    {
+    public:
+        explicit resources(render_hardware_interface& hardware_interface) noexcept;
+
+        result<texture_handle> create_texture(const texture_description& description);
+        result<buffer_handle> create_buffer(const buffer_description& description);
+        result<sampler_handle> create_sampler(const sampler_description& description);
+
+        // Deferred until the GPU is done with it (§8.2). A stale or invalid handle is a no-op and asserts in debug
+        // builds.
+        void destroy(texture_handle texture) noexcept;
+        void destroy(buffer_handle buffer) noexcept;
+        void destroy(sampler_handle sampler) noexcept;
+
+        // debug_name is empty here. A stale handle asserts and returns a default description.
+        const texture_description& description(texture_handle texture) const;
+        const buffer_description& description(buffer_handle buffer) const;
+
+        // Persistent bindless indices, created with the resource from its usage (§8.3). An index the usage didn't
+        // create (or a placed resource's, §8.4) is the null descriptor, 0, and asserts in debug builds.
+        bindless_index srv(texture_handle texture) const;
+        bindless_index uav(texture_handle texture, std::uint32_t mip = 0) const;
+        bindless_index srv(buffer_handle buffer) const;
+        bindless_index uav(buffer_handle buffer) const;
+        bindless_index sampler_index(sampler_handle sampler) const;
+
+        gpu_address buffer_address(buffer_handle buffer) const;
+        std::span<std::byte> mapped_bytes(buffer_handle buffer) const; // upload and readback buffers only
+
+        // The buffer layout of one subresource for copies (§11.1); thread-safe, no GPU work
+        copy_footprint copyable_footprint(texture_handle texture, subresource subresource) const;
+
+    private:
+        d3d12::device_state* state_;
     };
 } // namespace avis::rhi
 

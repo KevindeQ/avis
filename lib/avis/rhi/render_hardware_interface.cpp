@@ -90,6 +90,11 @@ namespace avis::rhi
         return state_->device().capabilities();
     }
 
+    memory_budget render_hardware_interface::local_memory_budget() const
+    {
+        return state_->resources().local_budget();
+    }
+
     void render_hardware_interface::wait_idle()
     {
         // Same per-thread check as sync_wait: a blocking wait on a parallel worker or inside a completion could

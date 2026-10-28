@@ -60,10 +60,13 @@ target_sources(AVIS_TESTS
 		test_parallel_backend.cpp
 		test_rhi_completions.cpp
 		test_rhi_conversions.cpp
+		test_rhi_descriptor_heaps.cpp
 		test_rhi_device.cpp
 		test_rhi_leaf_mutex.cpp
 		test_rhi_lifetime.cpp
 		test_rhi_public_headers.cpp
+		test_rhi_resources.cpp
+		test_rhi_slot_map.cpp
 		test_rhi_types.cpp
 		test_runtime.cpp
 		test_runtime_configuration.cpp

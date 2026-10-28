@@ -33,12 +33,26 @@ namespace avis::rhi::d3d12
         }
         state->completions_ = std::move(*created_tracker);
 
+        auto created_descriptors = descriptor_heaps::create(*state->device_, configuration.descriptor_heaps);
+        if (!created_descriptors)
+        {
+            return std::unexpected(std::move(created_descriptors.error()));
+        }
+        state->descriptors_ = std::move(*created_descriptors);
+
         auto created_lifetime = lifetime_manager::create(*state->queues_);
         if (!created_lifetime)
         {
             return std::unexpected(std::move(created_lifetime.error()));
         }
         state->lifetime_ = std::move(*created_lifetime);
+
+        auto created_resources = resource_manager::create(*state->device_, *state->descriptors_, *state->lifetime_);
+        if (!created_resources)
+        {
+            return std::unexpected(std::move(created_resources.error()));
+        }
+        state->resources_ = std::move(*created_resources);
         return state;
     }
 
@@ -74,9 +88,19 @@ namespace avis::rhi::d3d12
         return *completions_;
     }
 
+    descriptor_heaps& device_state::descriptors() noexcept
+    {
+        return *descriptors_;
+    }
+
     lifetime_manager& device_state::lifetime() noexcept
     {
         return *lifetime_;
+    }
+
+    resource_manager& device_state::resources() noexcept
+    {
+        return *resources_;
     }
 
     std::size_t device_state::poll_completions() noexcept

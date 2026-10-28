@@ -12,6 +12,9 @@
 #include "avis/rhi/root_signature.h"
 #include "avis/rhi/types.h"
 
+// The private definition of detail::handle_access (6.6)
+#include "avis/rhi/d3d12/slot_map.h"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
@@ -23,40 +26,15 @@
 #include <type_traits>
 #include <unordered_set>
 
-// Test-only definition until the slot map defines it privately (6.6)
-namespace avis::rhi::detail
-{
-    struct handle_access
-    {
-        template<class Tag>
-        static constexpr handle<Tag> make(const std::uint32_t index, const std::uint32_t generation) noexcept
-        {
-            handle<Tag> value;
-            value.index_ = index;
-            value.generation_ = generation;
-            return value;
-        }
-    };
-} // namespace avis::rhi::detail
-
 namespace
 {
     using avis::rhi::format;
     using avis::rhi::format_traits;
 
     template<class Handle>
-    struct handle_tag;
-
-    template<class Tag>
-    struct handle_tag<avis::rhi::handle<Tag>>
-    {
-        using type = Tag;
-    };
-
-    template<class Handle>
     constexpr Handle handle_from(const std::uint32_t index, const std::uint32_t generation) noexcept
     {
-        return avis::rhi::detail::handle_access::make<typename handle_tag<Handle>::type>(index, generation);
+        return avis::rhi::d3d12::to_handle<Handle>({ .index = index, .generation = generation });
     }
 
     constexpr format_traits texel(const std::uint8_t bytes) noexcept
