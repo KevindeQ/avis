@@ -13,6 +13,7 @@
 #include "avis/rhi/d3d12/device_state.h"
 #include "avis/rhi/d3d12/native_access.h"
 #include "avis/rhi/detail/gpu_wait_sender.h"
+#include "avis/rhi/error.h"
 #include "avis/rhi/queue.h"
 
 #include <stdexec/execution.hpp>
@@ -90,6 +91,7 @@ namespace avis::tests
         std::atomic<int> values{ 0 };
         std::atomic<int> errors{ 0 };
         std::atomic<int> stops{ 0 };
+        std::atomic<int> device_lost_errors{ 0 }; // errors of kind device_lost
         std::atomic<std::thread::id> thread{};
 
         int total() const noexcept
@@ -112,9 +114,13 @@ namespace avis::tests
             }
         }
 
-        void set_error(avis::error) noexcept
+        void set_error(avis::error error) noexcept
         {
             counts->thread = std::this_thread::get_id();
+            if (rhi::is_error(error, rhi::error_kind::device_lost))
+            {
+                ++counts->device_lost_errors;
+            }
             ++counts->errors;
         }
 

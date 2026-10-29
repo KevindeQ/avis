@@ -62,6 +62,10 @@ namespace avis::rhi::d3d12
         const sampler_record* find(sampler_handle sampler) const noexcept;
         const heap_record* find(heap_handle heap) const noexcept;
 
+        // Slots ever used by the texture and buffer maps (slot_map::slots_used), for stress tests
+        std::uint32_t texture_slots_used() const noexcept;
+        std::uint32_t buffer_slots_used() const noexcept;
+
         // Records not behind a public handle: transient objects' buffers (§23.6), timestamp resolve buffers (§24.4).
         // No persistent descriptors.
         result<buffer_record> create_internal_buffer(const buffer_description& description);

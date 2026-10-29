@@ -14,8 +14,9 @@
 #include "avis/rhi/resources.h"
 #include "avis/rhi/shared.h"
 
-#include <catch2/catch_test_macros.hpp>
 #include <stdexec/execution.hpp>
+
+#include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
 #include <cstdint>

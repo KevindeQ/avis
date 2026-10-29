@@ -165,8 +165,15 @@ namespace avis::rhi::d3d12
             else
             {
                 ++size_;
+                slots_used_.store(size_, std::memory_order_relaxed);
             }
             return handle_bits{ .index = (tag_ << tag_shift) | slot_index, .generation = generation };
+        }
+
+        // Slots ever used (live and free): the map's high-water mark, for tests that check it stops growing
+        std::uint32_t slots_used() const noexcept
+        {
+            return slots_used_.load(std::memory_order_relaxed);
         }
 
         // nullptr for stale, invalid, out-of-range or foreign handles; never reads size_
@@ -275,6 +282,7 @@ namespace avis::rhi::d3d12
         std::vector<std::unique_ptr<slot[]>> owned_chunks_; // guarded by allocation_mutex_
         std::vector<std::uint32_t> free_slots_; // guarded by allocation_mutex_
         std::uint32_t size_ = 0; // slots ever used; guarded by allocation_mutex_
+        std::atomic<std::uint32_t> slots_used_{ 0 }; // a copy of size_ readable without the mutex
     };
 } // namespace avis::rhi::d3d12
 

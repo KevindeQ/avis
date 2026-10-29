@@ -7,6 +7,7 @@
 #include "avis/rhi/d3d12/shared_objects.h"
 #include "avis/rhi/render_hardware_interface.h"
 
+#include <limits>
 #include <memory>
 #include <utility>
 
@@ -44,7 +45,13 @@ namespace avis::rhi
 
     std::uint64_t shared_fence::completed_value() const noexcept
     {
-        return state_->fence->GetCompletedValue();
+        const std::uint64_t value = state_->fence->GetCompletedValue();
+        if (value == std::numeric_limits<std::uint64_t>::max() && state_->owner != nullptr)
+        {
+            // The removal signal (§20.4): from now on the RHI reports the device lost
+            state_->owner->mark_removed("shared_fence::completed_value");
+        }
+        return value;
     }
 
     // ---- sharing ----
@@ -100,6 +107,7 @@ namespace avis::rhi
 
     gpu_wait_sender sharing::when_reached(const shared_fence& fence, const std::uint64_t value)
     {
-        return gpu_wait_sender{ *state_, detail::gpu_wait_target{ .shared_fence = fence.state_, .shared_value = value } };
+        return gpu_wait_sender{ *state_,
+                                detail::gpu_wait_target{ .shared_fence = fence.state_, .shared_value = value } };
     }
 } // namespace avis::rhi

@@ -556,12 +556,15 @@ namespace avis::rhi::d3d12
         texture_record* const record = textures_.find(to_bits(texture));
         if (record == nullptr)
         {
-            return std::unexpected(make_error(error_kind::invalid_handle, "export_shared_handle: stale or invalid texture handle"));
+            return std::unexpected(
+                make_error(error_kind::invalid_handle, "export_shared_handle: stale or invalid texture handle"));
         }
         if (!has(record->description.usage, texture_usage::shared))
         {
-            return std::unexpected(invalid(std::format(
-                "export_shared_handle: {} wasn't created with sharing::create_shared_texture", label("texture", record->name))));
+            return std::unexpected(invalid(
+                std::format(
+                    "export_shared_handle: {} wasn't created with sharing::create_shared_texture",
+                    label("texture", record->name))));
         }
         const std::lock_guard lock{ export_mutex_ };
         return export_texture(device_, *record);
@@ -642,5 +645,15 @@ namespace avis::rhi::d3d12
     memory_budget resource_manager::local_budget() const
     {
         return allocator_->local_budget();
+    }
+
+    std::uint32_t resource_manager::texture_slots_used() const noexcept
+    {
+        return textures_.slots_used();
+    }
+
+    std::uint32_t resource_manager::buffer_slots_used() const noexcept
+    {
+        return buffers_.slots_used();
     }
 } // namespace avis::rhi::d3d12

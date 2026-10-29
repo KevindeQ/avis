@@ -62,6 +62,7 @@ target_sources(AVIS_TESTS
 		test_rhi_completions.cpp
 		test_rhi_conversions.cpp
 		test_rhi_descriptor_heaps.cpp
+		test_rhi_device_removal.cpp
 		test_rhi_device.cpp
 		test_rhi_leaf_mutex.cpp
 		test_rhi_lifetime.cpp
@@ -70,6 +71,7 @@ target_sources(AVIS_TESTS
 		test_rhi_resources.cpp
 		test_rhi_sharing.cpp
 		test_rhi_slot_map.cpp
+		test_rhi_stress.cpp
 		test_rhi_transient.cpp
 		test_rhi_types.cpp
 		test_runtime.cpp
