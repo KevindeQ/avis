@@ -42,7 +42,6 @@ target_link_libraries(AVIS_LIB
 		ASIO
 		Eigen3::Eigen
 		EnTT::EnTT
-		D3D12MemoryAllocator
 		h3
 		STDEXEC::stdexec
 
@@ -50,7 +49,9 @@ target_link_libraries(AVIS_LIB
 		spdlog::spdlog
 
 	PRIVATE
-		# No public Avis header includes these
+		# No public Avis header includes these. A static library's private dependencies still reach the executables
+		# as link-only ones, so d3d12.lib, dxgi.lib and dxguid.lib (D3D12MemoryAllocator's public links) do too.
+		D3D12MemoryAllocator
 		fastgltf::fastgltf
 		yaml-cpp::yaml-cpp
 )

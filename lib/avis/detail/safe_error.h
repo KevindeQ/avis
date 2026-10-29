@@ -3,7 +3,7 @@
 
 // Private: noexcept error factories for code that completes operations (IO, RHI). Building an error copies or formats
 // a message, which can throw; these fall back to an error without a message.
-// Shared by the IO layer and the RHI (docs/design/16-shared-sender-helpers.md); includes neither of them.
+// Shared by the IO layer and the RHI (docs/design/07-io-layer.md §4.8); includes neither of them.
 
 #include "avis/error.h"
 

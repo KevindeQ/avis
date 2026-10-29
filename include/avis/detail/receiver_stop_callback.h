@@ -3,7 +3,7 @@
 
 // The optional stop callback that sender operation states (IO, RHI) install on their receiver's stop token. Holds
 // nothing when the token can never stop (unstoppable_token), so those receivers pay for no callback.
-// Shared by the IO layer and the RHI (docs/design/16-shared-sender-helpers.md); includes neither of them.
+// Shared by the IO layer and the RHI (docs/design/07-io-layer.md §4.8); includes neither of them.
 
 #include <stdexec/execution.hpp>
 
