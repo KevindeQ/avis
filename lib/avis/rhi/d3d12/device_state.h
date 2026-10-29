@@ -6,15 +6,18 @@
 
 #include "avis/error.h"
 #include "avis/rhi/configuration.h"
+#include "avis/rhi/d3d12/command_list_pool.h"
 #include "avis/rhi/d3d12/completion_tracker.h"
 #include "avis/rhi/d3d12/descriptor_heaps.h"
 #include "avis/rhi/d3d12/device.h"
 #include "avis/rhi/d3d12/device_queues.h"
 #include "avis/rhi/d3d12/lifetime_manager.h"
+#include "avis/rhi/d3d12/pipeline_factory.h"
 #include "avis/rhi/d3d12/resource_manager.h"
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 
 namespace avis::rhi::d3d12
 {
@@ -37,6 +40,8 @@ namespace avis::rhi::d3d12
         descriptor_heaps& descriptors() noexcept;
         lifetime_manager& lifetime() noexcept;
         resource_manager& resources() noexcept;
+        pipeline_factory& pipelines() noexcept;
+        command_list_pool& command_lists() noexcept;
 
         // completion_driver::poll_completions() (§5.2): the tracker, then lifetime housekeeping. When housekeeping
         // left ready releases (D-77), completion_tracker::signal, so the driver calls again.
@@ -59,6 +64,9 @@ namespace avis::rhi::d3d12
         std::unique_ptr<descriptor_heaps> descriptors_;
         std::unique_ptr<lifetime_manager> lifetime_;
         std::unique_ptr<resource_manager> resources_;
+        std::unique_ptr<pipeline_factory> pipelines_;
+        std::optional<recording_context> recording_; // references to the subsystems above (§24.2)
+        std::unique_ptr<command_list_pool> command_lists_;
     };
 } // namespace avis::rhi::d3d12
 

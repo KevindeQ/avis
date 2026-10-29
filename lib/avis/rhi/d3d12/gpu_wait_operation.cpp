@@ -13,11 +13,12 @@ namespace avis::rhi::detail
         constexpr const char* lost_message = "GPU wait: the D3D12 device was removed";
     } // namespace
 
-    gpu_wait_operation::gpu_wait_operation(
-        d3d12::device_state& state, const std::array<std::uint64_t, 3>& values) noexcept :
+    gpu_wait_operation::gpu_wait_operation(d3d12::device_state& state, const gpu_wait_target& target) noexcept :
         state_{ &state }
     {
-        queue_values = values;
+        queue_values = target.queue_values;
+        shared_fence = target.shared_fence;
+        shared_value = target.shared_value;
     }
 
     gpu_wait_operation::start_outcome gpu_wait_operation::start_wait(avis::error& error) noexcept
@@ -29,28 +30,32 @@ namespace avis::rhi::detail
             return start_outcome::failed;
         }
 
-        // Fast path without the tracker's lock: drop what is already reached
-        d3d12::device_queues& queues = state_->queues();
-        bool pending = false;
-        for (std::size_t index = 0; index < queue_values.size(); ++index)
+        if (shared_fence == nullptr)
         {
-            std::uint64_t& value = queue_values[index];
-            if (value != 0 && queues[static_cast<queue_type>(index)].is_complete(value))
+            // Fast path without the tracker's lock: drop what is already reached
+            d3d12::device_queues& queues = state_->queues();
+            bool pending = false;
+            for (std::size_t index = 0; index < queue_values.size(); ++index)
             {
-                value = 0;
+                std::uint64_t& value = queue_values[index];
+                if (value != 0 && queues[static_cast<queue_type>(index)].is_complete(value))
+                {
+                    value = 0;
+                }
+                pending = pending || value != 0;
             }
-            pending = pending || value != 0;
-        }
-        if (device.lost())
-        {
-            error = d3d12::device_lost_error(lost_message);
-            return start_outcome::failed;
-        }
-        if (!pending)
-        {
-            return start_outcome::reached;
+            if (device.lost())
+            {
+                error = d3d12::device_lost_error(lost_message);
+                return start_outcome::failed;
+            }
+            if (!pending)
+            {
+                return start_outcome::reached;
+            }
         }
 
+        // A shared fence is checked by the tracker, under its lock (§23.9)
         switch (state_->completions().add(*this))
         {
         case d3d12::completion_tracker::add_outcome::added:

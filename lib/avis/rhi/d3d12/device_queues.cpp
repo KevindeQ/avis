@@ -124,6 +124,11 @@ namespace avis::rhi::d3d12
             queue_->ExecuteCommandLists(static_cast<UINT>(lists.size()), lists.data());
         }
 
+        return signal_timeline();
+    }
+
+    result<std::uint64_t> device_queue::signal_timeline()
+    {
         const std::uint64_t value = next_value_;
         if (auto signalled = check_device(*device_, queue_->Signal(fence_.get(), value), "ID3D12CommandQueue::Signal");
             !signalled)
@@ -135,6 +140,8 @@ namespace avis::rhi::d3d12
         return value;
     }
 
+    // Both also advance the queue's own timeline, so last_submitted covers the shared fence operation: a shared fence
+    // destroyed right after it is tagged behind it (§23.8)
     result<void> device_queue::signal(ID3D12Fence& fence, const std::uint64_t value)
     {
         const std::lock_guard lock{ submission_mutex_ };
@@ -142,7 +149,17 @@ namespace avis::rhi::d3d12
         {
             device_->report_removed("signal");
         }
-        return check_device(*device_, queue_->Signal(&fence, value), "ID3D12CommandQueue::Signal (shared fence)");
+        if (auto signalled =
+                check_device(*device_, queue_->Signal(&fence, value), "ID3D12CommandQueue::Signal (shared fence)");
+            !signalled)
+        {
+            return signalled;
+        }
+        if (auto advanced = signal_timeline(); !advanced)
+        {
+            return std::unexpected(std::move(advanced.error()));
+        }
+        return {};
     }
 
     result<void> device_queue::wait(ID3D12Fence& fence, const std::uint64_t value)
@@ -152,7 +169,16 @@ namespace avis::rhi::d3d12
         {
             device_->report_removed("wait");
         }
-        return check_device(*device_, queue_->Wait(&fence, value), "ID3D12CommandQueue::Wait (shared fence)");
+        if (auto waited = check_device(*device_, queue_->Wait(&fence, value), "ID3D12CommandQueue::Wait (shared fence)");
+            !waited)
+        {
+            return waited;
+        }
+        if (auto advanced = signal_timeline(); !advanced)
+        {
+            return std::unexpected(std::move(advanced.error()));
+        }
+        return {};
     }
 
     std::uint64_t device_queue::last_submitted() const noexcept
@@ -200,6 +226,16 @@ namespace avis::rhi::d3d12
     ID3D12Fence& device_queue::fence() noexcept
     {
         return *fence_.get();
+    }
+
+    bool device_queue::enter_submit() noexcept
+    {
+        return !submitting_.exchange(true, std::memory_order_acquire);
+    }
+
+    void device_queue::leave_submit() noexcept
+    {
+        submitting_.store(false, std::memory_order_release);
     }
 
     result<std::unique_ptr<device_queues>> device_queues::create(device& device)

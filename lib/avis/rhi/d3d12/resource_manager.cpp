@@ -8,9 +8,12 @@
 #include "avis/rhi/d3d12/descriptor_heaps.h"
 #include "avis/rhi/d3d12/device.h"
 #include "avis/rhi/d3d12/lifetime_manager.h"
+#include "avis/rhi/d3d12/shared_objects.h"
+#include "avis/rhi/d3d12/view_descriptions.h"
 #include "avis/rhi/error.h"
 
 #include <format>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -77,128 +80,6 @@ namespace avis::rhi::d3d12
             return D3D12_FORMAT_SUPPORT1_TEXTURE2D;
         }
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC texture_srv(const texture_description& description) noexcept
-        {
-            const bool depth = has(description.usage, texture_usage::depth_stencil);
-            const auto mips = static_cast<UINT>(mip_level_count(description));
-            const auto layers = static_cast<UINT>(array_size(description));
-            D3D12_SHADER_RESOURCE_VIEW_DESC view{
-                .Format = depth ? to_native_depth_view(description.format) : to_native(description.format),
-                .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-            };
-            switch (description.dimension)
-            {
-            case texture_dimension::texture_1d:
-                if (layers > 1)
-                {
-                    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
-                    view.Texture1DArray = { .MostDetailedMip = 0,
-                                            .MipLevels = mips,
-                                            .FirstArraySlice = 0,
-                                            .ArraySize = layers,
-                                            .ResourceMinLODClamp = 0.0f };
-                }
-                else
-                {
-                    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
-                    view.Texture1D = { .MostDetailedMip = 0, .MipLevels = mips, .ResourceMinLODClamp = 0.0f };
-                }
-                break;
-            case texture_dimension::texture_2d:
-                if (layers > 1)
-                {
-                    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-                    view.Texture2DArray = { .MostDetailedMip = 0,
-                                            .MipLevels = mips,
-                                            .FirstArraySlice = 0,
-                                            .ArraySize = layers,
-                                            .PlaneSlice = 0,
-                                            .ResourceMinLODClamp = 0.0f };
-                }
-                else
-                {
-                    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                    view.Texture2D = {
-                        .MostDetailedMip = 0, .MipLevels = mips, .PlaneSlice = 0, .ResourceMinLODClamp = 0.0f
-                    };
-                }
-                break;
-            case texture_dimension::texture_3d:
-                view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-                view.Texture3D = { .MostDetailedMip = 0, .MipLevels = mips, .ResourceMinLODClamp = 0.0f };
-                break;
-            case texture_dimension::cube:
-                if (description.depth_or_layers > 1)
-                {
-                    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
-                    view.TextureCubeArray = { .MostDetailedMip = 0,
-                                              .MipLevels = mips,
-                                              .First2DArrayFace = 0,
-                                              .NumCubes = description.depth_or_layers,
-                                              .ResourceMinLODClamp = 0.0f };
-                }
-                else
-                {
-                    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-                    view.TextureCube = { .MostDetailedMip = 0, .MipLevels = mips, .ResourceMinLODClamp = 0.0f };
-                }
-                break;
-            }
-            return view;
-        }
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC texture_uav(const texture_description& description, const UINT mip) noexcept
-        {
-            const auto layers = static_cast<UINT>(array_size(description));
-            D3D12_UNORDERED_ACCESS_VIEW_DESC view{ .Format = to_native(description.format) };
-            switch (description.dimension)
-            {
-            case texture_dimension::texture_1d:
-                if (layers > 1)
-                {
-                    view.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1DARRAY;
-                    view.Texture1DArray = { .MipSlice = mip, .FirstArraySlice = 0, .ArraySize = layers };
-                }
-                else
-                {
-                    view.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
-                    view.Texture1D = { .MipSlice = mip };
-                }
-                break;
-            case texture_dimension::texture_2d:
-            case texture_dimension::cube:
-                if (layers > 1)
-                {
-                    view.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-                    view.Texture2DArray = {
-                        .MipSlice = mip, .FirstArraySlice = 0, .ArraySize = layers, .PlaneSlice = 0
-                    };
-                }
-                else
-                {
-                    view.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-                    view.Texture2D = { .MipSlice = mip, .PlaneSlice = 0 };
-                }
-                break;
-            case texture_dimension::texture_3d:
-                view.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
-                view.Texture3D = { .MipSlice = mip, .FirstWSlice = 0, .WSize = static_cast<UINT>(-1) };
-                break;
-            }
-            return view;
-        }
-
-        // Structured when structure_stride > 0, raw (R32_TYPELESS) otherwise
-        std::pair<UINT, UINT> buffer_elements(const buffer_description& description) noexcept
-        {
-            if (description.structure_stride > 0)
-            {
-                return { static_cast<UINT>(description.size / description.structure_stride),
-                         description.structure_stride };
-            }
-            return { static_cast<UINT>(description.size / 4), 0 };
-        }
-
         template<class Handle, class Record>
         void destroy_record(
             slot_map<Record>& map,
@@ -243,7 +124,7 @@ namespace avis::rhi::d3d12
         return manager;
     }
 
-    result<void> resource_manager::validate(const texture_description& description) const
+    result<void> resource_manager::validate(const texture_description& description, const bool shared) const
     {
         const std::string name = label("texture", description.debug_name);
         if (description.format == format::unknown)
@@ -260,10 +141,15 @@ namespace avis::rhi::d3d12
                     description.height,
                     description.depth_or_layers)));
         }
-        if (has(description.usage, texture_usage::shared))
+        if (has(description.usage, texture_usage::shared) && !shared)
         {
             return std::unexpected(
                 invalid(std::format("{}: shared textures are created with sharing::create_shared_texture", name)));
+        }
+        if (shared && !has(description.usage, texture_usage::shared))
+        {
+            return std::unexpected(
+                invalid(std::format("{}: create_shared_texture requires texture_usage::shared", name)));
         }
         if (has(description.usage, texture_usage::render_target) &&
             has(description.usage, texture_usage::depth_stencil))
@@ -402,20 +288,9 @@ namespace avis::rhi::d3d12
         {
             return {};
         }
-        const auto [elements, stride] = buffer_elements(description);
-        const bool raw = stride == 0;
         if (has(description.usage, buffer_usage::shader_resource))
         {
-            const D3D12_SHADER_RESOURCE_VIEW_DESC view{
-                .Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN,
-                .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                .Buffer = { .FirstElement = 0,
-                            .NumElements = elements,
-                            .StructureByteStride = stride,
-                            .Flags = raw ? D3D12_BUFFER_SRV_FLAG_RAW : D3D12_BUFFER_SRV_FLAG_NONE },
-            };
-            auto srv = descriptors_.create_srv(*record.resource.get(), view);
+            auto srv = descriptors_.create_srv(*record.resource.get(), buffer_srv(description));
             if (!srv)
             {
                 return std::unexpected(std::move(srv.error()));
@@ -424,16 +299,7 @@ namespace avis::rhi::d3d12
         }
         if (has(description.usage, buffer_usage::unordered_access))
         {
-            const D3D12_UNORDERED_ACCESS_VIEW_DESC view{
-                .Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN,
-                .ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
-                .Buffer = { .FirstElement = 0,
-                            .NumElements = elements,
-                            .StructureByteStride = stride,
-                            .CounterOffsetInBytes = 0,
-                            .Flags = raw ? D3D12_BUFFER_UAV_FLAG_RAW : D3D12_BUFFER_UAV_FLAG_NONE },
-            };
-            auto uav = descriptors_.create_uav(*record.resource.get(), view);
+            auto uav = descriptors_.create_uav(*record.resource.get(), buffer_uav(description));
             if (!uav)
             {
                 return std::unexpected(std::move(uav.error()));
@@ -660,6 +526,45 @@ namespace avis::rhi::d3d12
             return std::unexpected(std::move(bits.error()));
         }
         return to_handle<buffer_handle>(*bits);
+    }
+
+    result<texture_handle> resource_manager::create_shared_texture(const texture_description& description)
+    {
+        if (auto valid = validate(description, true); !valid)
+        {
+            return std::unexpected(std::move(valid.error()));
+        }
+        auto record = allocator_->create_shared_texture(description);
+        if (!record)
+        {
+            return std::unexpected(std::move(record.error()));
+        }
+        if (auto views = create_views(*record); !views)
+        {
+            return std::unexpected(std::move(views.error()));
+        }
+        auto bits = textures_.insert(std::move(*record));
+        if (!bits)
+        {
+            return std::unexpected(std::move(bits.error()));
+        }
+        return to_handle<texture_handle>(*bits);
+    }
+
+    result<HANDLE> resource_manager::export_shared_handle(const texture_handle texture)
+    {
+        texture_record* const record = textures_.find(to_bits(texture));
+        if (record == nullptr)
+        {
+            return std::unexpected(make_error(error_kind::invalid_handle, "export_shared_handle: stale or invalid texture handle"));
+        }
+        if (!has(record->description.usage, texture_usage::shared))
+        {
+            return std::unexpected(invalid(std::format(
+                "export_shared_handle: {} wasn't created with sharing::create_shared_texture", label("texture", record->name))));
+        }
+        const std::lock_guard lock{ export_mutex_ };
+        return export_texture(device_, *record);
     }
 
     void resource_manager::destroy(const texture_handle texture) noexcept

@@ -5,6 +5,8 @@
 // (docs/design/09-rhi.md §21.6). The resources and memory views forward to it.
 
 #include "avis/error.h"
+#include "avis/rhi/d3d12/d3d12.h"
+#include "avis/rhi/d3d12/leaf_mutex.h"
 #include "avis/rhi/d3d12/memory_allocator.h"
 #include "avis/rhi/d3d12/resource_records.h"
 #include "avis/rhi/d3d12/slot_map.h"
@@ -41,6 +43,10 @@ namespace avis::rhi::d3d12
             create_placed_texture(heap_handle heap, std::uint64_t offset, const texture_description& description);
         result<buffer_handle>
             create_placed_buffer(heap_handle heap, std::uint64_t offset, const buffer_description& description);
+        // Committed with HEAP_FLAG_SHARED (§13); requires texture_usage::shared
+        result<texture_handle> create_shared_texture(const texture_description& description);
+        // Created on the first call, the same handle afterwards; the record owns it (§21.5)
+        result<HANDLE> export_shared_handle(texture_handle texture);
 
         // Extract the record and hand it to lifetime_manager::destroy (§23.8.1). A stale or invalid handle is a no-op
         // and asserts in debug builds. Placed resources decrement their heap's live_resources first; destroy(heap)
@@ -67,7 +73,8 @@ namespace avis::rhi::d3d12
     private:
         resource_manager(device& device, descriptor_heaps& descriptors, lifetime_manager& lifetime) noexcept;
 
-        result<void> validate(const texture_description& description) const;
+        // `shared`: the description is for create_shared_texture, which alone accepts texture_usage::shared
+        result<void> validate(const texture_description& description, bool shared = false) const;
         result<void> validate(const buffer_description& description) const;
 
         // The persistent views of §8.3
@@ -82,6 +89,7 @@ namespace avis::rhi::d3d12
         slot_map<buffer_record> buffers_;
         slot_map<sampler_record> samplers_;
         slot_map<heap_record> heaps_;
+        leaf_mutex export_mutex_{ "resource_manager::export_mutex_" }; // export_shared_handle's first call
     };
 } // namespace avis::rhi::d3d12
 

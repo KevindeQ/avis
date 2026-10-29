@@ -4,6 +4,7 @@
 
 #include "avis/detail/receiver_stop_callback.h"
 #include "avis/rhi/barriers.h"
+#include "avis/rhi/command_list.h"
 #include "avis/rhi/completion_driver.h"
 #include "avis/rhi/configuration.h"
 #include "avis/rhi/error.h"
@@ -14,7 +15,9 @@
 #include "avis/rhi/render_hardware_interface.h"
 #include "avis/rhi/resources.h"
 #include "avis/rhi/root_signature.h"
+#include "avis/rhi/shared.h"
 #include "avis/rhi/synchronization.h"
+#include "avis/rhi/transient.h"
 #include "avis/rhi/types.h"
 
 #ifdef _WINDOWS_

@@ -10,7 +10,7 @@
 #include "avis/rhi/d3d12/com_ptr.h"
 #include "avis/rhi/d3d12/d3d12.h"
 #include "avis/rhi/d3d12/leaf_mutex.h"
-#include "avis/rhi/d3d12/transient_upload.h"
+#include "avis/rhi/d3d12/transient_links.h"
 #include "avis/rhi/resources.h"
 #include "avis/rhi/types.h"
 

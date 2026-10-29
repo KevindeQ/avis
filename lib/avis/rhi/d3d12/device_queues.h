@@ -37,7 +37,8 @@ namespace avis::rhi::d3d12
         result<std::uint64_t>
             execute(std::span<ID3D12CommandList* const> lists, std::span<const synchronization_point> waits = {});
 
-        // Shared fences (§23.9). Throw device_lost after device removal.
+        // Shared fences (§23.9). Each also signals the queue's next timeline value, so last_submitted covers it. Throw
+        // device_lost after device removal.
         result<void> signal(ID3D12Fence& fence, std::uint64_t value);
         result<void> wait(ID3D12Fence& fence, std::uint64_t value);
 
@@ -59,8 +60,16 @@ namespace avis::rhi::d3d12
         ID3D12CommandQueue& native() noexcept;
         ID3D12Fence& fence() noexcept;
 
+        // queue<Queue>::submit isn't thread-safe against itself (§5): true when no other submit is in progress. Debug
+        // builds assert it; leave_submit ends the section.
+        bool enter_submit() noexcept;
+        void leave_submit() noexcept;
+
     private:
         device_queue(device& device, device_queues& siblings, queue_type type) noexcept;
+
+        // Signal(fence_, next_value_++) and publish it; under submission_mutex_
+        result<std::uint64_t> signal_timeline();
 
         device* device_;
         device_queues* siblings_; // other queues' fences for cross-queue waits
@@ -72,6 +81,7 @@ namespace avis::rhi::d3d12
         std::uint64_t next_value_ = 1; // guarded by submission_mutex_
         std::atomic<std::uint64_t> last_submitted_{ 0 };
         mutable std::atomic<std::uint64_t> completed_cache_{ 0 };
+        std::atomic<bool> submitting_{ false };
     };
 
     // The graphics, compute and copy queues

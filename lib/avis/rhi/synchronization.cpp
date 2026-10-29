@@ -36,6 +36,6 @@ namespace avis::rhi
                 value = point.value;
             }
         }
-        return gpu_wait_sender{ *state_, values };
+        return gpu_wait_sender{ *state_, detail::gpu_wait_target{ .queue_values = values } };
     }
 } // namespace avis::rhi

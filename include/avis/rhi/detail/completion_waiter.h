@@ -12,6 +12,7 @@
 namespace avis::rhi::d3d12
 {
     class completion_tracker;
+    struct shared_fence_state;
 } // namespace avis::rhi::d3d12
 
 namespace avis::rhi::detail
@@ -36,6 +37,9 @@ namespace avis::rhi::detail
         // Any set of synchronization points reduces to at most one value per queue (the latest), indexed by
         // queue_type. 0 = nothing to wait for on that queue.
         std::array<std::uint64_t, 3> queue_values{};
+        // Or one value of a shared fence (when_reached, §13); the queue values are all 0 then
+        d3d12::shared_fence_state* shared_fence = nullptr;
+        std::uint64_t shared_value = 0;
 
     private:
         friend class d3d12::completion_tracker;
@@ -51,7 +55,7 @@ namespace avis::rhi::detail
 
         completion_waiter* previous_ = nullptr;
         completion_waiter* next_ = nullptr;
-        std::uint8_t current_timeline_ = 0;
+        std::uint8_t current_timeline_ = 0; // 0–2: a queue; 3: shared_fence's timeline
         waiter_state state_ = waiter_state::idle;
     };
 } // namespace avis::rhi::detail

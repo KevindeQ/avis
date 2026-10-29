@@ -53,6 +53,25 @@ namespace avis::rhi::d3d12
             return std::unexpected(std::move(created_resources.error()));
         }
         state->resources_ = std::move(*created_resources);
+
+        auto created_pipelines = pipeline_factory::create(*state->device_);
+        if (!created_pipelines)
+        {
+            return std::unexpected(std::move(created_pipelines.error()));
+        }
+        state->pipelines_ = std::move(*created_pipelines);
+
+        state->recording_.emplace(recording_context{ .resources = *state->resources_,
+                                                     .pipelines = *state->pipelines_,
+                                                     .descriptors = *state->descriptors_,
+                                                     .device = *state->device_ });
+        auto created_lists = command_list_pool::create(
+            *state->device_, *state->queues_, *state->descriptors_, *state->lifetime_, *state->recording_);
+        if (!created_lists)
+        {
+            return std::unexpected(std::move(created_lists.error()));
+        }
+        state->command_lists_ = std::move(*created_lists);
         return state;
     }
 
@@ -101,6 +120,16 @@ namespace avis::rhi::d3d12
     resource_manager& device_state::resources() noexcept
     {
         return *resources_;
+    }
+
+    pipeline_factory& device_state::pipelines() noexcept
+    {
+        return *pipelines_;
+    }
+
+    command_list_pool& device_state::command_lists() noexcept
+    {
+        return *command_lists_;
     }
 
     std::size_t device_state::poll_completions() noexcept

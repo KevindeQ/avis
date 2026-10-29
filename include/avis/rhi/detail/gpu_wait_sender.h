@@ -19,15 +19,26 @@
 
 namespace avis::rhi
 {
+    class sharing;
     class synchronization;
 
     namespace d3d12
     {
         class device_state;
+        struct shared_fence_state;
     } // namespace d3d12
 
     namespace detail
     {
+        // What a GPU wait waits for: the latest value per queue (indexed by queue_type, 0 = nothing), or one value of
+        // a shared fence (§13)
+        struct gpu_wait_target
+        {
+            std::array<std::uint64_t, 3> queue_values{};
+            d3d12::shared_fence_state* shared_fence = nullptr;
+            std::uint64_t shared_value = 0;
+        };
+
         // Non-template part of a GPU wait
         class gpu_wait_operation : public completion_waiter
         {
@@ -40,7 +51,7 @@ namespace avis::rhi
                 stopped // a stop request came first: complete inline with set_stopped
             };
 
-            gpu_wait_operation(d3d12::device_state& state, const std::array<std::uint64_t, 3>& values) noexcept;
+            gpu_wait_operation(d3d12::device_state& state, const gpu_wait_target& target) noexcept;
             ~gpu_wait_operation() = default;
 
             // Drops the values that are already reached, then adds the waiter to the tracker
@@ -64,8 +75,8 @@ namespace avis::rhi
             gpu_wait_operation_state(
                 Receiver receiver,
                 d3d12::device_state& state,
-                const std::array<std::uint64_t, 3>& values) noexcept(std::is_nothrow_move_constructible_v<Receiver>) :
-                gpu_wait_operation{ state, values },
+                const gpu_wait_target& target) noexcept(std::is_nothrow_move_constructible_v<Receiver>) :
+                gpu_wait_operation{ state, target },
                 receiver_{ std::move(receiver) }
             {}
 
@@ -150,19 +161,20 @@ namespace avis::rhi
             template<stdexec::receiver Receiver>
             auto connect(Receiver receiver) const -> gpu_wait_operation_state<Receiver>
             {
-                return { std::move(receiver), *state_, values_ };
+                return { std::move(receiver), *state_, target_ };
             }
 
         private:
+            friend class rhi::sharing;
             friend class rhi::synchronization;
 
-            gpu_wait_sender(d3d12::device_state& state, const std::array<std::uint64_t, 3>& values) noexcept :
+            gpu_wait_sender(d3d12::device_state& state, const gpu_wait_target& target) noexcept :
                 state_{ &state },
-                values_{ values }
+                target_{ target }
             {}
 
             d3d12::device_state* state_;
-            std::array<std::uint64_t, 3> values_; // the latest value per queue, indexed by queue_type
+            gpu_wait_target target_;
         };
 
         static_assert(avis::sender_of<gpu_wait_sender>);

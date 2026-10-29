@@ -16,17 +16,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace avis::rhi::d3d12
 {
     class device;
     class device_queues;
 
-    // A fence whose values waiters wait for: a queue's timeline fence (a shared fence from 6.11)
+    // A fence whose values waiters wait for: a queue's timeline fence, or a shared fence while it has waiters
     struct timeline
     {
+        static constexpr std::uint8_t shared_index = 3;
+
         ID3D12Fence* fence = nullptr;
-        std::uint8_t index = 0; // the waiters' queue_values index for this timeline
+        std::uint8_t index = 0; // the waiters' queue_values index, or shared_index for a shared fence
         std::uint64_t armed_value = 0; // the value the completion event is registered for; 0 = none
         detail::completion_waiter* front = nullptr; // sorted by the value waited for on this timeline
         detail::completion_waiter* back = nullptr;
@@ -78,6 +81,13 @@ namespace avis::rhi::d3d12
 
         static std::uint64_t value_on(const detail::completion_waiter& waiter, std::size_t line) noexcept;
 
+        // The timeline the waiter is queued on: a queue's, or its shared fence's
+        timeline& line_of(detail::completion_waiter& waiter) noexcept;
+
+        // A shared fence's first waiter attaches its timeline, so process() polls it; its last one detaches it (§23.9)
+        void attach(timeline& line) noexcept;
+        void detach(timeline& line) noexcept;
+
         // Sorted insert; true when the waiter became the front
         static bool insert(timeline& line, detail::completion_waiter& waiter) noexcept;
         static void unlink(timeline& line, detail::completion_waiter& waiter) noexcept;
@@ -97,6 +107,7 @@ namespace avis::rhi::d3d12
         unique_handle event_;
         leaf_mutex mutex_{ "completion_tracker::mutex_" };
         std::array<timeline, 3> timelines_; // indexed by queue_type
+        std::vector<timeline*> shared_; // shared fences with waiters
         std::atomic<std::size_t> waiter_count_{ 0 };
         std::atomic<bool> again_{ false }; // set when process() found another caller running
         std::atomic<std::chrono::steady_clock::rep> last_processed_;

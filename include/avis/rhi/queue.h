@@ -3,14 +3,19 @@
 
 // Queues and synchronization points (docs/design/09-rhi.md §5). Free of D3D12 and <windows.h>.
 
+#include "avis/error.h"
 #include "avis/rhi/types.h"
 
 #include <cassert>
 #include <cstdint>
+#include <span>
 
 namespace avis::rhi
 {
     class render_hardware_interface;
+    class shared_fence;
+    template<queue_type>
+    class command_list;
 
     namespace d3d12
     {
@@ -50,6 +55,17 @@ namespace avis::rhi
     {
     public:
         explicit queue(render_hardware_interface& hardware_interface) noexcept;
+
+        // Executes the lists in order after GPU-side waits for `waits`. The lists are closed and become invalid, and so do
+        // the recorders they handed out; their timestamp runs are resolved first (§24.4). Not thread-safe against itself:
+        // callers serialise submissions per queue (asserted in debug builds). Throws device_lost after device removal.
+        result<synchronization_point>
+            submit(std::span<command_list<Queue>> lists, std::span<const synchronization_point> waits = {});
+
+        // Cross-device fences (§13). wait() is a GPU-side wait that can't be cancelled: only use it when the signal is
+        // already guaranteed to be submitted. Both throw device_lost after device removal; other failures are logged.
+        void signal(const shared_fence& fence, std::uint64_t value);
+        void wait(const shared_fence& fence, std::uint64_t value);
 
         // The point of the latest submission; value 0 before the first
         synchronization_point last_submitted() const noexcept;

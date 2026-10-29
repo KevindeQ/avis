@@ -1,9 +1,11 @@
 #ifndef AVIS_RHI_PIPELINE_H
 #define AVIS_RHI_PIPELINE_H
 
-// Pipeline descriptions (docs/design/09-rhi.md §12). The pipelines view follows with the pipeline factory.
+// Pipeline descriptions and the pipelines view (docs/design/09-rhi.md §4.3, §12). Free of D3D12 and <windows.h>.
 
+#include "avis/error.h"
 #include "avis/rhi/formats.h"
+#include "avis/rhi/root_signature.h"
 #include "avis/rhi/types.h"
 
 #include <array>
@@ -113,6 +115,32 @@ namespace avis::rhi
         root_signature_handle root_signature; // required
         std::span<const std::byte> compute_shader; // DXIL; only read during create_pipeline
         std::string_view debug_name; // copied at creation
+    };
+
+    class render_hardware_interface;
+
+    namespace d3d12
+    {
+        class device_state;
+    } // namespace d3d12
+
+    // A view (§4.3): non-owning, copyable, built from the RHI and never outliving it. Any thread. Every call creates
+    // a native object (no cache, §12); root signatures and pipelines live as long as the RHI (D-87).
+    class pipelines
+    {
+    public:
+        explicit pipelines(render_hardware_interface& hardware_interface) noexcept;
+
+        // invalid_argument naming the parameter (§12.1); native_error with the serialiser's message
+        result<root_signature_handle> create_root_signature(const root_signature_description& description);
+
+        // invalid_handle for a stale root signature, invalid_argument for an empty shader or bad formats,
+        // pipeline_creation_failed (debug name and HRESULT) when D3D12 rejects it
+        result<graphics_pipeline_handle> create_pipeline(const graphics_pipeline_description& description);
+        result<compute_pipeline_handle> create_pipeline(const compute_pipeline_description& description);
+
+    private:
+        d3d12::device_state* state_;
     };
 } // namespace avis::rhi
 

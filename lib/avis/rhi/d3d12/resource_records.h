@@ -11,6 +11,7 @@
 #include "avis/rhi/d3d12/unique_handle.h"
 #include "avis/rhi/memory.h"
 #include "avis/rhi/resources.h"
+#include "avis/rhi/root_signature.h"
 #include "avis/rhi/types.h"
 
 #include <atomic>
@@ -72,6 +73,30 @@ namespace avis::rhi::d3d12
     {
         std::shared_ptr<placed_heap> heap;
         heap_description description; // debug_name cleared
+        std::string name;
+    };
+
+    // Filled by the pipeline factory (§22.3–22.4). Root signatures and pipelines live as long as the RHI (D-87), so a
+    // pipeline record's pointer to its signature's record never dangles (slot map records never move, §21.2).
+    struct root_signature_record
+    {
+        com_ptr<ID3D12RootSignature> native;
+        std::vector<root_parameter> parameters; // copy of the description's, for the root call checks (§24.3)
+        std::string name;
+    };
+
+    struct graphics_pipeline_record
+    {
+        com_ptr<ID3D12PipelineState> state;
+        const root_signature_record* root_signature = nullptr;
+        std::string name;
+        D3D_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST; // IASetPrimitiveTopology in set_pipeline
+    };
+
+    struct compute_pipeline_record
+    {
+        com_ptr<ID3D12PipelineState> state;
+        const root_signature_record* root_signature = nullptr;
         std::string name;
     };
 

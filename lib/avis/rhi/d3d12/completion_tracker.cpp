@@ -4,8 +4,11 @@
 #include "avis/rhi/d3d12/check.h"
 #include "avis/rhi/d3d12/device.h"
 #include "avis/rhi/d3d12/device_queues.h"
+#include "avis/rhi/d3d12/shared_objects.h"
 #include "avis/rhi/error.h"
 
+#include <algorithm>
+#include <limits>
 #include <mutex>
 #include <utility>
 
@@ -17,6 +20,7 @@ namespace avis::rhi::d3d12
         using waiter = detail::completion_waiter;
 
         constexpr auto watchdog_interval = std::chrono::seconds{ 1 };
+        constexpr std::uint64_t removed_fence_value = std::numeric_limits<std::uint64_t>::max();
 
         // A singly linked list through next_, for waiters taken out of the timelines
         struct taken_list
@@ -57,7 +61,7 @@ namespace avis::rhi::d3d12
     {
         // Single-threaded now: no sender may still be starting or stopping (§4.2)
         std::size_t leftover = 0;
-        for (timeline& line : timelines_)
+        const auto stop_all = [&](timeline& line)
         {
             while (waiter* const pending = line.front)
             {
@@ -66,7 +70,16 @@ namespace avis::rhi::d3d12
                 ++leftover;
                 pending->on_stopped();
             }
+        };
+        for (timeline& line : timelines_)
+        {
+            stop_all(line);
         }
+        for (timeline* const line : shared_)
+        {
+            stop_all(*line);
+        }
+        shared_.clear();
         if (leftover > 0)
         {
             try
@@ -83,7 +96,23 @@ namespace avis::rhi::d3d12
 
     std::uint64_t completion_tracker::value_on(const waiter& waiter, const std::size_t line) noexcept
     {
-        return waiter.queue_values[line];
+        return line < waiter.queue_values.size() ? waiter.queue_values[line] : waiter.shared_value;
+    }
+
+    timeline& completion_tracker::line_of(waiter& waiter) noexcept
+    {
+        return waiter.current_timeline_ < timelines_.size() ? timelines_[waiter.current_timeline_] : waiter.shared_fence->line;
+    }
+
+    void completion_tracker::attach(timeline& line) noexcept
+    {
+        shared_.push_back(&line); // out of memory terminates
+    }
+
+    void completion_tracker::detach(timeline& line) noexcept
+    {
+        std::erase(shared_, &line);
+        line.armed_value = 0; // re-armed from scratch when the fence gets waiters again
     }
 
     bool completion_tracker::insert(timeline& line, waiter& waiter) noexcept
@@ -230,7 +259,34 @@ namespace avis::rhi::d3d12
             }
 
             const bool was_empty = waiter_count_.load(std::memory_order_relaxed) == 0;
-            if (!enqueue(waiter, 0))
+            bool queued = false;
+            if (waiter.shared_fence != nullptr)
+            {
+                timeline& line = waiter.shared_fence->line;
+                const std::uint64_t done = line.fence->GetCompletedValue();
+                if (done == removed_fence_value)
+                {
+                    device_.mark_removed("ID3D12Fence::GetCompletedValue (shared fence)");
+                    return add_outcome::failed;
+                }
+                if (waiter.shared_value > done)
+                {
+                    if (line.front == nullptr)
+                    {
+                        attach(line); // the fence's first waiter
+                    }
+                    if (insert(line, waiter))
+                    {
+                        arm(line);
+                    }
+                    queued = true;
+                }
+            }
+            else
+            {
+                queued = enqueue(waiter, 0);
+            }
+            if (!queued)
             {
                 outcome = device_.lost() ? add_outcome::failed : add_outcome::reached;
             }
@@ -267,12 +323,16 @@ namespace avis::rhi::d3d12
         {
         case waiter::waiter_state::queued:
             {
-                timeline& line = timelines_[waiter.current_timeline_];
+                timeline& line = line_of(waiter);
                 const bool was_front = line.front == &waiter;
                 unlink(line, waiter);
                 waiter.state_ = waiter::waiter_state::taken;
                 waiter_count_.fetch_sub(1, std::memory_order_relaxed);
-                if (was_front)
+                if (line.front == nullptr && waiter.current_timeline_ >= timelines_.size())
+                {
+                    detach(line); // the shared fence's last waiter
+                }
+                else if (was_front)
                 {
                     arm(line);
                 }
@@ -322,14 +382,24 @@ namespace avis::rhi::d3d12
             };
             const auto fail_all = [&]
             {
-                for (timeline& line : timelines_)
+                const auto fail_line = [&](timeline& line)
                 {
                     while (waiter* const pending = line.front)
                     {
                         unlink(line, *pending);
                         take(failed, *pending);
                     }
+                };
+                for (timeline& line : timelines_)
+                {
+                    fail_line(line);
                 }
+                for (timeline* const line : shared_)
+                {
+                    fail_line(*line);
+                    line->armed_value = 0;
+                }
+                shared_.clear();
             };
 
             if (device_.lost())
@@ -368,6 +438,40 @@ namespace avis::rhi::d3d12
                     {
                         arm(line);
                     }
+                }
+
+                // Shared fences with waiters: values another device may signal (§23.9)
+                for (std::size_t index = 0; !device_.lost() && index < shared_.size();)
+                {
+                    timeline& line = *shared_[index];
+                    const std::uint64_t done = line.fence->GetCompletedValue();
+                    if (done == removed_fence_value)
+                    {
+                        device_.mark_removed("ID3D12Fence::GetCompletedValue (shared fence)");
+                        break;
+                    }
+                    bool front_changed = false;
+                    while (line.front != nullptr && line.front->shared_value <= done)
+                    {
+                        waiter& due = *line.front;
+                        unlink(line, due);
+                        take(reached, due);
+                        front_changed = true;
+                    }
+                    if (line.front == nullptr)
+                    {
+                        detach(line); // erases shared_[index]
+                        continue;
+                    }
+                    if (front_changed)
+                    {
+                        arm(line);
+                    }
+                    ++index;
+                }
+                if (device_.lost())
+                {
+                    fail_all();
                 }
             }
 
