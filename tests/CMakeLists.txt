@@ -62,6 +62,7 @@ target_sources(AVIS_TESTS
 		test_graphics_public_headers.cpp
 		test_graphics_readback_queue.cpp
 		test_graphics_root_signature_registry.cpp
+		test_graphics_shader_build.cpp
 		test_graphics_shader_library.cpp
 		test_graphics_shader_loading.cpp
 		test_graphics_upload_queue.cpp
@@ -126,6 +127,21 @@ avis_test_shader(graphics/binding_layout_test.hlsl main cs_6_6 graphics_test_bin
 avis_test_shader(graphics/pipeline_test_draw.hlsl vertex_main vs_6_6 graphics_test_draw_vertex_shader)
 avis_test_shader(graphics/pipeline_test_draw.hlsl pixel_main ps_6_6 graphics_test_draw_pixel_shader)
 avis_test_shader(graphics/pipeline_test_buffers.hlsl main cs_6_6 graphics_test_buffers_shader)
+
+# The same graphics test shaders built the way applications build theirs (docs/tasks/08-graphics-shaders-and-
+# pipelines.md §8.7): .cso files and a manifest.yaml with hashes and reflected bindings, which
+# test_graphics_shader_build.cpp loads from AVIS_TEST_BUILT_SHADER_DIRECTORY
+set(AVIS_TEST_BUILT_SHADER_DIRECTORY "${CMAKE_BINARY_DIR}/bin/data/shaders/tests")
+avis_add_shaders(
+	TARGET AVIS_TESTS
+	SOURCES
+		shaders/graphics/binding_layout_test.hlsl
+		shaders/graphics/pipeline_test_buffers.hlsl
+		shaders/graphics/pipeline_test_draw.hlsl
+	OUTPUT_DIRECTORY "${AVIS_TEST_BUILT_SHADER_DIRECTORY}")
+target_compile_definitions(AVIS_TESTS
+	PRIVATE
+		AVIS_TEST_BUILT_SHADER_DIRECTORY="${AVIS_TEST_BUILT_SHADER_DIRECTORY}")
 
 target_include_directories(AVIS_TESTS
 	PRIVATE

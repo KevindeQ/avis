@@ -80,7 +80,7 @@ qt_standard_project_setup(REQUIRES 6.11)
 
 # Include additional support CMake files
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${AVIS_SRC_DIR}/cmake")
-#include(ShaderSupport)
+include(AvisShaders)
 include(WinDeployQT)
 
 # Define options to control the inclusion and default build behavior for components which may
