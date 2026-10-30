@@ -72,6 +72,7 @@ target_sources(AVIS_LIB
 		graphics/gpu_completion_thread.cpp
 		graphics/gpu_profiler.cpp
 		graphics/readback_queue.cpp
+		graphics/shader_library.cpp
 		graphics/upload_queue.cpp
 
 		io/async_file.cpp
