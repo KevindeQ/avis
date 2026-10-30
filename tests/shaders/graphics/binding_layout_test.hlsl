@@ -1,7 +1,10 @@
+// @avis-shader entry=main stage=cs
+//
 // Graphics tests (docs/tasks/08-graphics-shaders-and-pipelines.md §8.4): reads the three parameters of the standard
 // signature (graphics::binding_layout) and writes base + i * multiplier + pass offset + view offset into element i of a
 // raw buffer reached through ResourceDescriptorHeap.
-// Bindings: b0 (16 bytes, draw constants), b1 (8 bytes, pass constants), b2 (4 bytes, view constants).
+// Bindings: b0 (draw constants), b1 (pass constants), b2 (view constants), each 16 bytes as reflected (HLSL pads a
+// constant buffer to whole 16-byte registers).
 
 struct draw_constants
 {

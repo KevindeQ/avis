@@ -37,6 +37,18 @@ namespace avis::rhi::d3d12
         const compute_pipeline_record* find(compute_pipeline_handle pipeline) const noexcept;
         d3d12::command_signatures& command_signatures() noexcept;
 
+        // Pipelines created so far: they're never destroyed (D-87), so a slot map's high-water mark is its count. For
+        // white-box tests of callers that must not create one (the graphics layer's pipeline cache).
+        std::uint32_t graphics_pipeline_count() const noexcept
+        {
+            return graphics_pipelines_.slots_used();
+        }
+
+        std::uint32_t compute_pipeline_count() const noexcept
+        {
+            return compute_pipelines_.slots_used();
+        }
+
     private:
         pipeline_factory(device& device, d3d12::command_signatures signatures) noexcept;
 

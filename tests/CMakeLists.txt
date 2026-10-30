@@ -58,6 +58,7 @@ target_sources(AVIS_TESTS
 		test_graphics_frame_scheduler.cpp
 		test_graphics_gpu_completion_thread.cpp
 		test_graphics_gpu_profiler.cpp
+		test_graphics_pipeline_cache.cpp
 		test_graphics_public_headers.cpp
 		test_graphics_readback_queue.cpp
 		test_graphics_root_signature_registry.cpp
@@ -122,6 +123,9 @@ avis_test_shader(rhi_test_fill.hlsl fill_main cs_6_6 rhi_test_compute_shader)
 # Graphics-layer test shaders (docs/tasks/08-graphics-shaders-and-pipelines.md): bytecode headers until avis_add_shaders
 # builds them with a manifest (task 8.7)
 avis_test_shader(graphics/binding_layout_test.hlsl main cs_6_6 graphics_test_binding_layout_shader)
+avis_test_shader(graphics/pipeline_test_draw.hlsl vertex_main vs_6_6 graphics_test_draw_vertex_shader)
+avis_test_shader(graphics/pipeline_test_draw.hlsl pixel_main ps_6_6 graphics_test_draw_pixel_shader)
+avis_test_shader(graphics/pipeline_test_buffers.hlsl main cs_6_6 graphics_test_buffers_shader)
 
 target_include_directories(AVIS_TESTS
 	PRIVATE
