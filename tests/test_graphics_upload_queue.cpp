@@ -16,6 +16,10 @@
 #include "avis/rhi/formats.h"
 #include "avis/rhi/queue.h"
 #include "avis/rhi/resources.h"
+#include "avis/rhi/synchronization.h"
+#include "avis/sender_of.h"
+
+#include <stdexec/execution.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -24,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <span>
 #include <thread>
@@ -548,5 +553,307 @@ TEST_CASE("upload_queue: concurrent uploads and flushes", "[graphics]")
         same = same && std::memcmp(bytes.data() + slot * size, expected.data(), size) == 0;
     }
     CHECK(same);
+    resources.destroy(destination);
+}
+
+// ---- asynchronous uploads and back-pressure (7.6) ----
+
+namespace
+{
+    struct upload_outcome
+    {
+        std::optional<graphics::upload_ticket> ticket;
+        std::optional<avis::error> error;
+        std::atomic<int> values{ 0 };
+        std::atomic<int> errors{ 0 };
+        std::atomic<int> stops{ 0 };
+        std::atomic<std::thread::id> thread{};
+
+        int total() const noexcept
+        {
+            return values.load() + errors.load() + stops.load();
+        }
+    };
+
+    struct upload_receiver
+    {
+        using receiver_concept = stdexec::receiver_tag;
+
+        void set_value(const graphics::upload_ticket ticket) noexcept
+        {
+            outcome->ticket = ticket;
+            record();
+            ++outcome->values;
+        }
+
+        void set_error(avis::error error) noexcept
+        {
+            outcome->error.emplace(std::move(error));
+            record();
+            ++outcome->errors;
+        }
+
+        void set_stopped() noexcept
+        {
+            record();
+            ++outcome->stops;
+        }
+
+        void record() const noexcept
+        {
+            outcome->thread = std::this_thread::get_id();
+            if (order != nullptr)
+            {
+                order->push_back(id); // completions run on one thread in these tests
+            }
+        }
+
+        auto get_env() const noexcept
+        {
+            return stdexec::prop{ stdexec::get_stop_token, token };
+        }
+
+        upload_outcome* outcome;
+        stdexec::inplace_stop_token token;
+        std::vector<int>* order;
+        int id;
+    };
+
+    // A connected async upload with its outcome and stop source. Not movable; declare it after the queue.
+    class started_upload
+    {
+    public:
+        explicit started_upload(graphics::upload_sender sender, std::vector<int>* order = nullptr, const int id = 0) :
+            operation_{ stdexec::connect(
+                std::move(sender), upload_receiver{ &outcome, source.get_token(), order, id }) }
+        {}
+
+        started_upload(const started_upload&) = delete;
+        started_upload& operator=(const started_upload&) = delete;
+
+        void start() noexcept
+        {
+            stdexec::start(operation_);
+        }
+
+        upload_outcome outcome;
+        stdexec::inplace_stop_source source;
+
+    private:
+        stdexec::connect_result_t<graphics::upload_sender, upload_receiver> operation_;
+    };
+
+    constexpr std::size_t small_ring = 64 * kibibyte;
+} // namespace
+
+static_assert(avis::sender_of<graphics::upload_sender, graphics::upload_ticket>);
+
+TEST_CASE("upload_queue: an async upload waits for ring space without a thread", "[graphics]")
+{
+    tests::test_rhi hardware_interface;
+    tests::rhi_gate gate{ hardware_interface };
+    rhi::resources resources{ *hardware_interface };
+    rhi::completion_driver driver{ *hardware_interface };
+    const auto queue = tests::make_test_upload_queue(hardware_interface, small_ring);
+    const rhi::buffer_handle destination = gpu_buffer(resources, 128 * kibibyte);
+
+    // Requests up to half the ring use it (larger ones get a dedicated buffer and never wait): 60 of 64 KiB used
+    static_cast<void>(gate.point(queue_type::copy, 1)); // holds the copy queue back
+    const std::vector<std::byte> first = pattern(60 * kibibyte, 20);
+    REQUIRE(queue->upload_buffer(destination, 0, std::span{ first }.first(30 * kibibyte)).has_value());
+    REQUIRE(queue->upload_buffer(destination, 30 * kibibyte, std::span{ first }.subspan(30 * kibibyte)).has_value());
+    const rhi::synchronization_point held = flushed(*queue);
+
+    const std::vector<std::byte> second = pattern(30 * kibibyte, 21);
+    started_upload waiting{ queue->upload_buffer_async(destination, 64 * kibibyte, second) };
+    waiting.start();
+    CHECK(waiting.outcome.total() == 0);
+    driver.poll_completions();
+    CHECK(waiting.outcome.total() == 0);
+
+    gate.open(1);
+    hardware_interface.wait_for(held); // polls on this thread
+    REQUIRE(waiting.outcome.values == 1);
+    CHECK(waiting.outcome.thread.load() == std::this_thread::get_id());
+    CHECK(waiting.outcome.ticket->flush_index == 2); // the next flush
+
+    const rhi::synchronization_point second_flush = flushed(*queue);
+    CHECK(point_of(*queue, *waiting.outcome.ticket) == second_flush);
+    const std::array waits{ second_flush };
+    const std::vector<std::byte> bytes = read_buffer(hardware_interface, destination, 128 * kibibyte, waits);
+    CHECK(std::memcmp(bytes.data(), first.data(), first.size()) == 0);
+    CHECK(std::memcmp(bytes.data() + 64 * kibibyte, second.data(), second.size()) == 0);
+    resources.destroy(destination);
+}
+
+TEST_CASE("upload_queue: waiters complete in FIFO order, and a large one isn't overtaken", "[graphics]")
+{
+    tests::test_rhi hardware_interface;
+    tests::rhi_gate gate{ hardware_interface };
+    rhi::resources resources{ *hardware_interface };
+    rhi::completion_driver driver{ *hardware_interface };
+    const auto queue = tests::make_test_upload_queue(hardware_interface, small_ring);
+    const rhi::buffer_handle destination = gpu_buffer(resources, 256 * kibibyte);
+
+    // Two flushes fill the ring, each held by its own gate value: 24 KiB, then 32 + 8 KiB
+    const std::vector<std::byte> filler = pattern(32 * kibibyte, 30);
+    static_cast<void>(gate.point(queue_type::copy, 1));
+    REQUIRE(queue->upload_buffer(destination, 0, std::span{ filler }.first(24 * kibibyte)).has_value());
+    const rhi::synchronization_point first_flush = flushed(*queue);
+    static_cast<void>(gate.point(queue_type::copy, 2));
+    REQUIRE(queue->upload_buffer(destination, 0, filler).has_value());
+    REQUIRE(queue->upload_buffer(destination, 32 * kibibyte, std::span{ filler }.first(8 * kibibyte)).has_value());
+    const rhi::synchronization_point second_flush = flushed(*queue);
+
+    // A 32 KiB waiter at the front, which doesn't fit the first flush's 24 KiB, then nine 2 KiB ones that would
+    std::vector<int> order;
+    std::vector<std::vector<std::byte>> data;
+    data.push_back(pattern(32 * kibibyte, 31));
+    for (int index = 1; index < 10; ++index)
+    {
+        data.push_back(pattern(2 * kibibyte, 31 + index));
+    }
+    std::vector<std::unique_ptr<started_upload>> waiters;
+    std::uint64_t offset = 64 * kibibyte;
+    for (int index = 0; index < 10; ++index)
+    {
+        waiters.push_back(
+            std::make_unique<started_upload>(
+                queue->upload_buffer_async(destination, offset, data[index]), &order, index));
+        waiters.back()->start();
+        offset += data[index].size();
+    }
+    CHECK(order.empty());
+
+    gate.open(1);
+    hardware_interface.wait_for(first_flush);
+    driver.poll_completions();
+    CHECK(order.empty()); // the large one doesn't fit yet, and the small ones wait behind it
+
+    gate.open(2);
+    hardware_interface.wait_for(second_flush);
+    CHECK(order == std::vector<int>{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 });
+    for (const auto& waiter : waiters)
+    {
+        REQUIRE(waiter->outcome.values == 1);
+        CHECK(waiter->outcome.ticket->flush_index == 3);
+    }
+
+    const std::array waits{ flushed(*queue) };
+    const std::vector<std::byte> bytes = read_buffer(hardware_interface, destination, 256 * kibibyte, waits);
+    bool same = true;
+    offset = 64 * kibibyte;
+    for (const std::vector<std::byte>& expected : data)
+    {
+        same = same && std::memcmp(bytes.data() + offset, expected.data(), expected.size()) == 0;
+        offset += expected.size();
+    }
+    CHECK(same);
+    resources.destroy(destination);
+}
+
+TEST_CASE("upload_queue: a stop request completes a queued waiter once", "[graphics]")
+{
+    tests::test_rhi hardware_interface;
+    tests::rhi_gate gate{ hardware_interface };
+    rhi::resources resources{ *hardware_interface };
+    rhi::completion_driver driver{ *hardware_interface };
+    const rhi::synchronization synchronization{ *hardware_interface };
+    const auto queue = tests::make_test_upload_queue(hardware_interface, small_ring);
+    const rhi::buffer_handle destination = gpu_buffer(resources, 128 * kibibyte);
+    const std::vector<std::byte> data = pattern(30 * kibibyte, 40);
+    // Fills 60 of the ring's 64 KiB, so a 30 KiB upload has to wait
+    const auto fill = [&]
+    {
+        REQUIRE(queue->upload_buffer(destination, 0, data).has_value());
+        REQUIRE(queue->upload_buffer(destination, 30 * kibibyte, data).has_value());
+    };
+
+    SECTION("on the requesting thread, and not again from poll_completions")
+    {
+        static_cast<void>(gate.point(queue_type::copy, 1));
+        fill();
+        const rhi::synchronization_point held = flushed(*queue);
+
+        started_upload waiting{ queue->upload_buffer_async(destination, 64 * kibibyte, data) };
+        waiting.start();
+        REQUIRE(waiting.outcome.total() == 0);
+        waiting.source.request_stop();
+        CHECK(waiting.outcome.stops == 1);
+        CHECK(waiting.outcome.thread.load() == std::this_thread::get_id());
+
+        gate.open(1);
+        hardware_interface.wait_for(held);
+        driver.poll_completions();
+        CHECK(waiting.outcome.total() == 1);
+    }
+
+    SECTION("racing poll_completions on another thread")
+    {
+        constexpr int rounds = 1000;
+        int wrong = 0;
+        int stopped = 0;
+        for (int round = 1; round <= rounds; ++round)
+        {
+            static_cast<void>(gate.point(queue_type::copy, static_cast<std::uint64_t>(round)));
+            fill();
+            const rhi::synchronization_point held = flushed(*queue);
+
+            started_upload waiting{ queue->upload_buffer_async(destination, 64 * kibibyte, data) };
+            waiting.start();
+            wrong += waiting.outcome.total() == 0 ? 0 : 1;
+            {
+                std::jthread stopper{ [&waiting] { waiting.source.request_stop(); } };
+                gate.open(static_cast<std::uint64_t>(round));
+                while (!synchronization.is_complete(held))
+                {
+                    std::this_thread::yield();
+                }
+                driver.poll_completions();
+            }
+            wrong += waiting.outcome.total() == 1 ? 0 : 1;
+            stopped += waiting.outcome.stops.load();
+
+            // Retire everything, so the next round starts with an empty ring
+            const rhi::synchronization_point drained = flushed(*queue);
+            hardware_interface.wait_for(drained);
+            static_cast<void>(queue->flush());
+        }
+        CHECK(wrong == 0);
+        UNSCOPED_INFO("stopped " << stopped << " of " << rounds << " rounds");
+        CHECK(stopped > 0);
+    }
+    resources.destroy(destination);
+}
+
+TEST_CASE("upload_queue: async uploads that fit or are invalid complete inline", "[graphics]")
+{
+    tests::test_rhi hardware_interface;
+    rhi::resources resources{ *hardware_interface };
+    const auto queue = tests::make_test_upload_queue(hardware_interface);
+    const rhi::buffer_handle destination = gpu_buffer(resources, 4 * kibibyte);
+    const std::vector<std::byte> data = pattern(1024, 50);
+
+    started_upload fits{ queue->upload_buffer_async(destination, 0, data) };
+    fits.start();
+    REQUIRE(fits.outcome.values == 1);
+    CHECK(fits.outcome.ticket->flush_index == 1);
+
+    started_upload invalid{ queue->upload_buffer_async(destination, 4000, data) };
+    invalid.start();
+    REQUIRE(invalid.outcome.errors == 1);
+    CHECK(graphics::is_error(*invalid.outcome.error, graphics::error_kind::invalid_argument));
+
+    const rhi::texture_handle target =
+        texture(resources, { .width = 8, .height = 8, .format = rhi::format::rgba8_unorm });
+    const std::vector<std::byte> texels = pattern(8 * 8 * 4, 51);
+    const std::array subresources{ graphics::subresource_data{ .target = {}, .bytes = texels } };
+    started_upload texture_upload{ queue->upload_texture_async(target, subresources) };
+    texture_upload.start();
+    REQUIRE(texture_upload.outcome.values == 1);
+    CHECK(texture_upload.outcome.ticket->flush_index == 1);
+
+    hardware_interface.wait_for(flushed(*queue));
+    resources.destroy(target);
     resources.destroy(destination);
 }

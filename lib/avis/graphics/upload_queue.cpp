@@ -3,15 +3,20 @@
 #include "avis/detail/check.h"
 #include "avis/detail/safe_error.h"
 #include "avis/graphics/error.h"
+#include "avis/log.h"
 #include "avis/rhi/formats.h"
 
+#include <stdexec/execution.hpp>
+
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cstring>
 #include <deque>
 #include <format>
 #include <mutex>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -62,8 +67,86 @@ namespace avis::graphics
             std::uint64_t reservation_id = 0; // 0 for a dedicated buffer
         };
 
+        // Receives the space wait: a when_complete on the oldest in-flight flush (17 §7.2). Stoppable only by the
+        // queue's destructor.
+        struct space_wait_receiver
+        {
+            using receiver_concept = stdexec::receiver_tag;
+
+            void set_value() noexcept
+            {
+                queue->space_available();
+            }
+
+            void set_error(avis::error error) noexcept
+            {
+                queue->space_wait_failed(std::move(error));
+            }
+
+            void set_stopped() noexcept
+            {
+                queue->space_wait_stopped();
+            }
+
+            auto get_env() const noexcept
+            {
+                return stdexec::prop{ stdexec::get_stop_token, token };
+            }
+
+            upload_queue* queue;
+            stdexec::inplace_stop_token token;
+        };
+
+        using space_wait_operation = stdexec::connect_result_t<rhi::gpu_wait_sender, space_wait_receiver>;
+
+        // Lets std::optional::emplace construct the non-movable wait operation in place
+        struct space_wait_connector
+        {
+            rhi::gpu_wait_sender sender;
+            space_wait_receiver receiver;
+
+            operator space_wait_operation() && noexcept
+            {
+                return stdexec::connect(std::move(sender), std::move(receiver));
+            }
+        };
+
         struct upload_queue_state
         {
+            // Waiters, in FIFO order; guarded by mutex
+            void link(upload_waiter& waiter, const bool at_front) noexcept
+            {
+                waiter.linked_ = true;
+                if (at_front)
+                {
+                    waiter.previous_ = nullptr;
+                    waiter.next_ = first_waiter;
+                    (first_waiter != nullptr ? first_waiter->previous_ : last_waiter) = &waiter;
+                    first_waiter = &waiter;
+                }
+                else
+                {
+                    waiter.next_ = nullptr;
+                    waiter.previous_ = last_waiter;
+                    (last_waiter != nullptr ? last_waiter->next_ : first_waiter) = &waiter;
+                    last_waiter = &waiter;
+                }
+            }
+
+            void unlink(upload_waiter& waiter) noexcept
+            {
+                (waiter.previous_ != nullptr ? waiter.previous_->next_ : first_waiter) = waiter.next_;
+                (waiter.next_ != nullptr ? waiter.next_->previous_ : last_waiter) = waiter.previous_;
+                waiter.next_ = nullptr;
+                waiter.previous_ = nullptr;
+                waiter.linked_ = false;
+            }
+
+            std::uint64_t staged_size(const upload_waiter& waiter) const noexcept
+            {
+                return waiter.staged_size_;
+            }
+
             std::uint32_t queue_id = 0;
             rhi::buffer_handle ring;
             std::span<std::byte> ring_bytes;
@@ -82,6 +165,17 @@ namespace avis::graphics
             std::uint64_t next_flush_index = 1;
             std::uint64_t retired_flush_index = 0; // every flush up to this one is complete
             rhi::synchronization_point last_point;
+
+            upload_waiter* first_waiter = nullptr;
+            upload_waiter* last_waiter = nullptr;
+            bool space_wait_running = false; // only the caller that sets it starts the wait
+
+            // The space waits started so far. A wait's continuation may start the next one (and a wait whose point is
+            // already reached completes inside start), so finished operations are only destroyed when no space-wait
+            // completion is running: space_wait_depth counts them. Touched only by whoever set space_wait_running.
+            std::vector<std::unique_ptr<space_wait_operation>> space_waits;
+            std::atomic<int> space_wait_depth{ 0 };
+            stdexec::inplace_stop_source space_wait_stop;
         };
     } // namespace detail
 
@@ -116,6 +210,19 @@ namespace avis::graphics
                 largest = std::max(largest, description.depth_or_layers);
             }
             return static_cast<std::uint32_t>(std::bit_width(std::max(largest, 1u)));
+        }
+
+        // Where a reservation of `size` bytes starts after `head`: aligned for texture copies, and wrapped to the
+        // ring's start (the padding counted as used) when it doesn't fit before the end
+        constexpr std::uint64_t
+            placement(const std::uint64_t head, const std::uint64_t size, const std::uint64_t capacity) noexcept
+        {
+            std::uint64_t start = align_up(head, placement_alignment);
+            if (start % capacity + size > capacity)
+            {
+                start = (start / capacity + 1) * capacity;
+            }
+            return start;
         }
 
         std::uint32_t layer_count(const rhi::texture_description& description) noexcept
@@ -191,6 +298,20 @@ namespace avis::graphics
 
     upload_queue::~upload_queue()
     {
+        // A space wait still pending (its waiters were stopped) is cancelled; it completes inline here
+        state_->space_wait_stop.request_stop();
+        {
+            const std::scoped_lock lock{ state_->mutex };
+            AVIS_CHECK(
+                logger_name,
+                state_->first_waiter == nullptr,
+                "upload_queue destroyed while async uploads wait for ring space");
+            AVIS_CHECK(
+                logger_name,
+                !state_->space_wait_running,
+                "upload_queue destroyed while its space wait is completing on another thread");
+        }
+
         // The RHI's deferred release keeps them alive until in-flight copies are done
         for (const rhi::buffer_handle buffer : state_->dedicated)
         {
@@ -405,11 +526,7 @@ namespace avis::graphics
         // counted as used) when it doesn't fit before the end
         const auto reserve = [&state, size]() -> std::optional<std::uint64_t>
         {
-            std::uint64_t start = align_up(state.head, placement_alignment);
-            if (start % state.capacity + size > state.capacity)
-            {
-                start = (start / state.capacity + 1) * state.capacity;
-            }
+            const std::uint64_t start = placement(state.head, size, state.capacity);
             const std::uint64_t end = start + size;
             if (end - state.tail > state.capacity)
             {
@@ -487,6 +604,7 @@ namespace avis::graphics
 
             std::vector<rhi::buffer_handle> dedicated;
             rhi::synchronization_point point;
+            std::optional<rhi::synchronization_point> space_wait;
             {
                 // Held across submit, so flushes reach the copy queue in flush-index order
                 const std::scoped_lock lock{ state.mutex };
@@ -522,11 +640,22 @@ namespace avis::graphics
                 ++state.next_flush_index;
                 state.pending.clear();
                 dedicated.swap(state.dedicated);
+
+                // Waiters that queued while nothing was in flight wait for this flush (17 §7.2)
+                if (state.first_waiter != nullptr && !state.space_wait_running)
+                {
+                    state.space_wait_running = true;
+                    space_wait = state.in_flight.front().point;
+                }
             }
 
             for (const rhi::buffer_handle buffer : dedicated)
             {
                 resources_.destroy(buffer);
+            }
+            if (space_wait)
+            {
+                start_space_wait(*space_wait);
             }
             return point;
         }
@@ -564,4 +693,258 @@ namespace avis::graphics
         }
         return rhi::synchronization_point{}; // retired
     }
+
+    // ---- async uploads (17 §7.2) ----
+
+    upload_sender upload_queue::upload_buffer_async(
+        const rhi::buffer_handle destination,
+        const std::uint64_t destination_offset,
+        const std::span<const std::byte> data) noexcept
+    {
+        return upload_sender{ *this,
+                              { .type = detail::upload_request::kind::buffer,
+                                .buffer = destination,
+                                .buffer_offset = destination_offset,
+                                .bytes = data } };
+    }
+
+    upload_sender upload_queue::upload_texture_async(
+        const rhi::texture_handle destination, const std::span<const subresource_data> data) noexcept
+    {
+        return upload_sender{
+            *this, { .type = detail::upload_request::kind::texture, .texture = destination, .subresources = data }
+        };
+    }
+
+    result<upload_ticket> upload_queue::upload(const detail::upload_request& request)
+    {
+        if (request.type == detail::upload_request::kind::buffer)
+        {
+            return upload_buffer(request.buffer, request.buffer_offset, request.bytes);
+        }
+        return upload_texture(request.texture, request.subresources);
+    }
+
+    std::uint64_t upload_queue::staging_size(const detail::upload_request& request) const
+    {
+        if (request.type == detail::upload_request::kind::buffer)
+        {
+            return request.bytes.size();
+        }
+        // The layout upload_texture uses; the synchronous path already validated the subresources
+        std::uint64_t total = 0;
+        for (const subresource_data& subresource : request.subresources)
+        {
+            total = align_up(total, placement_alignment) +
+                    resources_.copyable_footprint(request.texture, subresource.target).total_size;
+        }
+        return total;
+    }
+
+    bool upload_queue::fits_locked(const std::uint64_t size, std::uint64_t& simulated_head) const noexcept
+    {
+        const detail::upload_queue_state& state = *state_;
+        if (size > state.capacity / 2)
+        {
+            return true; // a dedicated buffer
+        }
+        const std::uint64_t end = placement(simulated_head, size, state.capacity) + size;
+        if (end - state.tail > state.capacity)
+        {
+            return false;
+        }
+        simulated_head = end;
+        return true;
+    }
+
+    void upload_queue::start_space_wait(const rhi::synchronization_point point) noexcept
+    {
+        detail::upload_queue_state& state = *state_;
+        try
+        {
+            if (state.space_wait_depth.load(std::memory_order_acquire) == 0)
+            {
+                state.space_waits.clear(); // every earlier wait has completed and returned
+            }
+            auto& operation =
+                state.space_waits.emplace_back(new detail::space_wait_operation{ detail::space_wait_connector{
+                    synchronization_.when_complete(point),
+                    detail::space_wait_receiver{ this, state.space_wait_stop.get_token() } } });
+            stdexec::start(*operation);
+        }
+        catch (...)
+        {
+            space_wait_failed(avis::detail::current_exception_error());
+        }
+    }
+
+    void upload_queue::space_available() noexcept
+    {
+        detail::upload_queue_state& state = *state_;
+        state.space_wait_depth.fetch_add(1, std::memory_order_acq_rel);
+
+        // Unlink the waiters that now fit, in FIFO order, stopping at the first that doesn't, so a large request
+        // isn't overtaken. They're chained through next_ until they are resumed outside the lock.
+        detail::upload_waiter* ready = nullptr;
+        detail::upload_waiter* ready_last = nullptr;
+        std::optional<rhi::synchronization_point> next_wait;
+        {
+            const std::scoped_lock lock{ state.mutex };
+            try
+            {
+                retire_locked();
+            }
+            catch (...)
+            {} // device removal: the waiters that fit go ahead, and their retry reports it
+
+            std::uint64_t head = state.head;
+            while (state.first_waiter != nullptr && fits_locked(state.staged_size(*state.first_waiter), head))
+            {
+                detail::upload_waiter* const waiter = state.first_waiter;
+                state.unlink(*waiter);
+                (ready_last != nullptr ? ready_last->next_ : ready) = waiter;
+                ready_last = waiter;
+            }
+
+            state.space_wait_running = false;
+            if (state.first_waiter != nullptr && !state.in_flight.empty())
+            {
+                state.space_wait_running = true;
+                next_wait = state.in_flight.front().point;
+            }
+        }
+
+        while (ready != nullptr)
+        {
+            detail::upload_waiter* const waiter = ready;
+            ready = waiter->next_;
+            waiter->next_ = nullptr;
+            waiter->resume(); // may complete and destroy the waiter
+        }
+        if (next_wait)
+        {
+            start_space_wait(*next_wait);
+        }
+        state.space_wait_depth.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    void upload_queue::space_wait_failed(avis::error error) noexcept
+    {
+        detail::upload_queue_state& state = *state_;
+        state.space_wait_depth.fetch_add(1, std::memory_order_acq_rel);
+
+        detail::upload_waiter* failed = nullptr;
+        {
+            const std::scoped_lock lock{ state.mutex };
+            while (state.first_waiter != nullptr)
+            {
+                detail::upload_waiter* const waiter = state.last_waiter;
+                state.unlink(*waiter);
+                waiter->next_ = failed;
+                failed = waiter;
+            }
+            state.space_wait_running = false;
+        }
+
+        while (failed != nullptr)
+        {
+            detail::upload_waiter* const waiter = failed;
+            failed = waiter->next_;
+            waiter->next_ = nullptr;
+            avis::error copy;
+            try
+            {
+                copy = error;
+            }
+            catch (...)
+            {
+                copy = avis::detail::safe_error(error.domain, error.code, nullptr);
+            }
+            waiter->fail(std::move(copy));
+        }
+        state.space_wait_depth.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    void upload_queue::space_wait_stopped() noexcept
+    {
+        detail::upload_queue_state& state = *state_;
+        state.space_wait_depth.fetch_add(1, std::memory_order_acq_rel);
+        {
+            const std::scoped_lock lock{ state.mutex };
+            state.space_wait_running = false;
+        }
+        state.space_wait_depth.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    // ---- detail::upload_waiter ----
+
+    namespace detail
+    {
+        upload_waiter::attempt_outcome
+            upload_waiter::attempt(const bool at_front, result<upload_ticket>& outcome) noexcept
+        {
+            upload_queue& queue = *queue_;
+            upload_queue_state& state = *queue.state_;
+            try
+            {
+                while (true)
+                {
+                    auto uploaded = queue.upload(request_);
+                    if (uploaded || !is_error(uploaded.error(), error_kind::upload_queue_full))
+                    {
+                        outcome = std::move(uploaded);
+                        return attempt_outcome::completed;
+                    }
+                    staged_size_ = queue.staging_size(request_);
+
+                    std::optional<rhi::synchronization_point> wait;
+                    {
+                        const std::scoped_lock lock{ state.mutex };
+                        queue.retire_locked();
+                        // Space freed since the attempt: retry, unless other waiters are ahead of this one
+                        std::uint64_t head = state.head;
+                        if ((at_front || state.first_waiter == nullptr) && queue.fits_locked(staged_size_, head))
+                        {
+                            continue;
+                        }
+                        // Checked under the lock that cancel() takes after setting it, so a stop is never missed
+                        if (stop_requested_.load(std::memory_order_acquire))
+                        {
+                            return attempt_outcome::stopped;
+                        }
+                        state.link(*this, at_front);
+                        // With nothing in flight, the next flush starts the wait
+                        if (!state.space_wait_running && !state.in_flight.empty())
+                        {
+                            state.space_wait_running = true;
+                            wait = state.in_flight.front().point;
+                        }
+                    }
+                    if (wait)
+                    {
+                        queue.start_space_wait(*wait); // may resume and complete this waiter
+                    }
+                    return attempt_outcome::queued;
+                }
+            }
+            catch (...)
+            {
+                outcome = std::unexpected(avis::detail::current_exception_error());
+                return attempt_outcome::completed;
+            }
+        }
+
+        bool upload_waiter::cancel() noexcept
+        {
+            stop_requested_.store(true, std::memory_order_release);
+            upload_queue_state& state = *queue_->state_;
+            const std::scoped_lock lock{ state.mutex };
+            if (!linked_)
+            {
+                return false;
+            }
+            state.unlink(*this);
+            return true;
+        }
+    } // namespace detail
 } // namespace avis::graphics
