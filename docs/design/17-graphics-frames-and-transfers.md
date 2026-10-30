@@ -6,7 +6,7 @@
 
 **Frames**
 
-- **One object, `graphics::frame_scheduler`,** created from an RHI and a configuration. It owns *F* frame contexts, each holding one `rhi::linear_upload_allocator` and one `rhi::descriptor_range`, plus the last synchronization points of the frame that used it.
+- **One object, `graphics::frame_scheduler`,** created from two RHI views (`synchronization`, `transient_objects`, D-96) and a configuration. It owns *F* frame contexts, each holding one `rhi::linear_upload_allocator` and one `rhi::descriptor_range`, plus the last synchronization points of the frame that used it.
 - **`begin_frame()`** is a sender: it waits with `rhi::synchronization::when_complete` for the last submissions of frame *N − F*, recycles context *N mod F* (§5), and delivers a `graphics::frame_token`. **`end_frame(token, last_submissions)`** records those points. The pacing rules are the ones the RHI's frame contexts had before they moved here: one `begin_frame` outstanding, never waiting on a thread.
 - **Per-frame services** take the token: `allocate_frame_memory`, `write_frame_constants`, `create_frame_srv/uav`. Their names match what 10 and 11 already call, so those documents change only in the namespace of the token. They fail with `transient_memory_exhausted` when the context is full, and the frame is skipped (Q3, decided A).
 - **GPU timings are a separate object, `graphics::gpu_profiler`** (Q1, decided B). It owns one `rhi::timestamp_query_set` per queue type per frame context and takes the frame token. It recycles its own context in `prepare_frame(token)`, with the submissions the token reports as complete (`frame_token::recycled_submissions()`), so the scheduler needs no hook for it (§6).
@@ -103,21 +103,22 @@ namespace avis::graphics
                                                            // RHI's transient_descriptor_count
     };
 
-    // Frame N and its context N mod F. Move-only; must be passed to end_frame exactly once (asserted).
+    // Frame N and its context N mod F. Move-only. Ended exactly once: explicitly with end_frame, or by its destructor
+    // with no submissions (Q2).
     class frame_token
     {
     public:
         frame_token(frame_token&& other) noexcept;
-        frame_token& operator=(frame_token&& other) noexcept;
+        frame_token& operator=(frame_token&& other) noexcept;   // ends the frame it held first, like the destructor
         frame_token(const frame_token&) = delete;
         frame_token& operator=(const frame_token&) = delete;
-        ~frame_token();                                    // asserts in debug builds if not ended
+        ~frame_token();                                    // not ended: end_frame(*this, {}), logged at debug level
 
         std::uint64_t index() const noexcept;              // N
         std::uint32_t context_index() const noexcept;      // N mod F
         std::uint64_t completed_index() const noexcept;    // newest frame known complete at delivery (≥ N − F)
         // Last submissions of frame N − F, which used this context before; all complete. Empty for the first F
-        // frames. Valid until end_frame(token).
+        // frames. Valid until the token is ended.
         std::span<const rhi::synchronization_point> recycled_submissions() const noexcept;
 
     private:
@@ -168,9 +169,15 @@ namespace avis::graphics
 - `set_stopped()` if the receiver's stop token fires before the context is free. No frame is started, so nothing has to be ended.
 - `static_assert(avis::sender_of<frame_sender, frame_token>)`. Internally it's `rhi::synchronization::when_complete(points)` with the recycle step on its value path; the operation state is a template in `graphics/detail/frame_sender.h`.
 
-**`end_frame(frame, last_submissions)`** stores, per queue, the latest point of the frame in the context. Queues without a submission contribute nothing. Ending a frame with no submissions is valid (Q2).
+**`end_frame(frame, last_submissions)`** stores, per queue, the latest point of the frame in the context. Queues without a submission contribute nothing.
 
-**Ordering:** one `begin_frame()` outstanding at a time, and the next one only after `end_frame` for the current token (asserted).
+**Stopped and abandoned frames** (Q2, decided A with an RAII token):
+- **Ending with no submissions is valid.** `end_frame(frame, {})` frees the context at once, because the GPU never used it. Lists acquired under the frame but never submitted are discarded by the RHI when their `command_list`s are destroyed ([09 §24.3](09-rhi.md#243-recording)); the scheduler doesn't track them.
+- **The token ends itself.** Destroying a token that wasn't ended, or move-assigning over one, ends its frame with no submissions, exactly like `end_frame(frame, {})`. Debug builds log it at `debug` level, the way discarded command lists are logged. So a stop path that just drops the token is correct. That includes a token stored inside an adaptor that is stopped, such as `when_all(begin_frame(), …)` when another branch stops (12 §3.4). A moved-from token does nothing.
+- **The one rule:** a token may only be ended without points (explicitly or by its destructor) if nothing was submitted under it. When batches did reach the GPU, the chain must pass their points to `end_frame`, or the context is recycled while the GPU may still read it. The render graph meets this by construction: it submits only after every recording group has finished, so a stopped or failed `execute` submits nothing (10 §7). The scheduler can't check the rule, because it knows no submissions but the ones it's given.
+- Tokens must not outlive the scheduler: its destructor asserts that no frame is outstanding.
+
+**Ordering:** one `begin_frame()` outstanding at a time, and the next one only after the current token is ended, explicitly or by its destructor (asserted).
 
 **`frame_token::recycled_submissions()`** returns the points `end_frame` recorded for frame *N − F*, the frame that used the context before. They are all complete when the token is delivered. Components that keep their own per-context objects reset them with these points after the token arrives, as the GPU profiler does (§6), so the scheduler has no recycle hook to register with.
 
@@ -246,7 +253,11 @@ namespace avis::graphics
 ```
 
 - **One context per frame context.** The profiler is created with the scheduler's `frames_in_flight()` and uses `frame.context_index()` to pick its context, so its contexts follow the scheduler's without the scheduler knowing about it.
-- **`prepare_frame(frame)`** is the profiler's recycle step. The token is only delivered once frame *N − F* is complete on the GPU, so the profiler can read that frame's ticks and reset its query sets with `frame.recycled_submissions()` (§4). The frame chain calls it once per token, before recording starts (in the Visualizer, at the start of the prepare stage). A frame chain stopped between delivery and `prepare_frame` skips a token. That's safe: the context was then last used by a frame older than *N − F*, whose submissions the scheduler already waited for when it recycled that frame's context, so the query sets are free anyway. The skipped frame simply has no results. Debug builds assert that frame indices only increase, and that `begin_timing` is only called for the prepared frame.
+- **`prepare_frame(frame)`** is the profiler's recycle step. The token is only delivered once frame *N − F* is complete on the GPU, so the profiler can read that frame's ticks and reset its query sets with `frame.recycled_submissions()` (§4). The frame chain calls it once per token, before recording starts (in the Visualizer, at the start of the prepare stage). A frame chain stopped between delivery and `prepare_frame` skips a token. A skipped frame writes no timestamps, because `begin_timing` is only allowed for the prepared frame, so each profiler context remembers the index of the frame that last wrote it:
+  - **Results.** `prepare_frame(N)` converts the context's ticks only when that index is *N − F*. Otherwise the ticks belong to an older frame, so they're dropped, and frame *N − F* has no results.
+  - **Reset.** The query sets are still free: the frame that last wrote them is older than *N − F*, and the scheduler waited for its submissions when it recycled that frame's context. The reset passes `frame.recycled_submissions()`, frame *N − F*'s points, which then don't cover that older frame's submissions as 09's reset contract asks. That's harmless, since those submissions are complete and the RHI's debug check only asserts that the points it's given are complete ([09 §23.6](09-rhi.md#236-transient-upload-memory-and-reset-checks)).
+
+  Debug builds assert that frame indices only increase, and that `begin_timing` is only called for the prepared frame.
 - **Why not a hook in the scheduler:** a recycle callback registered with the scheduler would run before the token is delivered, but it needs registration and lifetime rules, and it would run on the thread that completed the wait (possibly Qt's GUI thread). The explicit call keeps the scheduler unaware of the profiler, and the recycle runs on the frame chain.
 - **`begin_timing(frame, recorder, name)`** takes a recorder, so a pass's narrowed recorder works as well as a whole list (D-92). It takes the next two (consecutive) query indices of the context's set for the recorder's `submission_queue()` (the owning list's queue for a narrowed recorder, [09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)), writes the first timestamp, copies `name` into the context's name arena, and pushes the scope on a per-list nesting stack (kept in the profiler, keyed by the list). `end_timing` writes the second timestamp and pops.
 - **Resolve** happens automatically when the list is submitted (09 §24.4).
@@ -314,10 +325,10 @@ namespace avis::graphics
 }
 ```
 
-- **Tickets name a flush.** Uploads queued between two flushes share the next flush index. `flush()` submits and records `flush_index → point`. Waiting needs a point, so a consumer resolves the ticket with `point(ticket)` after the flush: the renderer flushes once per frame before executing the render graph, and asset streaming flushes after its batch (Q5). A ticket whose flush hasn't happened resolves to `nullopt`, which is a programming error at the consumer (asserted in the render graph, §11).
+- **Tickets name a flush.** Uploads queued between two flushes share the next flush index. `flush()` submits and records `flush_index → point`. Waiting needs a point, so a consumer resolves the ticket with `point(ticket)` after the flush: the renderer flushes once per frame before executing the render graph, and asset streaming flushes after its batch (Q5, decided A). A ticket whose flush hasn't happened resolves to `nullopt`. That's a programming error at the consumer, and the consumer asserts on it before using the point: passed on as `ready_after`, `nullopt` would mean "no wait" ([11 §3.6](11-renderer.md#36-gpu-residency)).
 - **Several queues** (Q7, decided B). Nothing in the queue is per RHI: each `create` makes an independent ring, configuration and flush counter. The Visualizer creates one upload queue for the renderer's per-frame uploads, flushed once per frame by the frame chain, and one for asset streaming, flushed after each streaming batch, each with its own `staging_ring_size`. Flush indices are per queue, so each queue stamps its tickets with a process-unique `queue_id`, and `point(ticket)` asserts in debug builds that the ticket is its own. A consumer that holds tickets from both queues keeps the queue with the ticket, or resolves it to a point right after the flush. All upload queues, the readback queue and the render graph's copy passes submit to the same copy queue. That needs no coordination between them, because `queue::submit` is thread-safe (Q8, decided A).
 - **No race with other copy work.** The ticket's point is the value `queue::submit` returned for this flush's list, so no other copy-queue submission can signal it. That's what the RHI's `reserve_next_value` and copy-queue routing had to guarantee before (former 09h §2.1).
-- **Textures** are in `common` after an upload (17 §7.1). Destinations must be `gpu_only` buffers or textures; uploading into an `upload` buffer is `invalid_argument` (write through `rhi::resources::mapped_bytes` instead).
+- **Textures** are in `common` after an upload, because the copy runs on the copy queue, where textures are only used in `common` layout ([10 §6.3](10-render-graph.md#63-barriers)). Importers declare `common` as the initial state. Destinations must be `gpu_only` buffers or textures; uploading into an `upload` buffer is `invalid_argument` (write through `rhi::resources::mapped_bytes` instead).
 - `upload_sender`: `set_value(upload_ticket)`, `set_error(avis::error)`, `set_stopped()`. `static_assert(avis::sender_of<upload_sender, upload_ticket>)`.
 
 ### 7.1 Staging ring and flush
@@ -458,6 +469,7 @@ Completions (async uploads resumed, readbacks delivered) run on the thread that 
 - On WARP with the RHI's test setup, a test calls `poll_completions()` itself ([09 §5.2](09-rhi.md#52-driving-completions)), so frame pacing is deterministic: with *F* = 2, frame 3's `begin_frame` completes only after frame 1's submissions are complete and `poll_completions()` ran.
 - Recycle steps: after a frame completes, the context's allocator and descriptor range are empty, and the other context is untouched. `recycled_submissions()` is empty for the first *F* tokens and then holds the points `end_frame` recorded for frame *N − F*.
 - Reset checks: ending a frame with points that don't cover a submission that used the context's memory trips the RHI's debug assertion on the next recycle.
+- Stopped frames: `end_frame(frame, {})` with acquired but unsubmitted lists frees the context at once, and the lists' allocators are reused. Dropping a token, move-assigning over one, and stopping a `when_all(begin_frame(), stopped_sender)` after the token was delivered each end the frame (logged at debug level), and the next `begin_frame` completes. A moved-from token ends nothing.
 - Exhaustion: allocating past `upload_memory_per_frame` (or `descriptors_per_frame`) fails with `transient_memory_exhausted` and one warning with the high-water mark; `end_frame(frame, {})` after it, and the next frame allocates normally.
 
 ### 10.2 GPU profiler
@@ -465,7 +477,7 @@ Completions (async uploads resumed, readbacks delivered) run on the thread that 
 On WARP, with a frame scheduler and the test calling `poll_completions()` itself:
 - Timings: nested scopes on two queues produce the expected depths and non-negative durations; overflow drops scopes with one warning.
 - `completed_gpu_timings` is empty for the first *F* frames, then returns frame *N − F*'s scopes, with names that stay valid while frame *N* records.
-- A skipped `prepare_frame` leaves that frame without results and the next frames timing normally. Asserted in debug builds: `prepare_frame` twice for one frame, and `begin_timing` for a frame that wasn't prepared.
+- A skipped `prepare_frame` leaves that frame without results: with *F* = 2, skipping frame 3's `prepare_frame` makes frame 5's `completed_gpu_timings` empty, not frame 1's results relabelled. The next frames time normally. Asserted in debug builds: `prepare_frame` twice for one frame, and `begin_timing` for a frame that wasn't prepared.
 - Without copy-queue timestamps, copy-queue scopes are skipped and the other queues still time.
 
 ### 10.3 Upload and readback queues
@@ -479,9 +491,11 @@ On WARP with the test calling `poll_completions()` itself:
 
 ## 11. Changes elsewhere
 
+Applied:
 - **RHI (09):** `upload_buffer`, `upload_texture`, `*_async`, `flush_uploads`, `rhi::upload_ticket`, `rhi::subresource_data`, `upload_ring_full`, `readback_buffer`/`readback_texture`, `rhi::readback_data`/`readback_image` and `upload_configuration` are removed. `copyable_footprint` is added (09 §11.1).
-- **10 §3.1:** `import_*`'s `std::optional<rhi::upload_ticket> pending_upload` becomes `std::optional<rhi::synchronization_point> ready_after`. The renderer resolves its tickets with `upload_queue::point` after its per-frame flush and passes the points; the render graph waits on them as today (10 §7).
-- **11 §3.6:** `resident_mesh::upload` holds a `graphics::upload_ticket`; uploads go through `graphics::upload_queue` instead of `rhi::upload_buffer`, flushed once per frame before the graph executes.
+- **10 and 11:** imports take `ready_after` points, and the upload queue's flush carries the residency uploads (Q5, D-103). The render graph takes the frame scheduler and an optional GPU profiler (Q1, D-97).
+
+Left to apply:
 - **11 §5.1 and §12.1:** the in-frame readback path is unchanged (render-graph copy, `when_complete`, `mapped_bytes`); only the reference to `rhi::readback_buffer` for standalone readbacks becomes `graphics::readback_queue`.
 
 ## 12. Open questions
@@ -492,13 +506,15 @@ On WARP with the test calling `poll_completions()` itself:
 - **A: in the scheduler.** Timings are per frame by nature, the query sets are per context, and 10 already calls `begin_timing` next to the other per-frame services.
 - **B (chosen): a separate `graphics::gpu_profiler`** owning the query sets and taking the frame token. Smaller scheduler, and a component that doesn't time anything doesn't pay for it. The cost is one more object, and the frame chain has to call `prepare_frame`.
 
-### Q2. Frames abandoned by a stop request
+### Q2. Frames abandoned by a stop request — decided: A, with an RAII token
+**`end_frame(frame, {})` is valid, and a token that is destroyed without being ended ends itself the same way** (D-102, §4). The RAII part closes a gap neither option covered: a sender adaptor can drop a delivered token without calling `end_frame`. In the Visualizer, `when_all(begin_frame(), next_frame_tick(), shared_slot_free())` destroys the token it stored when another branch stops; with an asserting destructor, that would trip the assertion and leave the scheduler waiting for a frame that never ends. The cost is the same as A's: a token dropped after a real submission recycles its context too early. The render graph's all-or-nothing submission covers this for the frame chain.
+
 When the frame chain is stopped after `begin_frame` delivered a token, lists may have been acquired but not submitted.
-- **A (recommended):** `end_frame(frame, {})` is valid. The unsubmitted lists are discarded by the RHI when their owning `command_list`s are destroyed ([09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)), and the context is immediately reusable. No extra API.
+- **A (chosen):** `end_frame(frame, {})` is valid. The unsubmitted lists are discarded by the RHI when their owning `command_list`s are destroyed ([09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)), and the context is immediately reusable. No extra API.
 - **B:** an explicit `abandon_frame(frame_token&&)`, and ending a frame while lists acquired under it are unsubmitted becomes an assertion. Stricter, and catches forgotten submissions, but every stop path needs its own call, and the scheduler would have to track which lists belong to the frame.
 
 ### Q3. Frame memory exhaustion — decided: A
-**Fail** (D-98, §4). The allocation fails with `transient_memory_exhausted`, a warning gives the high-water mark, and the frame is skipped: the render graph submits nothing, and the frame chain ends the frame with no submissions and starts the next. Skipping relies on `end_frame(frame, {})` being valid, which is Q2's recommended answer.
+**Fail** (D-98, §4). The allocation fails with `transient_memory_exhausted`, a warning gives the high-water mark, and the frame is skipped: the render graph submits nothing, and the frame chain ends the frame with no submissions and starts the next. Skipping relies on `end_frame(frame, {})` being valid (Q2, D-102).
 
 The per-context allocator (16 MiB) and descriptor range are fixed-size.
 - **A (chosen for iteration 1): fail** with `transient_memory_exhausted` and log the allocator's high-water mark, so the configuration can be raised. The renderer treats it as fatal for the frame (skips it).
@@ -510,10 +526,12 @@ The per-context allocator (16 MiB) and descriptor range are fixed-size.
 - **A: yes, once per `begin_frame`.** Cheap when nothing is due, and a renderer makes progress on releases and waits even with a slow driver. But the scheduler then needs the driving view, and housekeeping also runs on whichever parallel worker starts the frame chain, next to the application's chosen thread.
 - **B (chosen): no;** only the application's driver calls `poll_completions()`. One fewer hidden call. A missing or slow driver also stalls frames, not just other waits; every consumer has a driver (09 §5.2), and the debug watchdog reports a missing one.
 
-### Q5. Who records the upload copies?
-(Moved from the RHI design.) 11 §3.6 says the upload copies are "recorded in pass 0 (`upload_frame_data`)" of the render graph.
-- **A (recommended): the upload queue's own flush** (§7.1). Tickets resolve to real copy-queue points, the render graph only waits on them, and streaming outside the frame works the same way. 11's pass 0 keeps only its own frame-memory-to-buffer copies, and its wording is updated.
-- **B: graph-recorded.** The queue exposes `record_pending(rhi::copy_recorder&)` and the graph's pass 0 calls it. Uploads share the frame's copy submission, but asset streaming outside the frame needs a second path.
+### Q5. Who records the upload copies? — decided: A
+**The upload queue's own flush** (D-103, §7.1). The renderer flushes its per-frame queue in the prepare stage, resolves the tickets to points, and imports the destinations with `ready_after` ([10 §3.1](10-render-graph.md#31-building), [11 §3.6](11-renderer.md#36-gpu-residency)). Pass 0 keeps only the renderer's frame-memory copies. The queue learns each flush's point from its own `submit`, so retiring ring space and waking async uploads need nothing from the graph. A frame that is stopped or skipped (Q2, Q3) loses no upload copies, and streaming queues flush the same way (Q7). The cost is one more copy-queue submission per frame.
+
+(Moved from the RHI design.) 11 §3.6 said the upload copies are "recorded in pass 0 (`upload_frame_data`)" of the render graph.
+- **A (chosen): the upload queue's own flush** (§7.1). Tickets resolve to real copy-queue points, the render graph only waits on them, and streaming outside the frame works the same way. 11's pass 0 keeps only its own frame-memory-to-buffer copies, and its wording is updated.
+- **B: graph-recorded.** The queue exposes `record_pending(rhi::copy_recorder&)` and the graph's pass 0 calls it. Uploads share the frame's copy submission, but asset streaming outside the frame needs a second path. The queue would also have to learn the graph's copy point after `execute` before it could retire ring space, and put the copies back when a frame is stopped or skipped after recording them.
 
 ### Q6. Readback results: lease or copy? — decided: A
 **A lease** (D-99, §8), as §8 already describes. The results of standalone readbacks are never copied by the queue.

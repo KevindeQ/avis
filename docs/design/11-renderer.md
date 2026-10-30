@@ -105,7 +105,7 @@ flowchart TB
 
 | # | Pass | Type / queue | Inputs | Outputs |
 |---|---|---|---|---|
-| 0 | `upload_frame_data` | copy / copy | Extraction results and sorted draw lists (§4), residency uploads (§3.6) | `instances`, `instance_indices`, `lights` buffers (imported, persistent, ring-indexed); new mesh versions in the geometry arena, material slots, textures |
+| 0 | `upload_frame_data` | copy / copy | Extraction results and sorted draw lists (§4), in frame memory | `instances`, `instance_indices`, `lights` buffers (imported, persistent, ring-indexed). Residency uploads (new mesh versions, material slots, textures) aren't recorded here: the upload queue's flush carries them, and the graph only waits on their `ready_after` points (§3.6) |
 | 1 | `depth_prepass` | graphics | draw-list range `scene/camera/world/opaque` (§4.6) | `depth` D32F (reverse-Z) |
 | 2 | `linearize_depth` | compute / graphics | depth | `linear_depth` R32F + 5-mip chain (`depth_mips`, view-space Z) |
 | 3 | `cluster_build` + `light_cull` | compute / **async** | lights, view, depth_mips (min/max per tile) | `cluster_grid`, `light_index_list` |
@@ -206,12 +206,12 @@ struct material_data
 Each draw layer maps to the *viewport layer* field of the sort key (§4.2). `layer_priority` orders instances within the overlay layers (higher on top) through the top bits of the depth field (§4.3). Selection highlighting is the generic `selected` flag: the renderer draws an outline for selected instances.
 
 ### 3.5 Extraction and interpolation
-At the start of each frame (the prepare stage of the frame chain, [09 §4.2](09-rhi.md#42-frame-contexts-sender-based-non-blocking)) the renderer:
+At the start of each frame (the prepare stage of the frame chain, [17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)) the renderer:
 1. Acquires the latest snapshot and computes `t_render` and the interpolation `alpha` from the snapshot's time anchor `{t_base, wall_base, rate}` ([03 §5](03-simulation-core.md#5-render-interpolation)). While paused or stopped, `rate` is 0 and `alpha` is 1.
 2. Updates residency (§3.6): it walks the snapshot's `meshes` and `materials` tables, queues uploads for versions that aren't resident, and marks every referenced entry as used by this frame. Instances whose mesh has no resident version yet are skipped this frame.
 3. Builds `instance_data[]` (interpolated world matrix, previous-frame world matrix, mesh, material, flags, object id) and `light_data[]`.
 4. Builds and sorts the draw lists (§4).
-5. Writes everything into persistent GPU buffers. Large arrays go through the frame allocator plus a copy to `gpu_only` buffers on the copy queue (pass 0), together with the residency uploads. Small constants are root CBVs read straight from the upload heap.
+5. Writes everything into persistent GPU buffers. Large arrays go through the frame allocator plus a copy to `gpu_only` buffers on the copy queue (pass 0). Residency uploads don't go through pass 0: the upload queue's flush carries them (§3.6). Small constants are root CBVs read straight from the upload heap.
 
 **Previous-frame transforms** for motion vectors are the interpolated transforms used in the *previous rendered frame*, kept per `object_id` in a renderer-side map. They're not the previous tick's transforms.
 
@@ -227,7 +227,7 @@ namespace avis::visualizer::rendering
     {
         std::uint64_t version;
         geometry_range range;                  // vertex + index sub-allocation in the geometry arena
-        rhi::upload_ticket upload;             // copy-queue point the first use waits on
+        rhi::synchronization_point ready_after; // copy-queue point of the upload's flush; the first use waits on it
         std::uint64_t last_used_frame;         // frame index of the last frame that drew it
     };
 
@@ -237,7 +237,7 @@ namespace avis::visualizer::rendering
         // prepare stage: makes the snapshot's versions resident (or queues their uploads)
         void update(const scene::snapshot& snapshot, std::uint64_t frame_index);
         const resident_mesh* find(scene::mesh_handle mesh) const;     // newest resident version, or nullptr
-        // called when frame N - F is known to be complete (begin_frame completion, 09 §4.2)
+        // called when frame N - F is known to be complete (begin_frame completion, 17 §4)
         void retire(std::uint64_t completed_frame_index);
     };
 }
@@ -245,18 +245,20 @@ namespace avis::visualizer::rendering
 
 **Upload.** For each entry in the snapshot's `meshes` table whose `(handle, version)` isn't resident:
 1. Allocate a new range in the geometry arena.
-2. Copy the CPU data into the staging ring with the non-blocking `rhi::upload_buffer` ([09 §8.1](09-rhi.md#81-staging-ring-buffer)), recorded in pass 0 (`upload_frame_data`). The geometry buffers are imported into the graph with the pending `upload_ticket`, so the first pass that draws the new range waits on the copy queue ([10 §7](10-render-graph.md#7-execution-phase)).
+2. Copy the CPU data into the staging ring with the non-blocking `upload_queue::upload_buffer` of the renderer's per-frame upload queue ([17 §7](17-graphics-frames-and-transfers.md#7-graphicsupload_queueh)), which returns a ticket. The bytes are in the ring when it returns.
 3. Make the new version current. The previous version stays allocated (see *Free*).
+
+**Flush and wait** (17 Q5, D-103). Once residency has queued the frame's uploads, the prepare stage calls the queue's `flush()`. The flush records the copies on its own copy list and submits them; the render graph records none of them. Each new version's ticket is then resolved with `point(ticket)` and kept as `ready_after`. A ticket resolves to `nullopt` only if its flush hasn't happened, which would silently mean "no wait", so the renderer asserts on it. The geometry buffers are imported into the graph with `ready_after`, so the first pass that draws the new range waits on the copy queue ([10 §7](10-render-graph.md#7-execution-phase)). Once the point is complete the wait is skipped, so keeping it costs nothing. Asset streaming uses its own upload queue and flush in the same way (D-100).
 
 Textures and materials follow the same path. A new texture version is uploaded and gets its mips generated by a compute downsample on its first use. A new material version rewrites its slot in the material buffer, with texture indices resolved against resident textures.
 
-If the staging ring is full (`upload_ring_full`) or the arena can't fit the new version, the upload is retried next frame, and instances keep drawing the **previous** resident version. A mesh with no resident version yet isn't drawn. The renderer never stalls a frame for an upload.
+If the staging ring is full (`graphics::error_kind::upload_queue_full`) or the arena can't fit the new version, the upload is retried next frame, and instances keep drawing the **previous** resident version. A mesh with no resident version yet isn't drawn. The renderer never stalls a frame for an upload.
 
 **Free (frame retirement).** Every resident entry records `last_used_frame`. A range is returned to the arena free list when **both** hold:
 - it is no longer the newest version, or its mesh no longer appears in the latest snapshot;
-- `last_used_frame ≤` the last frame known to be complete on the GPU. That's the frame whose context `begin_frame` just recycled ([09 §4.2](09-rhi.md#42-frame-contexts-sender-based-non-blocking)), the same point at which command allocators are reset.
+- `last_used_frame ≤` the last frame known to be complete on the GPU. That's the frame whose context `begin_frame` just recycled ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)), the same point at which command allocators are reset.
 
-A range is therefore never freed while a recorded or in-flight frame can still read it, however many snapshots were skipped. The renderer drops its `shared_ptr` to a version's CPU data as soon as the upload has been recorded.
+A range is therefore never freed while a recorded or in-flight frame can still read it, however many snapshots were skipped. The renderer drops its `shared_ptr` to a version's CPU data as soon as `upload_buffer` has returned, because the bytes are in the staging ring by then.
 
 **Budget.** The arena size is `render.geometry.arena_mib` (§14). It must exceed the scene representation's geometry budget ([12 §9](12-visualizer.md#9-scene-representation)) by enough to hold superseded versions during their *F* frames of retirement, which is why it defaults to 1.5 × that budget. Memory pressure is managed **upstream**, by the scene representation, because only it knows which geometry matters (12 §9.1). The renderer only falls back to "keep the previous version" and logs a warning when the arena is full.
 
@@ -344,7 +346,7 @@ The depth field sits above the material field. Taken literally, a full-precision
 Depth is quantised logarithmically over [0.1 m, 2 km] (the cluster depth range, §6.3) from the instance's bounds centre in view space: `q = round((2²⁴ − 1) · log(d / near) / log(far / near))`, clamped. Opaque bands use the top `log2(bands)` bits of the same value.
 
 ### 4.4 Pipeline sets and draw records
-**Pipeline sets.** The material field starts with a 12-bit pipeline set index. A `pipeline_variant_registry` maps each distinct combination of `(shading_model, alpha_mode, blend_operation, topology, attribute_mask, double_sided)` to a pipeline set. A set holds **one PSO per pass** that can draw it (depth, shadow, G-buffer, picking, forward, overlay). This is how one material can have several passes: a single item in the opaque `world` group is drawn by the depth prepass with the set's depth PSO and by the G-buffer pass with its G-buffer PSO. All base variants are known from the material model and created at startup ([09 §9.2](09-rhi.md#92-pso-cache)). Lower indices go to cheaper and more common sets.
+**Pipeline sets.** The material field starts with a 12-bit pipeline set index. A `pipeline_variant_registry` maps each distinct combination of `(shading_model, alpha_mode, blend_operation, topology, attribute_mask, double_sided)` to a pipeline set. A set holds **one PSO per pass** that can draw it (depth, shadow, G-buffer, picking, forward, overlay). This is how one material can have several passes: a single item in the opaque `world` group is drawn by the depth prepass with the set's depth PSO and by the G-buffer pass with its G-buffer PSO. All base variants are known from the material model and created at startup ([18 §11](18-graphics-shaders-and-pipelines.md#11-graphicspipeline_cacheh)). Lower indices go to cheaper and more common sets.
 
 **Draw records.** The value of a draw item is the index of a `draw_record` in the frame's `linear_arena` ([10 §3.5](10-render-graph.md#35-per-frame-linear-arena-linear_arena)):
 
@@ -401,16 +403,16 @@ Commands are created by the renderer, never by the snapshot.
 
 - Debug validation checks that a command touches only attachments its pass declared.
 - Iteration 1 needs few commands. The mechanism is there for state changes between layers that the pass's own setup doesn't cover, such as clearing an attachment between two layers drawn by the same pass.
-- Debug markers aren't commands: the recorder opens a PIX marker per group automatically.
+- Debug markers aren't commands: the range walker (§4.8) opens a PIX marker per group automatically.
 
 ### 4.8 Recording: instanced draws and the redundant-state filter
-The recorder walks a range once:
+The **range walker** records a range into the pass's `rhi::command_recorder` (from the pass context, [10 §3.1](10-render-graph.md#31-building), D-92), walking it once:
 - **Command item:** execute it.
 - **Draw item:** start a run. The run continues while the next item has the **same key** and its record has the **same mesh and submesh**. Each run becomes **one instanced draw**. The instance indices of the run are written contiguously into the per-frame `instance_indices` buffer, the draw passes `{instance_index_offset, material, mesh}` as root constants, and the vertex shader reads `instance_indices[offset + SV_InstanceID]`.
 - **Progressive meshes** (§9.3) aren't merged, because each instance draws its own vertex count. That count is computed per viewport, with the shadow LOD scale applied in shadow viewports.
 - **Translucent groups** only merge items with an identical key, so back-to-front order is never broken.
-- The **redundant-state filter** remembers the last pipeline, root constants and viewport state set on the command list, and only emits `set_pipeline` / `push_constants` when they change. With bindless resources and one geometry arena, a pipeline change is the only real state change, and because the pipeline set sits at the top of the material field each pipeline is set **once per depth band** in the common case.
-- The geometry index buffer is bound once per command list.
+- The **redundant-state filter** remembers the last pipeline, root constants and viewport state set through the pass's recorder, and only emits `set_pipeline` / `binding_layout::push_draw_constants` ([18 §9](18-graphics-shaders-and-pipelines.md#9-graphicsbinding_layouth)) when they change. When the pipeline's root signature differs from the previous one, it also forgets its remembered root arguments: `set_pipeline` leaves them undefined after a signature switch ([18 §10.3](18-graphics-shaders-and-pipelines.md#103-consequences-for-the-renderer)). The pipeline variant registry records each PSO's signature next to its handle, so the filter compares those. With bindless resources and one geometry arena, a pipeline change is the only real state change, and because the pipeline set sits at the top of the material field each pipeline is set **once per depth band** in the common case.
+- The geometry index buffer is bound once per recording group (each group records into its own command list, 10 §7).
 - Large ranges are split into several **recording groups** ([10 §7](10-render-graph.md#7-execution-phase)) at run boundaries. Each group starts with clean filter state, so groups record in parallel.
 
 ### 4.9 Future extension
@@ -440,7 +442,7 @@ That's 20 bytes per pixel plus 4 for depth. On frames where the user clicked the
 | `overlay` | `overlay` and `overlay_on_top` instances (box edges, frusta, trajectories, axes) | Drawn after the scene, so overlays win over the world |
 
   Later passes overwrite earlier ones, so the result is "what the user sees on top" at the clicked pixel.
-- **Readback:** a copy pass inside the graph copies a 9×9 texel window around the cursor into a readback buffer (`rhi::readback_buffer`, [09 §10](09-rhi.md#10-readback)). The Visualizer picks the non-zero id closest to the centre, which makes 1–2 px lines and small points clickable.
+- **Readback:** a copy pass inside the graph copies a 9×9 texel window around the cursor into a readback buffer (`rhi::readback_buffer`, [09 §11.2](09-rhi.md#112-readback)). The Visualizer picks the non-zero id closest to the centre, which makes 1–2 px lines and small points clickable.
 - The id the renderer reports is the opaque `object_id`. The Visualizer maps it back to the entity ([12 §5](12-visualizer.md#5-camera)).
 
 ## 6. Lighting
@@ -557,7 +559,7 @@ Screenshots of the 3D viewport are taken **inside the renderer**, so they contai
 
 **Viewport resolution** (`mode = viewport`), on the next frame:
 1. The renderer adds a `capture` copy pass to the main view, right after `overlay` (or after `debug_blit` when `include_debug_blit` is set). It copies `ldr_color` into an **imported `readback` buffer** (`copy_texture_to_buffer`), so the render graph places the barriers.
-2. The frame is submitted as usual. `when_complete` on its graphics synchronization point ([09 §4.1](09-rhi.md#41-queues)) resumes the capture on a parallel worker. Nothing waits.
+2. The frame is submitted as usual. `when_complete` on its graphics synchronization point ([09 §5](09-rhi.md#5-queues-and-synchronization-rhiqueueh)) resumes the capture on a parallel worker. Nothing waits.
 3. The worker encodes a PNG with WIC. `ldr_color` already holds sRGB-encoded `RGBA8` values, so they're written as they are (alpha forced to 255). It then writes the file with the IO layer's atomic replace ([07 §4.5](07-io-layer.md#45-whole-file-operations-avisiofile_operationsh)).
 
 **Custom resolution** (`mode = custom`, for example 3840 × 2160 for a slide or a poster):
@@ -565,7 +567,7 @@ Screenshots of the 3D viewport are taken **inside the renderer**, so they contai
 - The presentation state is **frozen at the request**: the same snapshot, interpolation `alpha` and camera for every sub-frame, so the image is consistent even while the simulation runs.
 - A fresh view has no TAA history, so TAA is off for it. Instead it renders **8 sub-frames** over 8 consecutive frames, with Halton jitter, accumulating the pre-exposed HDR colour into an `RGBA32F` accumulation texture. Tonemapping uses the **main view's current exposure**, so the brightness matches the viewport. Overlays are drawn once, after tonemapping, at full resolution.
 - The progressive vertex budget (§9.3) is lifted for this view, so point clouds are drawn at full density.
-- **Limits:** at most 7680 × 4320 (8K), and the request is refused with a message if the estimated transient memory exceeds 50% of the free VRAM budget ([09 §5.2](09-rhi.md#52-handles-and-lifetime)). The main view keeps rendering normally; those 8 frames just take longer.
+- **Limits:** at most 7680 × 4320 (8K), and the request is refused with a message if the estimated transient memory exceeds 50% of the free VRAM budget ([09 §8.2](09-rhi.md#82-creation-and-destruction)). The main view keeps rendering normally; those 8 frames just take longer.
 - The output then goes through steps 1–3 above, from the `screenshot` view's output texture.
 
 **File.** Written to `screenshots.folder` (default `%USERPROFILE%/Pictures/Avis`) as `avis-<scenario>-step<k>-<yyyyMMdd-HHmmss>.png`. PNG text chunks record the scenario name, step index, simulation time, Driver id, camera pose and render settings, so a screenshot can be traced back to its run. When the file is written, the renderer reports `{id, path}` or an error to the GUI.
@@ -578,12 +580,12 @@ Shaders are **Visualizer data**. Their sources live in the repository's runtime-
 | What | Where |
 |---|---|
 | Scene renderer shader sources | `data/shaders/visualizer/scene/*.hlsl` (one file per pass or pass family: `depth_prepass.hlsl`, `gbuffer.hlsl`, `deferred_lighting.hlsl`, `gtao.hlsl`, `taa.hlsl`, `tonemap.hlsl`, `overlay.hlsl`, `debug_blit.hlsl`, …) |
-| Shared shader headers | `data/shaders/visualizer/include/*.hlsli`: `bindless.hlsli` (root signature contract, [09 §6.4](09-rhi.md#64-shader-side-conventions)), `brdf.hlsli`, `packing.hlsli`, `vertex_pulling.hlsli`, `shared_types.hlsli` (C++/HLSL shared structs, also included by `apps/visualizer/rendering/`, which adds `data/shaders/visualizer/include` to `AVIS_VISUALIZER`'s include directories) |
+| Shared shader headers | `data/shaders/visualizer/include/*.hlsli`: `bindless.hlsli` (root signature contract, [18 §9](18-graphics-shaders-and-pipelines.md#9-graphicsbinding_layouth)), `brdf.hlsli`, `packing.hlsli`, `vertex_pulling.hlsli`, `shared_types.hlsli` (C++/HLSL shared structs, also included by `apps/visualizer/rendering/`, which adds `data/shaders/visualizer/include` to `AVIS_VISUALIZER`'s include directories) |
 | Qt-side blit shaders (GLSL → `.qsb`) | `data/shaders/visualizer/qt/` |
 | Compiled output (runtime data) | `<bin>/data/shaders/visualizer/*.cso` + `manifest.yaml`, written by `avis_add_shaders(TARGET AVIS_VISUALIZER …)` ([13 §3](13-build-and-quality.md#3-shader-build-pipeline)) and deployed next to the executable like other runtime data |
 
-- At startup the renderer passes the shader directory (`<executable directory>/data/shaders/visualizer`, overridable with `render.shader_directory`) to `rhi::shader_library::load` ([09 §9.1](09-rhi.md#91-shader-library)). The RHI loads whatever directory it's given and has no built-in shader paths.
-- `bindless.hlsli` mirrors the RHI's global root signature. The RHI publishes the layout as C++ constants (`rhi::root_signature_layout`), and a Visualizer test compiles a probe shader to check that the two match.
+- At startup the renderer resolves the shader directory (`<executable directory>/data/shaders/visualizer`, overridable with `render.shader_directory`), reads and parses its `manifest.yaml` with the Visualizer's parser, and passes the resulting `graphics::shader_manifest` and the directory to `graphics::load_shader_library` ([12 §10](12-visualizer.md#10-shader-loading), [12a](12a-visualizer-shader-manifest.md)). The renderer's pipelines are created through `graphics::pipeline_cache` from that library [18](18-graphics-shaders-and-pipelines.md); the RHI only receives bytecode in pipeline descriptions ([09 §12](09-rhi.md#12-pipelines-rhipipelineh)) and has no built-in shader paths, manifest format or shader library.
+- `bindless.hlsli` mirrors the standard root signature of the graphics layer, published as C++ constants in `graphics::binding_layout` ([18 §9](18-graphics-shaders-and-pipelines.md#9-graphicsbinding_layouth)), and a Visualizer test compiles a probe shader to check that the two match. The renderer registers that signature first in its `root_signature_registry`; the pipeline cache matches each pipeline to a registered signature ([18 §10](18-graphics-shaders-and-pipelines.md#10-graphicsroot_signature_registryh)).
 
 ## 14. Configuration (`visualizer.yaml` → `render`)
 ```yaml

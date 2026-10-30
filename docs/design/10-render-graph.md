@@ -95,12 +95,15 @@ namespace avis::graphics
     {
     public:
         // The RHI views it uses (09 §4.3, D-96): resource queries for the bag, acquiring lists, submitting per queue.
+        // The frame scheduler (17 §4) provides the frame's constants (allocate_constants) and the views of transient
+        // resources (create_frame_srv/uav), both for the token passed to execute.
         // With a profiler (17 §6), every pass is timed and recording groups are sized from the timings (§7).
         render_graph(rhi::resources resources, rhi::command_lists command_lists,
                      rhi::queue<rhi::queue_type::graphics> graphics_queue,
                      rhi::queue<rhi::queue_type::compute> compute_queue,
                      rhi::queue<rhi::queue_type::copy> copy_queue,
                      transient_resource_pool& pool,
+                     frame_scheduler& frames,
                      gpu_profiler* profiler = nullptr);
 
         // setup runs immediately, inside the call; the returned reference stays valid until the next reset()
@@ -117,12 +120,14 @@ namespace avis::graphics
                  std::invocable<const PassData&, const resource_bag&, copy_pass_context&> Execute>
         const PassData& add_copy_pass(std::string_view name, Setup&& setup, Execute&& execute);
 
+        // ready_after: the copy-queue point the resource's data arrives with, for example the upload queue flush
+        // that carried it (17 §7). The first batch that uses the resource waits on it (§7).
         texture import_texture(std::string_view name, rhi::texture_handle texture,
                                rhi::access_state initial, rhi::access_state final,
-                               std::optional<rhi::upload_ticket> pending_upload = {});
+                               std::optional<rhi::synchronization_point> ready_after = {});
         buffer import_buffer(std::string_view name, rhi::buffer_handle buffer,
                              rhi::access_state initial, rhi::access_state final,
-                             std::optional<rhi::upload_ticket> pending_upload = {});
+                             std::optional<rhi::synchronization_point> ready_after = {});
 
         view_scope begin_view(std::string_view view_name);      // RAII; qualifies names (§8.1)
 
@@ -171,7 +176,7 @@ namespace avis::graphics
     {
     public:
         rhi::graphics_recorder& recorder() noexcept;                         // valid during execute only
-        rhi::gpu_address allocate_constants(std::span<const std::byte> data);   // frame linear allocator (17 §4)
+        rhi::gpu_address allocate_constants(std::span<const std::byte> data);   // frame_scheduler::write_frame_constants (17 §4)
         template<typename T> rhi::gpu_address allocate_constants(const T& value);
         std::uint32_t render_width() const noexcept;
         std::uint32_t render_height() const noexcept;
@@ -203,10 +208,11 @@ const gtao_data& gtao = graph.add_compute_pass<gtao_data>("gtao",
     {
         rhi::compute_recorder& recorder = context.recorder();
         recorder.set_pipeline(pipelines.gtao_main);
-        recorder.push_constants(pack(resources.srv(data.depth_mips),
-                                     resources.srv(data.normals),
-                                     resources.uav(data.ambient_occlusion)));
-        recorder.set_pass_constants(context.allocate_constants(gtao_parameters));
+        // the standard signature's helpers over the RHI's generic root calls (18 §9)
+        binding_layout::push_draw_constants(recorder, pack(resources.srv(data.depth_mips),
+                                                           resources.srv(data.normals),
+                                                           resources.uav(data.ambient_occlusion)));
+        binding_layout::set_pass_constants(recorder, context.allocate_constants(gtao_parameters));
         recorder.dispatch(divide_up(resources.width(data.ambient_occlusion), 8),
                           divide_up(resources.height(data.ambient_occlusion), 8),
                           1);
@@ -234,7 +240,7 @@ namespace avis::graphics
         rhi::buffer_handle buffer_handle(buffer resource) const;
         rhi::gpu_address gpu_address(buffer resource) const;
 
-        // bindless indices (dynamic descriptor region for transient resources, persistent ones for imports)
+        // bindless indices (the frame context's descriptor range for transient resources, 17 §4; persistent ones for imports)
         rhi::bindless_index srv(texture resource) const;
         rhi::bindless_index uav(texture resource, std::uint32_t mip = 0) const;
         rhi::bindless_index srv(buffer resource) const;
@@ -475,7 +481,7 @@ For each resource, walk its uses in execution order and compute `access_state` t
 1. **Lifetime:** for every transient resource, `[first_use, last_use]` in global execution order (pass index). For resources touched by async compute batches, the interval is widened to the span between the fences that bound those batches, because concurrently executing queues can't share memory safely.
 2. **Placement:** resources are sorted by size (descending) and placed into **transient heaps** with a greedy interval-graph allocation. A resource can take an offset range already occupied by another only when their lifetimes don't overlap. Alignment is 64 KiB (4 MiB for MSAA, which is unused).
 3. **Heaps:** the `transient_resource_pool` takes the `rhi::memory` and `rhi::resources` views (D-95, D-96): it creates heaps and placed resources through `memory` (`requirements`, `create_heap`, `create_placed_texture`, `create_placed_buffer`, `destroy(heap_handle)`) and destroys evicted placed resources through `resources::destroy`. It owns a set of placed-resource heaps per frame in flight (`heap_kind::render_targets_and_textures` and `heap_kind::buffers`, combined when Tier 2 allows). It grows in 64 MiB steps on demand and shrinks after 120 frames under the high-water mark.
-4. **Physical resource cache:** placed resources are cached by `(description hash, heap, offset)` across frames, so a steady-state frame creates no D3D12 resources. Bindless SRV/UAV indices for transient resources come from the **dynamic descriptor region** each frame.
+4. **Physical resource cache:** placed resources are cached by `(description hash, heap, offset)` across frames, so a steady-state frame creates no D3D12 resources. Bindless SRV/UAV indices for transient resources are created fresh each frame in the frame context's **descriptor range**, with `frame_scheduler::create_frame_srv/uav` ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh), D-88).
 5. **Aliasing barriers:** the first use of a resource that shares memory with an earlier one gets `layout undefined → target` with `discard` (§6.3), followed by a clear or a full overwrite. Passes that write only part of a fresh aliased resource are flagged at compile time, and must declare `needs_clear`.
 6. Aliasing can be switched off (`render.graph_aliasing: false`) for debugging, and is always off for resources selected in the debug blit pass.
 
@@ -492,7 +498,7 @@ struct compiled_graph
 ```
 
 ## 7. Execution phase
-1. **Materialise:** for each transient resource, look up or create the placed resource in the pool, then allocate dynamic descriptors (SRV, UAV per mip) and RTV/DSV views. Imported resources map directly. The results fill the **`resource_bag`** (§3.4).
+1. **Materialise:** for each transient resource, look up or create the placed resource in the pool, then create its bindless views (SRV, UAV per mip) in the frame's descriptor range with `create_frame_srv/uav`, and its RTV/DSV views. Imported resources map directly. The results fill the **`resource_bag`** (§3.4).
 2. **Record in parallel:** the ordered pass list (per queue) is split into **recording groups** of about 1 ms estimated GPU work. Estimates come from the GPU profiler's timings of frame *N − F* (`completed_gpu_timings`, [17 §6](17-graphics-frames-and-transfers.md#6-graphicsgpu_profilerh)); without a profiler or timings, a group is 4 passes. Groups are recorded in parallel with `stdexec::bulk` on the parallel scheduler ([15 §4.1](15-parallel-scheduler.md#41-scheduler)). `execute` returns a sender: the bulk is composed into the frame chain with `let_value`, so nothing waits on it ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)). Each group acquires its own command list of the matching queue type (`rhi::command_lists::acquire<Queue>`, the RHI's command-list view, [09 §4.3](09-rhi.md#43-subsystem-views), [09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)) and keeps it until submit. Every pass in the group records through a recorder of its own type cut from that list: the list's own recorder for a pass of the list's type, `narrow()` for a compute or copy pass on the graphics queue (D-92). The acquire returns a `result` ([D-86](09-rhi.md#d-86-result-from-acquire_command_list)); a failure (out of memory, device lost) makes `execute` complete with `set_error`, and the lists already acquired for the frame are discarded when the graph destroys them. For each pass, the group:
    - emits the pass's barrier batch,
    - `begin_event(pass name)` and, with a profiler, `begin_timing`,
@@ -500,7 +506,7 @@ struct compiled_graph
    - `end_timing` and `end_event`.
 
    **Frame memory exhaustion** (17 Q3, D-98): when materialise or a pass's `allocate_constants` finds the frame's allocator or descriptor range full, `execute` completes with `set_error(transient_memory_exhausted)` once the groups have finished, and submits nothing. The lists already acquired are discarded when the graph destroys them, and the frame chain skips the frame ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)). `allocate_constants` returns a plain address, so it reports the failure by throwing `avis::runtime_error`, which the group catches.
-3. **Submit:** after all groups finish, the command lists are submitted **in order** per queue, with the waits and signals from the compiled batches. Imported resources with pending `upload_ticket`s add a wait on the copy queue's synchronization point to the first batch that uses them.
+3. **Submit:** after all groups finish, the command lists are submitted **in order** per queue, with the waits and signals from the compiled batches. Imported resources with a `ready_after` point add a wait on it to the first batch that uses them; points already complete are skipped (09 §23.2). The graph records no upload copies itself: the upload queue's own flush does, before the graph executes (17 Q5, D-103).
 4. **End of frame:** final-state transitions for imported resources are recorded in a trailing list per queue that used them. `execute` completes with a `submitted_frame` holding the last submission of every queue the graph used (graphics, async compute, copy), which is handed to `end_frame`. All of them are needed: async compute work whose result no later graphics batch waits on (a histogram read next frame, for example) still reads the frame's upload memory and descriptors, so the frame context may only be recycled once it's complete too.
 
 Determinism of recording: command list contents don't depend on which worker recorded them, and submission order is fixed.
@@ -508,7 +514,7 @@ Determinism of recording: command list contents don't depend on which worker rec
 ## 8. Multi-view
 - A **view** is a camera plus an output target and size: the main viewport, picture-in-picture views (for example, a top-down view), or future sensor views.
 - The renderer builds each view's pass chain inside `begin_view(name)`. Resource and pass names are qualified (`main/gbuffer.albedo`, `topdown/lighting.hdr`), so the debug UI can tell them apart.
-- **Shared work across views** is declared once, outside any view scope: uploads, and the scene buffers (instances, materials, the global light list). Per-view passes read them. Work that depends on the view frustum is per view: CSM cascades, light clusters, and point-cloud LOD selection.
+- **Shared work across views** is declared once, outside any view scope: the frame-data copies (pass 0, `upload_frame_data`), and the scene buffers (instances, materials, the global light list). Residency uploads aren't graph work: the upload queue's flush carries them (§7, D-103). Per-view passes read them. Work that depends on the view frustum is per view: CSM cascades, light clusters, and point-cloud LOD selection.
 - Per-view **persistent resources** (TAA history, previous depth, exposure) are kept in a `view_history` store owned by the renderer, keyed by view name. They're imported every frame with ping-pong indices, and released when a view hasn't been used for 60 frames.
 - Views are independent, so their recording groups parallelise naturally.
 
@@ -545,7 +551,7 @@ Dependencies still come only from the handles passed between passes, so a scope 
 3. **Unique per frame.** A view name may be used for one scope per frame. A second `begin_view` with the same name in the same frame is asserted.
 4. **Valid names.** View names are non-empty and contain no `/`, which is the qualification separator.
 5. **Free cross-scope reads.** Resources created in another view's scope or in the shared section (outside any scope) can be read freely through their handles. Scopes don't restrict access.
-6. **Shared work goes outside scopes.** Work that doesn't depend on the view frustum (uploads, scene buffers) is declared once, outside any scope, and keeps its unqualified name.
+6. **Shared work goes outside scopes.** Work that doesn't depend on the view frustum (frame-data copies, scene buffers) is declared once, outside any scope, and keeps its unqualified name.
 7. **Imports inside a scope are qualified too.** `import_texture("output", …)` inside `main` is named `main/output`, so per-view imports (output target, history) are distinct in the debug UI.
 
 ### 8.3 Example
@@ -555,8 +561,8 @@ void scene_renderer::build_frame(graphics::render_graph& graph, std::span<const 
 {
     graph.reset();
 
-    // shared work, outside any scope: names stay unqualified ("upload_scene_data", "instances")
-    const scene_buffers& scene = add_upload_scene_data(graph, snapshot_);
+    // shared work, outside any scope: names stay unqualified ("upload_frame_data", "instances")
+    const scene_buffers& scene = add_upload_frame_data(graph, snapshot_);
 
     for (const view_setup& view : views)                           // e.g. { "main", … }, { "topdown", … }
     {
@@ -585,7 +591,7 @@ void scene_renderer::build_frame(graphics::render_graph& graph, std::span<const 
 
 ## 9. Debug introspection
 `graph_debug_information` exposes, after compile:
-- every pass (name, queue, culled flag, GPU time from the previous frame)
+- every pass (name, queue, culled flag, GPU time of frame *N − F* from the profiler's `completed_gpu_timings`, when the graph has a profiler, [17 §6](17-graphics-frames-and-transfers.md#6-graphicsgpu_profilerh))
 - every resource (qualified name, description, producer and consumer passes, aliased offset, lifetime interval)
 
 The Visualizer shows this as a list ([12 §6](12-visualizer.md#6-panels-and-controls)), and the user picks a resource (and mip/slice) for the **debug blit pass** ([11 §11](11-renderer.md#11-debug-blit-pass)). The selection is given to the graph builder in the next frame. The debug pass then reads the selected resource, keeping it and its producers alive and excluding it from aliasing.
