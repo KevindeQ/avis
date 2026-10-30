@@ -58,6 +58,7 @@ target_sources(AVIS_TESTS
 		test_graphics_frame_scheduler.cpp
 		test_graphics_gpu_completion_thread.cpp
 		test_graphics_gpu_profiler.cpp
+		test_graphics_linear_arena.cpp
 		test_graphics_pipeline_cache.cpp
 		test_graphics_public_headers.cpp
 		test_graphics_readback_queue.cpp

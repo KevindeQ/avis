@@ -72,6 +72,7 @@ target_sources(AVIS_LIB
 		graphics/frame_scheduler.cpp
 		graphics/gpu_completion_thread.cpp
 		graphics/gpu_profiler.cpp
+		graphics/linear_arena.cpp
 		graphics/pipeline_cache.cpp
 		graphics/readback_queue.cpp
 		graphics/root_signature_registry.cpp
