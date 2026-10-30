@@ -60,11 +60,6 @@ namespace avis::rhi::d3d12
         ID3D12CommandQueue& native() noexcept;
         ID3D12Fence& fence() noexcept;
 
-        // queue<Queue>::submit isn't thread-safe against itself (§5): true when no other submit is in progress. Debug
-        // builds assert it; leave_submit ends the section.
-        bool enter_submit() noexcept;
-        void leave_submit() noexcept;
-
     private:
         device_queue(device& device, device_queues& siblings, queue_type type) noexcept;
 
@@ -81,7 +76,6 @@ namespace avis::rhi::d3d12
         std::uint64_t next_value_ = 1; // guarded by submission_mutex_
         std::atomic<std::uint64_t> last_submitted_{ 0 };
         mutable std::atomic<std::uint64_t> completed_cache_{ 0 };
-        std::atomic<bool> submitting_{ false };
     };
 
     // The graphics, compute and copy queues

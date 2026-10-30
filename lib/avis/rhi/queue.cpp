@@ -2,15 +2,15 @@
 
 #include "avis/log.h"
 #include "avis/rhi/command_list.h"
-#include "avis/rhi/d3d12/shared_objects.h"
-#include "avis/rhi/shared.h"
 #include "avis/rhi/d3d12/check.h"
 #include "avis/rhi/d3d12/command_list_pool.h"
 #include "avis/rhi/d3d12/device_queues.h"
 #include "avis/rhi/d3d12/device_state.h"
+#include "avis/rhi/d3d12/shared_objects.h"
 #include "avis/rhi/d3d12/timestamp_query_set_state.h"
 #include "avis/rhi/error.h"
 #include "avis/rhi/render_hardware_interface.h"
+#include "avis/rhi/shared.h"
 
 #include <vector>
 
@@ -24,21 +24,9 @@ namespace avis::rhi
     result<synchronization_point> queue<Queue>::submit(
         const std::span<command_list<Queue>> lists, const std::span<const synchronization_point> waits)
     {
+        // Thread-safe (D-101): execute is serialised by the queue's submission_mutex_, and the pool takes hand-backs
+        // in any order
         d3d12::device_queue& native_queue = state_->queues()[Queue];
-        const bool alone = native_queue.enter_submit();
-        AVIS_RHI_CHECK(alone, "submit: two threads submit to the same queue at once; serialise submissions per queue");
-        struct leave_on_exit
-        {
-            d3d12::device_queue& target;
-            bool entered;
-            ~leave_on_exit()
-            {
-                if (entered)
-                {
-                    target.leave_submit();
-                }
-            }
-        } const leave{ native_queue, alone };
 
         // Every list must be open and owned
         std::vector<d3d12::command_list_record*> records;

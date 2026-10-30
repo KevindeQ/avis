@@ -169,7 +169,8 @@ namespace avis::rhi::d3d12
         {
             device_->report_removed("wait");
         }
-        if (auto waited = check_device(*device_, queue_->Wait(&fence, value), "ID3D12CommandQueue::Wait (shared fence)");
+        if (auto waited =
+                check_device(*device_, queue_->Wait(&fence, value), "ID3D12CommandQueue::Wait (shared fence)");
             !waited)
         {
             return waited;
@@ -226,16 +227,6 @@ namespace avis::rhi::d3d12
     ID3D12Fence& device_queue::fence() noexcept
     {
         return *fence_.get();
-    }
-
-    bool device_queue::enter_submit() noexcept
-    {
-        return !submitting_.exchange(true, std::memory_order_acquire);
-    }
-
-    void device_queue::leave_submit() noexcept
-    {
-        submitting_.store(false, std::memory_order_release);
     }
 
     result<std::unique_ptr<device_queues>> device_queues::create(device& device)

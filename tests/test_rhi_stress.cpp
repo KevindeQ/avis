@@ -53,8 +53,7 @@ namespace
     rhi::synchronization_point copy_and_submit(
         rhi::render_hardware_interface& hardware_interface,
         const rhi::buffer_handle target,
-        const rhi::buffer_handle source,
-        std::mutex* const submission_mutex = nullptr)
+        const rhi::buffer_handle source)
     {
         // Throws instead of REQUIRE: workers call this, and Catch2 assertions aren't thread-safe
         auto list = rhi::command_lists{ hardware_interface }.acquire<Queue>("stress");
@@ -64,11 +63,7 @@ namespace
         }
         list->copy_buffer(target, 0, source, 0, buffer_size);
 
-        std::unique_lock<std::mutex> lock;
-        if (submission_mutex != nullptr)
-        {
-            lock = std::unique_lock{ *submission_mutex };
-        }
+        // No lock: submit is thread-safe, also on one queue (D-101)
         auto point = rhi::queue<Queue>{ hardware_interface }.submit(std::span{ &*list, 1 });
         if (!point)
         {
@@ -81,19 +76,18 @@ namespace
         rhi::render_hardware_interface& hardware_interface,
         const queue_type queue,
         const rhi::buffer_handle target,
-        const rhi::buffer_handle source,
-        std::mutex* const submission_mutex = nullptr)
+        const rhi::buffer_handle source)
     {
         switch (queue)
         {
         case queue_type::graphics:
-            return copy_and_submit<queue_type::graphics>(hardware_interface, target, source, submission_mutex);
+            return copy_and_submit<queue_type::graphics>(hardware_interface, target, source);
         case queue_type::compute:
-            return copy_and_submit<queue_type::compute>(hardware_interface, target, source, submission_mutex);
+            return copy_and_submit<queue_type::compute>(hardware_interface, target, source);
         case queue_type::copy:
             break;
         }
-        return copy_and_submit<queue_type::copy>(hardware_interface, target, source, submission_mutex);
+        return copy_and_submit<queue_type::copy>(hardware_interface, target, source);
     }
 
     struct pool_sizes
@@ -181,7 +175,6 @@ TEST_CASE("Eight workers and two pollers use the RHI concurrently for ten second
     rhi::render_hardware_interface& rhi_object = *hardware_interface;
     rhi::d3d12::device_state& state = rhi_object.state();
     rhi::completion_driver driver{ rhi_object };
-    std::array<std::mutex, 3> submission_mutexes; // queue<Queue>::submit isn't thread-safe against itself
 
     constexpr int worker_count = 8;
     constexpr auto duration = std::chrono::seconds{ 10 };
@@ -238,8 +231,7 @@ TEST_CASE("Eight workers and two pollers use the RHI concurrently for ten second
                         }
 
                         const auto queue = static_cast<queue_type>((round + static_cast<std::size_t>(worker)) % 3);
-                        const rhi::synchronization_point point = copy_and_submit(
-                            rhi_object, queue, *target, *source, &submission_mutexes[static_cast<std::size_t>(queue)]);
+                        const rhi::synchronization_point point = copy_and_submit(rhi_object, queue, *target, *source);
 
                         // Destroyed while the copy may still run: the deferred release holds them
                         resources.destroy(*source);

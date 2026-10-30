@@ -56,9 +56,10 @@ namespace avis::rhi
     public:
         explicit queue(render_hardware_interface& hardware_interface) noexcept;
 
-        // Executes the lists in order after GPU-side waits for `waits`. The lists are closed and become invalid, and so do
-        // the recorders they handed out; their timestamp runs are resolved first (§24.4). Not thread-safe against itself:
-        // callers serialise submissions per queue (asserted in debug builds). Throws device_lost after device removal.
+        // Executes the lists in order after GPU-side waits for `waits`. The lists are closed and become invalid, and so
+        // do the recorders they handed out; their timestamp runs are resolved first (§24.4). Thread-safe, also on one
+        // queue (D-101): concurrent submissions execute in the order they reach the queue. Throws device_lost after
+        // device removal.
         result<synchronization_point>
             submit(std::span<command_list<Queue>> lists, std::span<const synchronization_point> waits = {});
 
