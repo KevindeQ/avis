@@ -135,10 +135,12 @@ namespace avis::graphics
 
                 void operator()() const noexcept
                 {
-                    if (self->cancel())
+                    // Copied first: resetting the callback destroys this function object
+                    upload_operation_state* const operation = self;
+                    if (operation->cancel())
                     {
-                        self->stop_callback_.reset();
-                        stdexec::set_stopped(std::move(self->receiver_));
+                        operation->stop_callback_.reset();
+                        stdexec::set_stopped(std::move(operation->receiver_));
                     }
                 }
             };
