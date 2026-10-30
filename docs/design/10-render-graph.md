@@ -4,12 +4,13 @@
 
 | Feature | Namespace | CMake target | Location |
 |---|---|---|---|
-| Render graph (`render_graph`, `render_pass_builder`, compiler, executor) | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/render_graph.h`, `render_pass_builder.h`, `lib/avis/graphics/` |
+| Render graph (`render_graph`, `render_pass_builder`, `view_scope`, compiler, executor) | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/render_graph.h`, `render_pass_builder.h`, `view_scope.h`, `detail/render_pass_storage.h`, `detail/render_graph_execute_sender.h`; `lib/avis/graphics/render_graph*.cpp`, private `render_graph_tables.h`, `render_graph_compiler.h/.cpp`, `render_graph_executor.h/.cpp` |
 | Virtual resources (`resource`, `texture`, `buffer`) and their descriptions | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/resource.h`, `texture.h`, `buffer.h` |
 | Pass contexts (`graphics_pass_context`, `compute_pass_context`, `copy_pass_context`) | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/pass_context.h` |
 | Resource bag (virtual → physical mapping) | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/resource_bag.h` |
 | Per-frame linear arena | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/linear_arena.h` |
-| Transient resource pool, view history | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/transient_resource_pool.h` |
+| Transient resource pool | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/transient_resource_pool.h` |
+| Debug information (§9) | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/graph_debug_information.h` |
 
 ## 1. Requirements (from idea.md)
 - Groups render, compute and copy commands into **render passes**. Compute and copy passes are first-class.
@@ -24,7 +25,7 @@
 Namespace `avis::graphics`. The graph depends only on the public RHI API ([09](09-rhi.md)).
 
 ### 1.1 Relation to the existing code
-The current prototype in `include/avis/graphics/` (`render_pipeline`, `render_pass`, `render_pass_builder`, `resource`, `resource_bag`, `texture_descriptor`) is the starting point. This design keeps its main ideas and fills in the rest:
+A render pass prototype in `include/avis/graphics/` (`render_pipeline`, `render_pass`, `render_pass_builder`, `resource`, `resource_bag`, `texture_descriptor`) was the starting point; task 9 replaced it (A-38). This design keeps its main ideas and fills in the rest:
 
 | Kept from the prototype | How it appears in this design |
 |---|---|
@@ -72,7 +73,17 @@ namespace avis::graphics
         std::span<const rhi::synchronization_point> last_submissions() const noexcept { return { points.data(), count }; }
     };
 
-    // virtual resources: handles into the graph's resource table, valid for one frame
+    // The application maps render.async_compute and render.graph_aliasing onto it, with the device's capabilities
+    struct render_graph_configuration
+    {
+        bool async_compute = true;                          // async_compute hints go to the compute queue
+        bool aliasing = true;                               // transient resources share heap memory (§6.4)
+        std::uint32_t passes_per_group_without_timings = 4; // recording group size without GPU timings (§7)
+        double group_target_milliseconds = 1.0;             // recording group size from GPU timings (§7)
+    };
+
+    // virtual resources: handles into the graph's resource table, valid for one frame. Debug builds also carry the
+    // graph's frame serial, so a handle kept from an earlier frame fails a debug check instead of looking valid.
     class resource
     {
     public:
@@ -104,7 +115,8 @@ namespace avis::graphics
                      rhi::queue<rhi::queue_type::copy> copy_queue,
                      transient_resource_pool& pool,
                      frame_scheduler& frames,
-                     gpu_profiler* profiler = nullptr);
+                     gpu_profiler* profiler = nullptr,
+                     const render_graph_configuration& configuration = {});
 
         // setup runs immediately, inside the call; the returned reference stays valid until the next reset()
         template<typename PassData, std::invocable<render_pass_builder&, PassData&> Setup,
@@ -130,14 +142,17 @@ namespace avis::graphics
                              std::optional<rhi::synchronization_point> ready_after = {});
 
         view_scope begin_view(std::string_view view_name);      // RAII; qualifies names (§8.1)
+        view_scope begin_view(std::string_view view_name, texture_extent view_size);
+        // what view_relative sizes resolve against outside a scope, and in scopes begun without a size
+        void set_view_size(texture_extent view_size) noexcept;
 
         void reset();                                           // start a new frame: clears passes, resets the arena
         void compile();
         // records (bulk on the parallel scheduler) and submits; completes with the last submission of every queue
         // the graph submitted to (§7), all of which end_frame needs
-        auto execute(const frame_token& frame) -> sender_of<submitted_frame>;   // graphics::frame_token (17)
+        render_graph_execute_sender execute(const frame_token& frame) noexcept;   // sender_of<submitted_frame>
 
-        const graph_debug_information& debug_information() const;   // resources/passes for the debug UI (§9)
+        const graph_debug_information& debug_information() const noexcept;   // resources/passes for the debug UI (§9)
     };
 
     class render_pass_builder
@@ -147,9 +162,14 @@ namespace avis::graphics
         buffer create_buffer(std::string_view name, const buffer_description& description);
 
         texture read(texture input, texture_read usage, subresource_range range = all_subresources);
-        texture write(texture output, texture_write usage, subresource_range range = all_subresources);
+        texture write(texture output, texture_write usage, subresource_range range = all_subresources,
+                      write_flags flags = write_flags::none);   // needs_clear: §6.4 step 5
         buffer read(buffer input, buffer_read usage);
         buffer write(buffer output, buffer_write usage);
+
+        // the debug view's read of the selected resource (§9): a read that also keeps it out of aliasing
+        texture read_for_debug(texture input, texture_read usage, subresource_range range = all_subresources);
+        buffer read_for_debug(buffer input, buffer_read usage);
 
         void set_side_effects();                                // never cull
         void set_render_area(std::uint32_t width, std::uint32_t height);
@@ -158,7 +178,8 @@ namespace avis::graphics
 ```
 
 - `texture_read`: `srv_pixel`, `srv_compute`, `depth_read`, `copy_source`. `texture_write`: `render_target`, `depth_write`, `uav`, `copy_destination`. `buffer_read`: `srv_pixel`, `srv_compute`, `indirect_arguments`, `copy_source`. `buffer_write`: `uav`, `copy_destination`.
-- `texture_description` supports **relative sizes** (`size_mode::view_relative`, scale 0.5 for half-resolution GTAO), so passes declare sizes independently of the output resolution.
+- `texture_description` supports **relative sizes** (`size_mode::view_relative`, scale 0.5 for half-resolution GTAO), so passes declare sizes independently of the output resolution. A relative size resolves when the texture is created, against the open view scope's size (`begin_view(name, view_size)`) or the graph's (`set_view_size`).
+- The description carries no RHI usages: compile derives them (render target, depth stencil, shader resource, unordered access, copy) from the declared accesses.
 - **Why a function per pass type:** the context type passed to the execute lambda is fixed at compile time, so a compute pass can never call `draw()`:
 
 | Add function | Execute receives | Recorder in the context | Queue |
@@ -260,7 +281,7 @@ namespace avis::graphics
 ```
 
 - Lookups are O(1): flat arrays indexed by the virtual resource index, allocated in the `linear_arena`.
-- A pass may only look up resources it declared in its setup. Debug builds check this against the pass's declared read/write set and assert on undeclared access, which catches missing dependencies early.
+- A pass may only look up resources it declared in its setup. Debug builds check this against the pass's declared read/write set and assert on undeclared access, which catches missing dependencies early. The executor sets the pass being recorded per thread (a `thread_local`) for the check.
 - The bag is immutable during recording, so parallel recording groups share it without locks.
 
 ### 3.5 Per-frame linear arena (`linear_arena`)
@@ -439,7 +460,7 @@ Rebuilding every frame keeps the renderer simple: resizes, toggling the debug vi
 - Each `create_*` adds a resource entry with version 0, the producer pass, and its description. Entries live in the `linear_arena`.
 - Setup runs inside `add_*_pass` (§3.3), so the build phase is just the sequence of add calls.
 - `read(handle)` records an edge from `producer(handle.version)` to the current pass. `write(handle)` bumps the version, records the current pass as producer of the new version, and returns the new handle.
-- Writing a resource version that has already been written raises an assertion in debug builds. The pass must use the handle returned by the previous write.
+- Writing a resource version that has already been written raises an assertion in debug builds. The pass must use the handle returned by the previous write. So does a handle from another frame: debug builds carry the frame serial in every handle.
 - Imports create version-0 entries flagged `imported`, with their initial and final states.
 
 ## 6. Compile phase
@@ -453,7 +474,7 @@ Reference counting, Frostbite FrameGraph style:
 ### 6.2 Scheduling and queue assignment
 - **Order:** declaration order is a valid topological order (reads can only name earlier versions), and the compiler keeps it. That makes behaviour predictable and debugging easier.
 - **Queue assignment:** a compute pass runs on the async compute queue when its `compute_queue_hint` is `async_compute`, the capability exists, and the hint isn't overridden (`render.async_compute: false` forces everything onto graphics). `copy` passes go to the copy queue only if every resource they touch is a buffer, or a texture in `common` layout. Otherwise they fall back to graphics.
-- **Batches:** consecutive passes on the same queue form a *submission batch*. A **cross-queue edge** (a producer on queue A, a consumer on queue B) makes the producer batch end with a fence signal and the consumer batch begin with a wait. Redundant waits are removed by transitive reduction, tracking the latest value of each foreign queue already waited on.
+- **Batches:** consecutive passes on the same queue form a *submission batch*. A **cross-queue edge** (a producer on queue A, a consumer on queue B) makes the producer batch end with a fence signal and the consumer batch begin with a wait. So does a write, or a texture layout change, of a resource another queue used earlier, since that queue may still read it. Redundant waits are removed by transitive reduction, tracking the latest value of each foreign queue already waited on.
 - Async compute work overlaps only with graphics passes **declared after** its producer that don't consume its output, because the order on each queue is the declaration order. The renderer orders its passes for this: cluster building overlaps the G-buffer, and GTAO overlaps the shadow cascades ([11 §2.3](11-renderer.md#23-pass-table)). A pass that consumes async output waits on its fence, so declaring a consumer too early serialises the queues.
 
 ### 6.3 Barriers
@@ -473,33 +494,42 @@ For each resource, walk its uses in execution order and compute `access_state` t
 - Barriers are emitted **at the start of the consuming pass**, batched into one `barrier()` call per pass.
 - Consecutive reads with compatible layouts merge (no barrier between two `srv` reads).
 - UAV→UAV on the same resource in consecutive passes emits an access-only barrier.
-- Cross-queue resources: when a resource is produced on one queue and consumed on another, the transition is placed on the **producer** queue into a layout valid on both (`common` / `shader_resource` / `unordered_access`). The fence then makes it visible to the consumer.
+- Cross-queue resources: when a resource is produced on one queue and consumed on another, the transition is placed on the **producer** queue, at the end of its batch before the signal, into a layout valid on both (`common` / `shader_resource` / `unordered_access`). The fence then makes it visible to the consumer, whose first access starts from that layout. A texture last only read on another queue, in a layout the consumer's queue knows, is transitioned on the consumer's queue after its wait.
+- Barriers live in the compiled output on virtual resources; the executor fills in the physical handles from the resource bag before recording.
 - Imported resources start from their declared `initial` state and are transitioned to `final` after their last use.
 - Subresource ranges are tracked per mip and layer for resources accessed with partial ranges (depth mip chain generation).
 
 ### 6.4 Aliasing and transient memory
 1. **Lifetime:** for every transient resource, `[first_use, last_use]` in global execution order (pass index). For resources touched by async compute batches, the interval is widened to the span between the fences that bound those batches, because concurrently executing queues can't share memory safely.
-2. **Placement:** resources are sorted by size (descending) and placed into **transient heaps** with a greedy interval-graph allocation. A resource can take an offset range already occupied by another only when their lifetimes don't overlap. Alignment is 64 KiB (4 MiB for MSAA, which is unused).
-3. **Heaps:** the `transient_resource_pool` takes the `rhi::memory` and `rhi::resources` views (D-95, D-96): it creates heaps and placed resources through `memory` (`requirements`, `create_heap`, `create_placed_texture`, `create_placed_buffer`, `destroy(heap_handle)`) and destroys evicted placed resources through `resources::destroy`. It owns a set of placed-resource heaps per frame in flight (`heap_kind::render_targets_and_textures` and `heap_kind::buffers`, combined when Tier 2 allows). It grows in 64 MiB steps on demand and shrinks after 120 frames under the high-water mark.
+2. **Placement:** resources are sorted by size (descending, ties by index) and placed into **one transient heap** with a greedy interval-graph allocation. A resource takes the lowest aligned offset whose occupants' lifetimes don't overlap its own. Sizes and alignment come from `rhi::memory::requirements` through a callback, which the graph binds to the pool's cached requirements and tests replace with fixed sizes, so the compiler itself stays pure. Alignment is 64 KiB (4 MiB for MSAA, which is unused).
+3. **Heaps:** the `transient_resource_pool` takes the `rhi::memory` and `rhi::resources` views (D-95, D-96): it creates heaps and placed resources through `memory` (`requirements`, `create_heap`, `create_placed_texture`, `create_placed_buffer`, `destroy(heap_handle)`) and destroys evicted placed resources through `resources::destroy`. It owns one `heap_kind::all_resources` heap per frame in flight (resource heap tier 2 is required by the capability gate, [09 §8.5](09-rhi.md#85-placed-resources-and-heaps-rhimemoryh)). It grows in 64 MiB steps on demand and, after 120 frames below its size, shrinks to the most those frames needed, rounded up to 64 MiB.
 4. **Physical resource cache:** placed resources are cached by `(description hash, heap, offset)` across frames, so a steady-state frame creates no D3D12 resources. Bindless SRV/UAV indices for transient resources are created fresh each frame in the frame context's **descriptor range**, with `frame_scheduler::create_frame_srv/uav` ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh), D-88).
-5. **Aliasing barriers:** the first use of a resource that shares memory with an earlier one gets `layout undefined → target` with `discard` (§6.3), followed by a clear or a full overwrite. Passes that write only part of a fresh aliased resource are flagged at compile time, and must declare `needs_clear`.
-6. Aliasing can be switched off (`render.graph_aliasing: false`) for debugging, and is always off for resources selected in the debug blit pass.
+5. **Aliasing barriers:** the first use of a transient texture gets `layout undefined → target` with `discard` (§6.3), followed by a clear or a full overwrite; when its memory is shared with an earlier resource, the barrier also waits for all earlier work on the queue. A pass that writes only part of a fresh aliased texture fails a debug check at compile time unless it declares the write with `write_flags::needs_clear`. (The executor doesn't clear such textures yet; the renderer's first user adds the clear.)
+6. Aliasing can be switched off (`render_graph_configuration::aliasing`, from `render.graph_aliasing: false`) for debugging, and is always off for the resource the debug blit pass reads with `read_for_debug`.
 
 ### 6.5 Compiled output
+The compiler (private, `lib/avis/graphics/render_graph_compiler.h`) runs one function per phase on the build tables: `cull`, `assign_queues`, `build_batches`, `compute_lifetimes`, `place_resources`, `place_barriers`. Placement comes before barriers, so the first use of shared memory knows to wait (§6.4 step 5).
+
 ```cpp
 struct compiled_graph
 {
     // all spans point into the render graph's linear_arena
-    std::span<pass_index> order;                        // culled, ordered
-    std::span<submission_batch> batches;                // per queue, with waits/signals
-    std::span<barrier_batch> barriers_per_pass;
-    memory_statistics statistics;                       // aliased vs non-aliased bytes (debug overlay)
+    std::span<std::uint8_t> culled;                     // per pass
+    std::span<std::uint32_t> order;                     // the passes that run, in declaration order
+    std::span<rhi::queue_type> queues;                  // per pass
+    std::span<std::uint32_t> pass_batches;              // per pass
+    std::span<submission_batch> batches;                // with waits, ready_after points, signal, end barriers
+    std::span<std::array<std::uint32_t, 3>> coverage;   // per batch: the latest batch of each queue it waits for
+    std::span<compiled_resource> resources;             // lifetime, RHI description, size, heap offset
+    std::span<barrier_batch> pass_barriers;             // per pass, recorded before it
+    std::array<end_of_frame_list, 3> end_of_frame;      // per queue: imports' final transitions
+    memory_statistics statistics;                       // heap size, aliased vs non-aliased bytes
 };
 ```
 
 ## 7. Execution phase
 1. **Materialise:** for each transient resource, look up or create the placed resource in the pool, then create its bindless views (SRV, UAV per mip) in the frame's descriptor range with `create_frame_srv/uav`, and its RTV/DSV views. Imported resources map directly. The results fill the **`resource_bag`** (§3.4).
-2. **Record in parallel:** the ordered pass list (per queue) is split into **recording groups** of about 1 ms estimated GPU work. Estimates come from the GPU profiler's timings of frame *N − F* (`completed_gpu_timings`, [17 §6](17-graphics-frames-and-transfers.md#6-graphicsgpu_profilerh)); without a profiler or timings, a group is 4 passes. Groups are recorded in parallel with `stdexec::bulk` on the parallel scheduler ([15 §4.1](15-parallel-scheduler.md#41-scheduler)). `execute` returns a sender: the bulk is composed into the frame chain with `let_value`, so nothing waits on it ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)). Each group acquires its own command list of the matching queue type (`rhi::command_lists::acquire<Queue>`, the RHI's command-list view, [09 §4.3](09-rhi.md#43-subsystem-views), [09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)) and keeps it until submit. Every pass in the group records through a recorder of its own type cut from that list: the list's own recorder for a pass of the list's type, `narrow()` for a compute or copy pass on the graphics queue (D-92). The acquire returns a `result` ([D-86](09-rhi.md#d-86-result-from-acquire_command_list)); a failure (out of memory, device lost) makes `execute` complete with `set_error`, and the lists already acquired for the frame are discarded when the graph destroys them. For each pass, the group:
+2. **Record in parallel:** the ordered pass list (per queue) is split into **recording groups** of about `group_target_milliseconds` (1 ms) of estimated GPU work, never across batches. Estimates come from the GPU profiler's timings of frame *N − F* (`completed_gpu_timings`, [17 §6](17-graphics-frames-and-transfers.md#6-graphicsgpu_profilerh)), matched by pass name; without a profiler or timings, a group is `passes_per_group_without_timings` (4) passes. The frame chain calls `gpu_profiler::prepare_frame` for the token before `execute`. Groups are recorded in parallel with `stdexec::bulk` on the parallel scheduler ([15 §4.1](15-parallel-scheduler.md#41-scheduler)). `execute` returns a sender: the bulk is composed into the frame chain with `let_value`, so nothing waits on it ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)). Each group acquires its own command list of the matching queue type (`rhi::command_lists::acquire<Queue>`, the RHI's command-list view, [09 §4.3](09-rhi.md#43-subsystem-views), [09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)) and keeps it until submit. Every pass in the group records through a recorder of its own type cut from that list: the list's own recorder for a pass of the list's type, `narrow()` for a compute or copy pass on the graphics queue (D-92). The acquire returns a `result` ([D-86](09-rhi.md#d-86-result-from-acquire_command_list)); a failure (out of memory, device lost) makes `execute` complete with `set_error`, and the lists already acquired for the frame are discarded when the graph destroys them. For each pass, the group:
    - emits the pass's barrier batch,
    - `begin_event(pass name)` and, with a profiler, `begin_timing`,
    - calls the execute lambda with its pass data, the `resource_bag` and the pass context of the type fixed by its add function,
@@ -536,6 +566,8 @@ namespace avis::graphics
     };
 
     view_scope render_graph::begin_view(std::string_view view_name);
+    // view_relative textures created in the scope resolve against view_size
+    view_scope render_graph::begin_view(std::string_view view_name, texture_extent view_size);
 }
 ```
 
@@ -590,16 +622,20 @@ void scene_renderer::build_frame(graphics::render_graph& graph, std::span<const 
 ```
 
 ## 9. Debug introspection
-`graph_debug_information` exposes, after compile:
-- every pass (name, queue, culled flag, GPU time of frame *N − F* from the profiler's `completed_gpu_timings`, when the graph has a profiler, [17 §6](17-graphics-frames-and-transfers.md#6-graphicsgpu_profilerh))
-- every resource (qualified name, description, producer and consumer passes, aliased offset, lifetime interval)
+`graph_debug_information` (`graph_debug_information.h`) exposes, after compile and until the next `reset()`:
+- every pass (name, type, queue, culled flag, GPU time of frame *N − F* from the profiler's `completed_gpu_timings`, when the graph has a profiler, [17 §6](17-graphics-frames-and-transfers.md#6-graphicsgpu_profilerh); filled in by `execute`)
+- every resource (qualified name, resolved description, imported and debug-selected flags, producer and consumer passes, heap offset and whether it's aliased, lifetime interval)
+- the transient heap size, aliased and non-aliased bytes, and the number of recording groups of the last execute
 
-The Visualizer shows this as a list ([12 §6](12-visualizer.md#6-panels-and-controls)), and the user picks a resource (and mip/slice) for the **debug blit pass** ([11 §11](11-renderer.md#11-debug-blit-pass)). The selection is given to the graph builder in the next frame. The debug pass then reads the selected resource, keeping it and its producers alive and excluding it from aliasing.
+The Visualizer shows this as a list ([12 §6](12-visualizer.md#6-panels-and-controls)), and the user picks a resource (and mip/slice) for the **debug blit pass** ([11 §11](11-renderer.md#11-debug-blit-pass)). The selection is given to the graph builder in the next frame. The debug pass then reads the selected resource with `render_pass_builder::read_for_debug`, which keeps it and its producers alive like any read and excludes it from aliasing.
+
 
 
 ## 10. Testing
-- Unit tests with a **null RHI recorder** (a test double that records barriers, submissions and placements, with no GPU): culling cases, versioning assertions, barrier sequences, cross-queue fence placement, aliasing correctness (no overlapping lifetimes share memory), and a stable placement result for a fixed graph.
+- **The compiler's output, without a GPU.** The RHI's recorders are concrete classes, so there is no "null RHI recorder". Since the compiler is pure (sizes come from the requirements callback, §6.4), tests check `compiled_graph` directly instead: culling cases, versioning assertions, queue assignment, batches, waits and signals, barrier sequences (including per-mip and cross-queue handoffs), and placements. The placement function runs on hand-built lifetimes and fixed sizes: no overlapping lifetimes share memory over 1,000 random graphs, and a fixed set gives a golden placement. Graphs are built on the RHI test fixture only because the constructor takes RHI views; nothing is recorded.
 - `linear_arena`: alignment, large allocations, destructor order on `reset()`, block retention limit, `arena_allocator` with `std::vector`.
 - `resource_bag`: undeclared-access assertion in debug builds.
 - Compile-time tests (`static_assert` on `requires`): a compute pass's execute lambda can't take a `graphics_pass_context`, and a compute context doesn't expose `draw`.
-- GPU integration tests (skipped without a capable adapter): run the minimal frame of §3.6 and compare readback with the clear color and triangle.
+- The executor on the GPU (WARP or hardware): parallel recording in groups, narrowed recorders, `ready_after` waits, `submitted_frame` covering every queue, and failures and stops that submit nothing.
+- GPU frame tests with the debug layer and GPU-based validation: the minimal frame of §3.6 (readback of the clear color and the triangle), async compute, two transient render targets sharing memory, two views, and a chain of 100 frames that reaches a steady state with no new placed resources, heaps or command allocators.
+
