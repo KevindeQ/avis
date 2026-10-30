@@ -9,7 +9,7 @@
 | Windows SDK | ≥ 10.0.26100 |
 | Shader compiler | DXC from `tools/dxc` (pinned) |
 | Qt | 6.11.1 (MSVC 2022 x64 kit) |
-| Python | ≥ 3.14 with `uv` |
+| Python | ≥ 3.14 with `uv` (also needed by the shader build, §3) |
 
 Compiler flags: `/W4 /permissive- /utf-8 /Zc:__cplusplus /Zc:preprocessor /fp:precise /EHsc`. Warnings are errors in CI (`/WX`) for Avis code, not for `external/`. Release builds add `/O2 /GL` with `/LTCG`, and debug info (`/Zi`) is always generated.
 
@@ -33,7 +33,7 @@ tests/CMakeLists.txt            # AVIS_TESTS (Catch2)
 ### 2.1 Library targets
 All Avis library features build into **one CMake target, `AVIS_LIB`** (a static library defined in `lib/avis/CMakeLists.txt`). There are no per-feature sub-targets or object libraries. Features are separated by **namespace and directory**, not by CMake target.
 
-`AVIS_LIB` links: stdexec, asio, spdlog, zenoh-cpp/zenoh-c, EnTT, Eigen, fastgltf, yaml-cpp, xxHash, D3D12MemoryAllocator, `d3d12.lib`, `dxgi.lib`, `dxguid.lib`. Public include directory: `include/`.
+`AVIS_LIB` links: stdexec, asio, spdlog, zenoh-cpp/zenoh-c, EnTT, Eigen, fastgltf, yaml-cpp, xxHash, D3D12MemoryAllocator, `d3d12.lib`, `dxgi.lib`, `dxguid.lib`. Public include directory: `include/`. Dependencies no public header includes are `PRIVATE`: D3D12MemoryAllocator (and through it `d3d12.lib`, `dxgi.lib`, `dxguid.lib`), fastgltf, yaml-cpp. A static library's private dependencies still reach the executables as link-only ones. `AVIS_TESTS` links them directly where white-box tests include private headers (`lib/avis/rhi/d3d12/` needs D3D12MemoryAllocator).
 
 spdlog is linked `PUBLIC`, because `include/avis/log.h` exposes `spdlog::logger`. yaml-cpp and fastgltf are linked `PRIVATE`: no public Avis header includes them, so applications and tests don't inherit their include paths. An application that parses its own YAML (`visualizer.yaml`, `driver.yaml`, [01 §7](01-system-architecture.md#7-configuration)) links `yaml-cpp::yaml-cpp` itself.
 
@@ -94,11 +94,26 @@ There are no per-application switches: the Visualizer, Driver, stepper and examp
   // @avis-shader entry=main stage=cs
   // @avis-shader entry=vertex_main stage=vs  entry=pixel_main stage=ps  permutations=ALPHA_MASK
   ```
+  `stage` belongs to the `entry` before it. `permutations` (comma-separated) applies to every entry of its line: each entry is compiled once without them and once per permutation, with that name defined. A malformed comment, or a source without one, fails the configure step with the file and line.
 - DXC command per entry and permutation:
-  `dxc -T <stage>_6_6 -E <entry> -HV 2021 -enable-16bit-types -WX -O3 -I data/shaders/visualizer/include [-D…] -Fo <directory>/<name>.<entry>[.<permutation>].<stage>.cso -Fd <directory>/pdb/ -Qstrip_reflect`
-  In debug: `-Zi -Qembed_debug -Od` instead of `-O3`.
-- Dependency tracking via `-MF` depfiles (Ninja `DEPFILE`), so header changes recompile the dependent shaders.
-- A final custom command (a `cmake -P` script) writes `<directory>/manifest.yaml` (id, stage, entry, permutation defines, xxh3 hash). YAML rather than JSON, because yaml-cpp is already a dependency. The shader library reads it at runtime ([09 §9.1](09-rhi.md#91-shader-library)).
+  `dxc -T <stage>_6_6 -E <entry> -HV 2021 -enable-16bit-types -WX -O3 -I data/shaders/visualizer/include [-D…] -Fo <directory>/<name>.<entry>[.<permutation>].<stage>.cso -Fre <reflection directory>/<name>.<entry>[.<permutation>].<stage>.ref -Qstrip_reflect`
+  In debug: `-Zi -Qembed_debug -Od -Fd <directory>/pdb/` instead of `-O3`. `-Fd` is debug-only because DXC rejects it without debug info.
+  The permutation appears in lower case in the id and the file name (`gbuffer.vertex_main.alpha_mask.vs`), and its name is the define (`ALPHA_MASK`).
+  `-Qstrip_reflect` keeps the deployed `.cso` files small; `-Fre` writes the reflection to a separate file in the build tree (`<current binary dir>/shaders/<target>/reflection/`), which is never deployed.
+- Dependency tracking via depfiles (Ninja `DEPFILE`), so header changes recompile the dependent shaders. DXC's `-MD`/`-MF` compile nothing and name the source as the depfile's target, which Ninja would treat as always dirty. So each shader's command runs `dxc -M -MF` first, then a `cmake -P` step (`AvisShaders.cmake` in script mode) rewrites the target to the `.cso`, then the compile.
+- The configure step fails with what to install when `uv` or `tools/dxc` (`dxc.exe`, `dxcompiler.dll`) is missing. The manifest step is a custom target `<target>_shaders` that `<target>` depends on; one call per target.
+- **Shader list.** At configure time, `avis_add_shaders` writes `<binary dir>/shaders/<target>/shaders.yaml` with `file(GENERATE)`: one entry per compiled shader with its id, stage, entry, defines, `.cso` path and reflection path (`avis_shader_list: 1`).
+- **Manifest.** A final custom command writes `<directory>/manifest.yaml` with the `shader-manifest` command of `tools/data-trace`:
+  ```
+  uv run --project ${CMAKE_SOURCE_DIR}/tools/data-trace dt shader-manifest <list> --output <directory>/manifest.yaml --dxc ${CMAKE_SOURCE_DIR}/tools/dxc/bin/x64
+  ```
+  It runs after every shader of the target (`DEPENDS` on the `.cso` and `.ref` files and the list), with `WORKING_DIRECTORY` in the build tree, because data-trace writes its `debug.log` to the current directory.
+  - Per shader it writes id, file (relative to the manifest), stage, entry, defines, the xxh3 hash of the `.cso` (`xxhash` package), and the `bindings` read from the reflection file ([18 §6](18-graphics-shaders-and-pipelines.md#6-reflection-data-sources)): constant buffers with their size, buffers bound by register, and samplers bound by register. Resources accessed through `ResourceDescriptorHeap` aren't in the reflection and need nothing.
+  - The reflection is read through `dxcompiler.dll` from `tools/dxc` with `ctypes` (`IDxcUtils::CreateReflection`, `ID3D12ShaderReflection`), so the tool and the shaders always use the same DXC.
+  - **Build errors:** a binding no root signature can provide (a texture, typed buffer or array bound by register, an append/consume buffer) fails the build with the shader id, the resource name and its register. So does a duplicate id or a `.cso` outside the manifest's directory.
+  - The manifest is only rewritten when its content changes, so an unchanged manifest doesn't trigger the deployment steps that depend on it.
+  - Format `avis_shader_manifest: 2` (version 1 had no `bindings`). YAML rather than JSON, because yaml-cpp is already a dependency. The application reads it at runtime: the Visualizer parses it into a `graphics::shader_manifest` ([12a](12a-visualizer-shader-manifest.md)); the library has no parser for this format.
+  - Code: `tools/data-trace/src/data_trace/shaders/` (`manifest.py`, `bindings.py`, `dxc_reflection.py`), tests in `tools/data-trace/tests/shaders/`, including probe shaders compiled with `tools/dxc`.
 - The Qt-side shaders (`data/shaders/visualizer/qt/*.vert|frag`) keep using `qt_add_shaders`. Qt compiles them to `.qsb`.
 - Deployment: the compiled `data/shaders/visualizer/` directory (from the build output) is copied next to the executable by the install/deploy step, together with the other runtime data (`data/assets/`).
 
@@ -123,7 +138,7 @@ There are no per-application switches: the Visualizer, Driver, stepper and examp
 |---|---|---|
 | `kitti360-pack` | `tools/kitti360-pack` | Raw KITTI-360 → sequence pack ([04 §5](04-scenario-and-dataset.md#5-packer-tool-toolskitti360-pack)) |
 | `avis-pack-inspect` | `tools/kitti360-pack` (second entry point) | Print the manifest, verify hashes, dump records, export a frame to PNG/PLY for checking |
-| `data-trace` | `tools/data-trace` (existing) | Data tracing utility |
+| `data-trace` | `tools/data-trace` (existing) | Data tracing utility; `dt shader-manifest` writes the shader manifest during the build (§3) |
 | `avis-hashdiff` | `tools/avis-hashdiff` | Compare two `--record-hashes` outputs and report the first diverging step (determinism checks) |
 
 Tools follow the existing `data-trace` layout (`pyproject.toml`, `src/<package>`, `tests/`, `uv_build` backend) and use `pytest`. They're not embedded in the applications (idea.md: no scripting role).
@@ -160,7 +175,7 @@ A small **headless stepper** (`apps/stepper`, a CLI) implements the Visualizer s
 ## 9. Coding standards
 - `.clang-format` (existing) is enforced by `clang-format-all.ps1` and a CI check.
 - `clang-tidy` (from `tools/llvm`) runs with a curated profile: modernize, bugprone, performance, and readability-identifier-naming for `snake_case`.
-- Public headers must not include `<d3d12.h>`, `<dxgi*.h>`, Qt or Zenoh headers (except for app code). A CI grep rule enforces this for `include/avis/` ([09 §1](09-rhi.md#1-goals-and-constraints)).
+- Public headers must not include `<d3d12.h>`, `<dxgi*.h>`, Qt or Zenoh headers (except for app code). A CI grep rule enforces this for `include/avis/` ([09 §1](09-rhi.md#1-goals-and-constraints)). For the RHI, the compile test `tests/test_rhi_public_headers.cpp` also checks that no public RHI header pulls in `<windows.h>`, D3D12, D3D12MemoryAllocator, asio or the IO layer ([09 §2.1](09-rhi.md#21-public-headers)).
 - `avis/threading/thread_pool.*` and `thread_handle.*` must not include the parallel scheduler headers (`parallel_configuration.h`, `parallel_backend.h`, `parallel_helpers.h`) or stdexec. This keeps the thread pool independent of the parallel scheduler ([06 §5](06-thread-pool.md#5-relation-to-the-parallel-scheduler)).
 - `STDEXEC_PARALLEL_SCHEDULER_HEADER_ONLY` stays undefined and stdexec's `STDEXEC_BUILD_PARALLEL_SCHEDULER` stays `OFF`, because `AVIS_LIB` provides the parallel scheduler backend ([15 §3.1](15-parallel-scheduler.md#31-replacing-the-backend-at-link-time)).
 - Every public API returning a failure path uses `avis::result<T>` or a sender with `set_error(avis::error)`.
@@ -190,7 +205,7 @@ Exceptions apply only in these extreme cases:
 
 | Exception | Examples | Rationale |
 |---|---|---|
-| Established acronyms of the problem domain | `gpu`, `cpu`, `io`, `rhi`, `sdk`, `id`, `uuid`, `ui`, `rpc`, `pso`, `srv`, `uav`, `rtv`, `dsv`, `ao`, `gtao`, `taa`, `csm`, `pbr`, `ibl`, `hdr`, `ldr`, `lod`, `aabb`, `fov`, `fps`, `gltf`, `yaml`, `hlsl`, `oxts`, `gnss`, `imu` | These are the names the domain uses. Spelling them out (`unordered_access_view`) hurts readability. |
+| Established acronyms of the problem domain | `gpu`, `cpu`, `io`, `rhi`, `sdk`, `id`, `uuid`, `luid`, `ui`, `rpc`, `pso`, `srv`, `uav`, `rtv`, `dsv`, `ao`, `gtao`, `taa`, `csm`, `pbr`, `ibl`, `hdr`, `ldr`, `lod`, `aabb`, `fov`, `fps`, `gltf`, `yaml`, `hlsl`, `oxts`, `gnss`, `imu` | These are the names the domain uses. Spelling them out (`unordered_access_view`) hurts readability. |
 | SI unit suffixes | `_ns`, `_ms`, `_hz`, `_px`, `_m` | Units are part of the value's meaning and are universally recognised |
 | Names fixed by external APIs or formats | `com_ptr`, `sync_wait`, `D3D12_BARRIER_SYNC_*`, Qt's `adapterLuidLow`, KITTI-360 field names | Must match the external definition |
 | Mathematical notation in formulas and pseudocode | `t_k`, `alpha`, loop indices `i`, `j`, `k`, components `x`, `y`, `z`, `w` | Conventional notation, not names in the API |
@@ -198,12 +213,33 @@ Exceptions apply only in these extreme cases:
 
 clang-tidy's `readability-identifier-naming` can't detect abbreviations, so this guideline is checked in code review. A list of banned name fragments (`desc`, `config`, `ctx`, `cfg`, `tmp`, `idx`, `cnt`, `num`, `prev`, `curr`, `src`, `dst`, …) is kept in `tools/naming-check/banned.txt` for an optional CI grep.
 
+### 9.3 Layering between IO, the RHI and the shared helpers
+The RHI doesn't depend on the IO layer: it owns no execution context and creates pipelines from bytecode ([09 §5.2](09-rhi.md#52-driving-completions), [09 §12](09-rhi.md#12-pipelines-rhipipelineh)). Both share only the sender helpers in `avis/detail/` ([07 §4.8](07-io-layer.md#48-shared-sender-helpers-avisdetail)).
+
+| Rule | Check |
+|---|---|
+| No public RHI header includes `avis/io/`, `<windows.h>`, D3D12, DXGI, D3D12MemoryAllocator or asio | `tests/test_rhi_public_headers.cpp` includes every header under `include/avis/rhi/` first, from a list `tests/CMakeLists.txt` generates from the directory, then fails to compile if one of their include guards (or a macro the header always defines) is set ([09 §2.1](09-rhi.md#21-public-headers)) |
+| No RHI source includes `avis/io/` | Convention, checked in review |
+| `avis/detail/` includes neither `avis/io/` nor `avis/rhi/` | Convention, checked in review |
+
+There is no configure-time scan of the private sources: the header test is the only automated check (D-81). The graphics layer may include both the IO layer and the RHI; the compositions that need both live there: `graphics::load_shader_library` ([18 §4](18-graphics-shaders-and-pipelines.md#4-graphicsshader_loadingh)) and `graphics::gpu_completion_thread` ([09 §5.2](09-rhi.md#52-driving-completions)).
+
+```mermaid
+flowchart TD
+    graphics[avis::graphics<br/>load_shader_library, gpu_completion_thread] --> io
+    graphics --> rhi
+    io[avis::io] --> helpers[avis/detail<br/>receiver_stop_callback, safe_error]
+    rhi[avis::rhi] --> helpers
+    helpers --> base[avis/error.h, stdexec]
+```
+
 ## 10. Continuous integration (suggested)
 GitHub Actions on `windows-2025` runners:
 1. Configure and build Debug and Release (Ninja).
-2. Unit tests. GPU tests are skipped on hosted runners, because they lack a capable GPU (WARP may not pass the enhanced-barrier gate).
-3. Format and clang-tidy checks.
-4. `uv run pytest` for each tool.
-5. A determinism test with the stepper on the synthetic mini-sequence.
+2. Install the Windows "Graphics Tools" optional feature, which provides the D3D12 debug layer: `Add-WindowsCapability -Online -Name Tools.Graphics.DirectX~~~~0.0.1.0`. The RHI's device tests fail without it rather than skip ([09 §19.5](09-rhi.md#195-testing-hooks)).
+3. Unit tests. Hosted runners have no GPU, so the RHI's device tests run on WARP (`AVIS_TEST_ADAPTER=warp`). The inbox WARP passes the RHI's capability gate on build 26200 ([09 §19.5](09-rhi.md#195-testing-hooks)); the runners' build 26100 is confirmed by the first CI run.
+4. Format and clang-tidy checks.
+5. `uv run pytest` for each tool.
+6. A determinism test with the stepper on the synthetic mini-sequence.
 
-A self-hosted GPU runner can be added later for `[gpu]` and golden-image tests.
+A self-hosted GPU runner can be added later for `[gpu]` and golden-image tests, and for tests too slow on WARP or whose output differs from a hardware GPU.
