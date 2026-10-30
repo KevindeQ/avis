@@ -43,6 +43,20 @@ namespace avis::tests
         return std::move(*scheduler);
     }
 
+    std::unique_ptr<graphics::gpu_profiler> make_test_gpu_profiler(
+        test_rhi& hardware_interface, const std::uint32_t frames_in_flight, const std::uint32_t timestamps_per_frame)
+    {
+        auto profiler = graphics::gpu_profiler::create(
+            rhi::transient_objects{ *hardware_interface },
+            rhi::queue<rhi::queue_type::graphics>{ *hardware_interface },
+            rhi::queue<rhi::queue_type::compute>{ *hardware_interface },
+            rhi::queue<rhi::queue_type::copy>{ *hardware_interface },
+            frames_in_flight,
+            { .timestamps_per_frame = timestamps_per_frame });
+        REQUIRE(profiler.has_value());
+        return std::move(*profiler);
+    }
+
     graphics::frame_token begin_frame_inline(graphics::frame_scheduler& scheduler)
     {
         started_frame frame{ scheduler.begin_frame() };

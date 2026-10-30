@@ -68,6 +68,7 @@ target_sources(AVIS_LIB
 
 		graphics/error.cpp
 		graphics/frame_scheduler.cpp
+		graphics/gpu_profiler.cpp
 
 		io/async_file.cpp
 		io/detail/file_sender.cpp

@@ -9,6 +9,7 @@
 
 #include "avis/error.h"
 #include "avis/graphics/frame_scheduler.h"
+#include "avis/graphics/gpu_profiler.h"
 #include "avis/rhi/queue.h"
 #include "avis/rhi/types.h"
 
@@ -38,6 +39,10 @@ namespace avis::tests
 
     std::unique_ptr<graphics::frame_scheduler>
         make_test_frame_scheduler(test_rhi& hardware_interface, std::uint32_t frames_in_flight = 2);
+
+    // A profiler on the RHI's three queues
+    std::unique_ptr<graphics::gpu_profiler> make_test_gpu_profiler(
+        test_rhi& hardware_interface, std::uint32_t frames_in_flight = 2, std::uint32_t timestamps_per_frame = 64);
 
     // What a begin_frame operation completed with
     struct frame_outcome
