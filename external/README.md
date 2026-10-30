@@ -14,6 +14,7 @@ Vendored third-party sources, pinned to the versions below ([13 §4](../docs/des
 | fastgltf | 0.9.1 | `fastgltf-0.9.1` | MIT | https://github.com/spnda/fastgltf | `fastgltf::fastgltf` (static) | `FASTGLTF_COMPILE_AS_CPP20` `ON`; `FASTGLTF_ENABLE_INSTALL` `OFF` |
 | spdlog | 1.17.0 | `spdlog-1.17.0` | MIT | https://github.com/gabime/spdlog | `spdlog::spdlog` (static) | `SPDLOG_USE_STD_FORMAT` `ON`; `SPDLOG_BUILD_SHARED`, `SPDLOG_BUILD_EXAMPLE`, `SPDLOG_INSTALL` `OFF` |
 | yaml-cpp | 0.9.0 | `yaml-cpp-0.9.0` | MIT | https://github.com/jbeder/yaml-cpp | `yaml-cpp::yaml-cpp` (static) | `YAML_CPP_BUILD_TOOLS`, `YAML_CPP_BUILD_CONTRIB`, `YAML_CPP_BUILD_TESTS`, `YAML_CPP_INSTALL`, `YAML_CPP_FORMAT_SOURCE`, `YAML_BUILD_SHARED_LIBS` `OFF` |
+| xxHash | 0.8.4 | `xxHash-0.8.4` (CMake project in `build/cmake`) | BSD 2-Clause (`LICENSE`; the unused `xxhsum` CLI is GPLv2) | https://github.com/Cyan4973/xxHash | `xxHash::xxhash` (static) | `XXHASH_BUILD_XXHSUM` `OFF`; `BUILD_SHARED_LIBS` `OFF` |
 
 Not vendored here:
 

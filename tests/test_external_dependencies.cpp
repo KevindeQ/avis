@@ -11,6 +11,7 @@
 #include <spdlog/sinks/ringbuffer_sink.h>
 #include <string>
 #include <string_view>
+#include <xxhash.h>
 #include <yaml-cpp/yaml.h>
 
 TEST_CASE("spdlog formats with std::format", "[external][spdlog]")
@@ -48,4 +49,17 @@ TEST_CASE("fastgltf parses a minimal glTF document", "[external][fastgltf]")
     REQUIRE(asset.error() == fastgltf::Error::None);
     CHECK(asset.get().assetInfo.has_value());
     CHECK(asset.get().assetInfo->gltfVersion == "2.0");
+}
+
+// Updating external/xxHash-0.8.4 must update external/README.md too
+static_assert(XXH_VERSION_NUMBER == 804);
+
+TEST_CASE("xxHash's XXH3_64bits matches Python's xxhash.xxh3_64", "[external][xxhash]")
+{
+    constexpr std::string_view input = "avis shader blob";
+
+    // python -c "import xxhash; print(hex(xxhash.xxh3_64_intdigest(b'avis shader blob')))"
+    constexpr XXH64_hash_t expected = 0xb8cb7f355f950193ULL;
+
+    CHECK(XXH3_64bits(input.data(), input.size()) == expected);
 }

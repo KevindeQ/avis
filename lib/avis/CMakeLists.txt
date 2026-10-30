@@ -53,6 +53,7 @@ target_link_libraries(AVIS_LIB
 		# as link-only ones, so d3d12.lib, dxgi.lib and dxguid.lib (D3D12MemoryAllocator's public links) do too.
 		D3D12MemoryAllocator
 		fastgltf::fastgltf
+		xxHash::xxhash
 		yaml-cpp::yaml-cpp
 )
 

@@ -66,3 +66,9 @@ set(YAML_CPP_INSTALL OFF)
 set(YAML_CPP_FORMAT_SOURCE OFF)
 set(YAML_BUILD_SHARED_LIBS OFF)
 add_subdirectory(yaml-cpp-0.9.0 EXCLUDE_FROM_ALL)
+
+# Set xxHash build options. Upstream's CMake project is in build/cmake. It builds a static library from xxhash.c;
+# BUILD_SHARED_LIBS is pinned OFF because its own option() defaults to ON when the cache has no value yet.
+set(XXHASH_BUILD_XXHSUM OFF)
+option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
+add_subdirectory(xxHash-0.8.4/build/cmake xxHash-0.8.4 EXCLUDE_FROM_ALL)

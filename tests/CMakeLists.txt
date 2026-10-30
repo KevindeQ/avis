@@ -30,6 +30,7 @@ target_link_libraries(AVIS_TESTS
 		# include lib/avis/rhi/d3d12/ headers), the others for test_external_dependencies.cpp
 		D3D12MemoryAllocator
 		fastgltf::fastgltf
+		xxHash::xxhash
 		yaml-cpp::yaml-cpp
 
 		Catch2::Catch2WithMain)
