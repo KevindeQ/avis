@@ -134,11 +134,13 @@ target_sources(AVIS_LIB
 		rhi/d3d12/transient_upload.cpp
 		rhi/d3d12/view_descriptions.cpp
 
+		scene/scene.cpp
+		scene/scene_graph.cpp
+
 		threading/parallel_backend.cpp
 		threading/parallel_helpers.cpp
 		threading/pool_thread.cpp
 		threading/thread_handle.cpp
 		threading/thread_pool.cpp
 		threading/thread_priority.cpp
-		threading/thread_state.cpp
-)
+		threading/thread_state.cpp)

@@ -1,17 +1,30 @@
 ﻿qt_add_executable(AVIS_VISUALIZER
-	field_reader.cpp
-    main.cpp
-	scene_provider.cpp
-	scene_provider_renderer.cpp
-	sensor_injector.cpp
-	simulator_driver.cpp
+	main.cpp
+	visualizer_driver.cpp
+	rendering/scene_renderer.cpp
 )
 
+
 qt_add_qml_module(AVIS_VISUALIZER
-    URI visualizer_qt
-	RESOURCE_PREFIX /
-    QML_FILES
+    URI visualizer
+    RESOURCE_PREFIX /avis/imports
+	QML_FILES
         main.qml
+	SOURCES
+		viewport.cpp
+		viewport.h
+)
+
+qt6_add_shaders(AVIS_VISUALIZER "shaders"
+    HLSL 61
+	GLSL "460"
+	NOMSL
+	OPTIMIZED
+    PREFIX
+        "/avis/visualizer"
+    FILES
+        "shaders/fullscreen_triangle.vert"
+        "shaders/fullscreen_texture.frag"
 )
 
 target_compile_features(AVIS_VISUALIZER
@@ -39,14 +52,18 @@ target_compile_definitions(AVIS_VISUALIZER
 target_include_directories(AVIS_VISUALIZER
 	PRIVATE
 		AVIS_LIB
+
+		EnTT::EnTT
 )
 
 target_link_libraries(AVIS_VISUALIZER
 	PRIVATE
-		Qt6::Gui
-		Qt6::Quick
-
 		AVIS_LIB
+
+		EnTT::EnTT
+		Qt6::Gui
+		Qt6::GuiPrivate
+		Qt6::Quick
 )
 
 qt_deploy_windows(AVIS_VISUALIZER ${CMAKE_CURRENT_SOURCE_DIR})

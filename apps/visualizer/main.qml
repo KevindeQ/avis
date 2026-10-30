@@ -1,6 +1,4 @@
-﻿import Avis
-
-import QtQuick
+﻿import QtQuick
 
 Window {
     id: root
@@ -11,22 +9,18 @@ Window {
     minimumWidth: 250
     minimumHeight: 250
 
-    SceneProvider { }
-
-    SimulatorDriver {
-        id: sim_driver
+    Viewport {
+        id: viewport
+        anchors.fill: parent
     }
 
     Timer {
-        id: timer_simulation_tick
+        id: heartbeat_timer
 
         running: true
         repeat: true
-        // Set the interval to 0 so it is triggered once the event queue is
-        // empty. This allows that is called in onTriggered to have control
-        // over the timing.
-        interval: 0
+        interval: 16
 
-        onTriggered: sim_driver.update()
+        onTriggered: VisualizerDriver.tick()
     }
 }

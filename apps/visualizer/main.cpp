@@ -1,7 +1,4 @@
-﻿#include "scene_provider.h"
-#include "simulator_driver.h"
-
-#include "avis/runtime.h"
+﻿#include "avis/runtime.h"
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -37,10 +34,6 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // Declare / Register all used custom QML elements
-    scene_provider::declare_qml();
-    simulator_driver::declare_qml();
-
     // Force usage of Direct3D12 for rendering
     QQuickWindow::setGraphicsApi(QSGRendererInterface::GraphicsApi::Direct3D12);
 
@@ -53,9 +46,7 @@ int main(int argc, char* argv[])
         &app,
         []() { QCoreApplication::exit(-1); },
         Qt::QueuedConnection);
-
-    const QUrl url(u"qrc:/visualizer_qt/main.qml"_qs);
-    engine.load(url);
+    engine.load(QUrl{ "qrc:///avis/imports/visualizer/main.qml" });
 
     return app.exec();
 }
