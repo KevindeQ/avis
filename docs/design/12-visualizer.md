@@ -8,6 +8,7 @@
 | Scene representation (semantics → meshes + materials, §9) | `avis::visualizer::representation` | `AVIS_VISUALIZER` | `apps/visualizer/representation/` |
 | Scene renderer (scene-agnostic, [11](11-renderer.md)) | `avis::visualizer::rendering` | `AVIS_VISUALIZER` | `apps/visualizer/rendering/` |
 | Scene renderer shaders (HLSL data) | — | `AVIS_VISUALIZER` (`avis_add_shaders`) | `data/shaders/visualizer/scene/`, `include/` → `<bin>/data/shaders/visualizer/` |
+| Shader manifest parser (`manifest.yaml` → `graphics::shader_manifest`, §10) | `avis::visualizer::rendering` | `AVIS_VISUALIZER` | `apps/visualizer/rendering/shader_manifest_parser.{h,cpp}` |
 | QML UI | QML module `Avis.Visualizer` | `AVIS_VISUALIZER` (`qt_add_qml_module`) | `apps/visualizer/qml/` |
 | Qt-side blit shaders | — (GLSL → `.qsb`) | `AVIS_VISUALIZER` (`qt_add_shaders`) | `data/shaders/visualizer/qt/` |
 
@@ -43,11 +44,12 @@ apps/visualizer/
     lidar_representation.{h,cpp}   # lidar sweeps → point meshes
     helper_geometry.{h,cpp}        # grid, axes gizmo
   rendering/                       # scene-agnostic renderer (11)
-    frame_loop.{h,cpp}             # sender-based frame chain (09 §4.2), RHI, render graph
+    frame_loop.{h,cpp}             # sender-based frame chain (17 §4), RHI, render graph
     screenshot_capture.{h,cpp}     # capture pass, custom-resolution view, PNG encode (11 §12.1)
     scene_renderer.{h,cpp}         # pass setup
     draw_lists.{h,cpp}             # culling, (key, value) items, 64-bit sort keys, sorting, run building (11 §4)
     pipeline_variant_registry.{h,cpp}
+    shader_manifest_parser.{h,cpp}   # manifest.yaml → graphics::shader_manifest (§10, 12a)
     shared_frame_ring.{h,cpp}      # interop ring (§3)
   ui/
     viewport_item.{h,cpp}          # QQuickRhiItem subclass (replaces viewport.{h,cpp})
@@ -80,11 +82,11 @@ Qt Quick renders with its own QRhi D3D12 device on the Qt render thread. The Avi
 ### 3.2 Setup sequence
 1. `main.cpp` calls `QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D12)` **before** creating the window.
 2. When `QQuickWindow::sceneGraphInitialized` fires, read Qt's adapter from `QRhi::nativeHandles()` → `QRhiD3D12NativeHandles { dev, minimumFeatureLevel, adapterLuidLow, adapterLuidHigh, commandQueue }`.
-3. Create the Avis `rhi::render_hardware_interface` with `adapter = {adapterLuidLow, adapterLuidHigh}` ([09 §3.4](09-rhi.md#34-adapter-selection)). Both devices are now on the same GPU, which shared NT handles require.
+3. Create the Avis `rhi::render_hardware_interface` with `adapter = {adapterLuidLow, adapterLuidHigh}` ([09 §4.5](09-rhi.md#45-adapter-selection)). Both devices are now on the same GPU, which shared NT handles require.
 4. The renderer creates the **shared frame ring** (§3.3) at the viewport's pixel size and exports the handles.
 5. The `viewport_renderer` (Qt render thread) opens the handles on Qt's device: `ID3D12Device::OpenSharedHandle` for the textures and the fences. It wraps each texture with `QRhiTexture::createFrom({ quint64(resource), D3D12_RESOURCE_STATE_COMMON })`.
 
-> Steps 2 and 5 are the **only** places native D3D12 types appear in the Visualizer. They're isolated in `ui/viewport_renderer.cpp` and use Qt's public native-handle API, not Avis RHI internals. The Avis side sees only the opaque `rhi::shared_handle` ([09 §11](09-rhi.md#11-cross-device-sharing-qt-interop)).
+> Steps 2 and 5 are the **only** places native D3D12 types appear in the Visualizer. They're isolated in `ui/viewport_renderer.cpp` and use Qt's public native-handle API, not Avis RHI internals. The Avis side sees only the opaque `rhi::shared_handle` ([09 §13](09-rhi.md#13-cross-device-sharing-rhisharedh)).
 
 ### 3.3 Shared frame ring
 - **3 slots**, each a shared `RGBA8_UNORM` texture (sRGB-encoded values) at viewport resolution.
@@ -117,7 +119,7 @@ sequenceDiagram
     qt->>qt: afterFrameEnd: commandQueue Signal(consumed, m)
 ```
 
-1. **Avis never waits on Qt on the GPU.** Slot reuse is gated on the CPU by `shared_slot_free()` (§3.4). A slot `i` is free when it isn't `showing`, and either `picked[i] == 0` or `consumed ≥ picked[i]`. If no slot is free yet, the sender completes later through `rhi::when_reached(consumed, picked[i])` on the IO context ([09 §11](09-rhi.md#11-cross-device-sharing-qt-interop)). No thread and no queue blocks.
+1. **Avis never waits on Qt on the GPU.** Slot reuse is gated on the CPU by `shared_slot_free()` (§3.4). A slot `i` is free when it isn't `showing`, and either `picked[i] == 0` or `consumed ≥ picked[i]`. If no slot is free yet, the sender completes later through `rhi::sharing::when_reached(consumed, picked[i])`, completed by the RHI's completion driver (§3.4) ([09 §13](09-rhi.md#13-cross-device-sharing-rhisharedh)). No thread and no queue blocks.
 2. **Avis picks any free slot**, not `n % 3`, preferring the one released longest ago.
 3. **Qt only sees completed frames.** `latest_completed` is set only once the frame chain has observed `produced ≥ n` complete. Qt's GPU `Wait(produced, m)` is kept for correctness but is always already satisfied, so a slow Avis frame never delays Qt's UI frame. The cost is about one frame of extra viewport latency.
 4. **`consumed` is signalled after Qt's submission.** `QQuickRhiItemRenderer::render()` runs before Qt executes its command list in `QRhi::endFrame`, so a `Signal` there would land too early. `viewport_renderer` connects to `QQuickWindow::afterFrameEnd` with `Qt::DirectConnection` (it's emitted on the render thread after `endFrame`) and issues `commandQueue->Signal(consumed, m)` there, through `QRhiD3D12NativeHandles::commandQueue`.
@@ -130,11 +132,11 @@ sequenceDiagram
 > To verify early with a quick test against Qt 6.11: that `afterFrameEnd` is emitted after `QRhi::endFrame` has submitted, for the threaded render loop on Windows. If not, use the fallback in rule 4.
 
 ### 3.4 Frame pacing
-The Avis renderer has **no dedicated render thread**. Frames are produced by a sender chain ([09 §4.2](09-rhi.md#42-frame-contexts-sender-based-non-blocking)) owned by `frame_loop`, inside an `async_scope`:
+The Avis renderer has **no dedicated render thread**. Frames are produced by a sender chain ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)) owned by `frame_loop`, inside an `async_scope`:
 
 ```text
 when_all(begin_frame(), next_frame_tick(), shared_slot_free())
-  → continues_on(parallel scheduler) → prepare (extract snapshot, interpolate, build + compile graph)
+  → continues_on(parallel scheduler) → prepare (gpu_profiler::prepare_frame, extract snapshot, interpolate, build + compile graph)
   → let_value: render_graph::execute (bulk recording, submit)
   → present_to_shared + signal produced fence → end_frame
   → re-arm the next frame (unless stop was requested)
@@ -143,11 +145,13 @@ in parallel, per frame: when_reached(produced, n) → publish latest_completed �
 ```
 
 - `next_frame_tick()` is an `asio::steady_timer` sender on the IO context. It paces frames at the display refresh rate reported by the window's screen, or at `render.maximum_fps`, and at 5 fps when the window is minimised or occluded.
-- `shared_slot_free()` is the **CPU-side gate** of the interop ring (§3.3, rule 1). It completes with a free slot index: inline when one is free (the normal case), otherwise through `when_reached(consumed, …)` on the IO context. It never issues a GPU wait, so Qt not rendering can't stall the Avis queues.
+- `shared_slot_free()` is the **CPU-side gate** of the interop ring (§3.3, rule 1). It completes with a free slot index: inline when one is free (the normal case), otherwise through `when_reached(consumed, …)`, which completes from the RHI's completion driver (below). It never issues a GPU wait, so Qt not rendering can't stall the Avis queues.
 - Publishing a frame to Qt is a separate small sender per frame (`when_reached(produced, n)`), spawned into the same async scope. The next frame doesn't wait for it.
-- No stage blocks a thread: GPU completion and timers resume the chain from IO completions, and CPU work runs on parallel workers.
+- No stage blocks a thread: GPU completions resume the chain from the completion driver, timers from IO completions, and CPU work runs on parallel workers.
+- **Driving GPU completions.** The RHI owns no thread ([09 §5.2](09-rhi.md#52-driving-completions)). A `QWinEventNotifier` on `rhi::completion_driver::completion_event()`, in Qt's GUI event loop, calls `poll_completions()` whenever the event fires (D-93). That completes every GPU wait of the Visualizer: `begin_frame` (which doesn't drive the RHI itself, D-94), `shared_slot_free()`, the `when_reached` publishes, uploads and readbacks, and it frees destroyed objects. It covers waits on Qt's `consumed` fence while Avis renders nothing. Completions run on the GUI thread, so every continuation that does real work moves to the parallel scheduler with `continues_on` (each stage above already starts with one).
+- **Who holds the RHI.** The renderer creates the `rhi::render_hardware_interface` and is its only holder (D-96). It builds the views each component takes ([09 §4.3](09-rhi.md#43-subsystem-views)): `completion_driver` for the notifier; `synchronization` and `transient_objects` for the frame scheduler; `transient_objects` and the queues for the GPU profiler; `resources`, `command_lists` and the queues for the render graph, which also gets the profiler; `memory` and `resources` for its transient pool; and the upload queue, readback queue and pipeline cache get theirs.
 - The chain keeps running while the simulation is paused, so camera motion stays fluid.
-- Errors (device lost) arrive on `set_error`, and `frame_loop` turns them into the fatal-error path (§7). Stopping requests stop on the scope's stop source; the chain finishes its current frame and completes with `set_stopped`. The controller then waits for the scope to drain at shutdown.
+- Errors (device lost) arrive on `set_error`, and `frame_loop` turns them into the fatal-error path (§7). The exception is `transient_memory_exhausted` from `render_graph::execute`: the frame's upload memory or descriptors ran out, so `frame_loop` ends the frame with no submissions, skips it and re-arms the next one ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh), D-98). The log warning names the budget to raise. Stopping requests stop on the scope's stop source; the chain finishes its current frame and completes with `set_stopped`. The controller then waits for the scope to drain at shutdown. After that the renderer destroys the notifier and the graphics-layer objects (render graph, GPU profiler, frame scheduler, upload and readback queues, pipeline cache), then the RHI, whose destructor waits for the GPU (`render_hardware_interface::wait_idle`, D-93).
 
 ## 4. Threads (Visualizer view)
 See [01 §4.1](01-system-architecture.md#41-visualizer). Communication paths:
@@ -255,7 +259,8 @@ Available in every clock state, from *File → Screenshot* and a toolbar button 
 - **Video capture** of the viewport is out of scope for this iteration ([00 §3](00-overview.md#3-scope-of-iteration-1)).
 
 ## 7. Error presentation
-- Startup capability failure ([09 §3.3](09-rhi.md#33-capability-gate)): a modal dialog naming the missing feature (for example *"Shader Model 6.6 is required; your GPU/driver reports 6.5"*), then exit.
+- Startup capability failure ([09 §4.4](09-rhi.md#44-capability-gate)): a modal dialog naming the missing feature (for example *"Shader Model 6.6 is required; your GPU/driver reports 6.5"*), then exit.
+- Startup shader failure (§10): a missing or malformed `manifest.yaml`, a missing blob, a hash mismatch or a missing shader. A modal dialog with the message (file, line and key path for manifest errors) and the log path, then exit ([12a §5](12a-visualizer-shader-manifest.md#5-shader-loading-at-visualizer-startup)).
 - Lockstep failures ([02 §7](02-communication.md#7-failure-handling)), meaning silence for `communication_timeout` or a fault, not slowness: the simulation pauses, a non-modal banner over the viewport offers *Retry step*, *Reload plug-ins* or *Stop*, and the detail goes to the log. *Reload plug-ins* re-sends `load`, which rescans first. A pinned plug-in (abandoned after an SEH fault) reloads from the same build, and the banner says a Driver restart is needed to pick up a rebuild. With a Driver in debug mode, timeouts and liveliness loss don't pause ([02 §7.1](02-communication.md#71-with-a-driver-in-debug-mode)).
 - Unrecoverable render error (device lost): a modal dialog with the log path, then a controlled exit. The scenario is autosaved first if dirty.
 
@@ -296,3 +301,15 @@ The representation creates all dynamic geometry, so it is the place that knows w
   3. **Skip new geometry.** If that's still not enough, the new mesh or chunk isn't created (an update keeps the previous version), and a rate-limited warning goes to the log and the statistics overlay.
 - The current reduction level (sweeps dropped, prefix fraction, chunks skipped) is shown in the statistics overlay, so a thinned-out picture is never mistaken for missing Driver data.
 - These choices are presentation only: they never change what the Driver sends, so determinism is unaffected.
+
+## 10. Shader loading
+
+The Visualizer owns where its shaders come from. The graphics layer loads a `graphics::shader_library` from a `graphics::shader_manifest` and creates pipelines from it through its pipeline cache [18](18-graphics-shaders-and-pipelines.md); the RHI only sees bytecode. Neither knows the build's `manifest.yaml`. The Visualizer reads and parses that file itself, with its own parser ([12a](12a-visualizer-shader-manifest.md)):
+
+1. Resolve the shader directory: `render.shader_directory`, or `<executable directory>/data/shaders/visualizer` ([11 §13](11-renderer.md#13-shaders-location-and-build)).
+2. Read `manifest.yaml` with `io::read_file`.
+3. On a parallel worker, `rendering::parse_shader_manifest(text, path)` → `graphics::shader_manifest`. Errors carry `file:line:column` and a key path (`shaders[3].stage`).
+4. `graphics::load_shader_library(manifest, directory)`: reads the blobs, checks their xxh3 hashes, creates the `graphics::shader_library`.
+5. Create the renderer's pipelines with `graphics::pipeline_cache` from the library ([18 §11](18-graphics-shaders-and-pipelines.md#11-graphicspipeline_cacheh)).
+
+This runs during renderer startup, after the RHI is created (§3.2 step 3) and before the first frame. Any failure is a startup error (§7). The parser is a pure function, tested in `AVIS_TESTS` against hand-written cases and against the manifest the build actually wrote (12a §6).

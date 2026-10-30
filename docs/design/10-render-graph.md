@@ -63,6 +63,15 @@ namespace avis::graphics
     enum class pass_type : std::uint8_t { graphics, compute, copy };
     enum class compute_queue_hint : std::uint8_t { graphics, async_compute };
 
+    // The last submission of each queue the graph submitted to in one frame (at most one per queue), for end_frame.
+    // A graphics point alone wouldn't cover async compute work that no later graphics batch waits on.
+    struct submitted_frame
+    {
+        std::array<rhi::synchronization_point, 3> points{};
+        std::uint32_t count = 0;
+        std::span<const rhi::synchronization_point> last_submissions() const noexcept { return { points.data(), count }; }
+    };
+
     // virtual resources: handles into the graph's resource table, valid for one frame
     class resource
     {
@@ -85,7 +94,14 @@ namespace avis::graphics
     class render_graph
     {
     public:
-        render_graph(rhi::render_hardware_interface& hardware_interface, transient_resource_pool& pool);
+        // The RHI views it uses (09 §4.3, D-96): resource queries for the bag, acquiring lists, submitting per queue.
+        // With a profiler (17 §6), every pass is timed and recording groups are sized from the timings (§7).
+        render_graph(rhi::resources resources, rhi::command_lists command_lists,
+                     rhi::queue<rhi::queue_type::graphics> graphics_queue,
+                     rhi::queue<rhi::queue_type::compute> compute_queue,
+                     rhi::queue<rhi::queue_type::copy> copy_queue,
+                     transient_resource_pool& pool,
+                     gpu_profiler* profiler = nullptr);
 
         // setup runs immediately, inside the call; the returned reference stays valid until the next reset()
         template<typename PassData, std::invocable<render_pass_builder&, PassData&> Setup,
@@ -112,8 +128,9 @@ namespace avis::graphics
 
         void reset();                                           // start a new frame: clears passes, resets the arena
         void compile();
-        // records (bulk on the parallel scheduler) and submits; completes with the last graphics synchronization point
-        auto execute(const rhi::frame_token& frame) -> sender_of<rhi::synchronization_point>;
+        // records (bulk on the parallel scheduler) and submits; completes with the last submission of every queue
+        // the graph submitted to (§7), all of which end_frame needs
+        auto execute(const frame_token& frame) -> sender_of<submitted_frame>;   // graphics::frame_token (17)
 
         const graph_debug_information& debug_information() const;   // resources/passes for the debug UI (§9)
     };
@@ -139,13 +156,13 @@ namespace avis::graphics
 - `texture_description` supports **relative sizes** (`size_mode::view_relative`, scale 0.5 for half-resolution GTAO), so passes declare sizes independently of the output resolution.
 - **Why a function per pass type:** the context type passed to the execute lambda is fixed at compile time, so a compute pass can never call `draw()`:
 
-| Add function | Execute receives | Command list view in the context | Queue |
+| Add function | Execute receives | Recorder in the context | Queue |
 |---|---|---|---|
-| `add_graphics_pass` | `graphics_pass_context&` | `rhi::graphics_command_list` | graphics |
-| `add_compute_pass` | `compute_pass_context&` | `rhi::compute_command_list` | compute when hinted `async_compute` and enabled, otherwise graphics |
-| `add_copy_pass` | `copy_pass_context&` | `rhi::copy_command_list` | copy when eligible ([§6.2](#62-scheduling-and-queue-assignment)), otherwise graphics |
+| `add_graphics_pass` | `graphics_pass_context&` | `rhi::graphics_recorder` | graphics |
+| `add_compute_pass` | `compute_pass_context&` | `rhi::compute_recorder` | compute when hinted `async_compute` and enabled, otherwise graphics |
+| `add_copy_pass` | `copy_pass_context&` | `rhi::copy_recorder` | copy when eligible ([§6.2](#62-scheduling-and-queue-assignment)), otherwise graphics |
 
-  When a compute or copy pass runs on the graphics queue, its context holds a **recording-only narrowed view** of the graphics list ([09 §4.3](09-rhi.md#43-command-lists-and-multi-threaded-recording)). The pass still sees only compute (or copy) operations, whichever queue it lands on.
+  A pass only ever gets a **recorder** (`rhi::command_recorder<Queue>`, [09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh), D-92), never the owning list: the graph keeps the `rhi::command_list`s and submits them (§7), so no pass can submit or discard one. When a compute or copy pass runs on the graphics queue, its recorder is cut from the graphics list with `narrow()`. The pass sees the same type and only compute (or copy) operations, whichever queue it lands on; only `recorder().submission_queue()` tells them apart.
 
 ```cpp
 namespace avis::graphics
@@ -153,14 +170,14 @@ namespace avis::graphics
     class graphics_pass_context
     {
     public:
-        rhi::graphics_command_list& command_list() noexcept;
-        rhi::gpu_address allocate_constants(std::span<const std::byte> data);   // frame linear allocator (09 §8.2)
+        rhi::graphics_recorder& recorder() noexcept;                         // valid during execute only
+        rhi::gpu_address allocate_constants(std::span<const std::byte> data);   // frame linear allocator (17 §4)
         template<typename T> rhi::gpu_address allocate_constants(const T& value);
         std::uint32_t render_width() const noexcept;
         std::uint32_t render_height() const noexcept;
     };
     // compute_pass_context and copy_pass_context have the same shape with
-    // rhi::compute_command_list / rhi::copy_command_list (copy contexts have no constant allocation)
+    // rhi::compute_recorder / rhi::copy_recorder (copy contexts have no constant allocation)
 }
 ```
 
@@ -184,15 +201,15 @@ const gtao_data& gtao = graph.add_compute_pass<gtao_data>("gtao",
     },
     [=](const gtao_data& data, const resource_bag& resources, compute_pass_context& context)
     {
-        rhi::compute_command_list& command_list = context.command_list();
-        command_list.set_pipeline(pipelines.gtao_main);
-        command_list.push_constants(pack(resources.srv(data.depth_mips),
-                                         resources.srv(data.normals),
-                                         resources.uav(data.ambient_occlusion)));
-        command_list.set_pass_constants(context.allocate_constants(gtao_parameters));
-        command_list.dispatch(divide_up(resources.width(data.ambient_occlusion), 8),
-                              divide_up(resources.height(data.ambient_occlusion), 8),
-                              1);
+        rhi::compute_recorder& recorder = context.recorder();
+        recorder.set_pipeline(pipelines.gtao_main);
+        recorder.push_constants(pack(resources.srv(data.depth_mips),
+                                     resources.srv(data.normals),
+                                     resources.uav(data.ambient_occlusion)));
+        recorder.set_pass_constants(context.allocate_constants(gtao_parameters));
+        recorder.dispatch(divide_up(resources.width(data.ambient_occlusion), 8),
+                          divide_up(resources.height(data.ambient_occlusion), 8),
+                          1);
     },
     compute_queue_hint::async_compute);
 ```
@@ -296,7 +313,7 @@ namespace avis::graphics
 | Storage | A list of fixed-size blocks (default 256 KiB). Allocation bumps an offset inside the current block, with alignment padding. Requests larger than half a block get a dedicated block of their own size. |
 | Destructors | `create<T>` pushes a small destructor record (pointer + `void(*)(void*)`) onto an intrusive list *inside the arena* when `T` isn't trivially destructible. `reset()` walks the list in reverse. This is what lets `PassData` and lambdas with non-trivial captures live in the arena. |
 | Reset | `render_graph::reset()` calls `linear_arena::reset()` at the start of each frame's build. Blocks are kept, up to `maximum_retained_blocks`, so a steady-state frame doesn't allocate from the OS at all. Blocks beyond the limit are released. |
-| Lifetime | One arena per `render_graph`. The frame chain is strictly sequential ([09 §4.2](09-rhi.md#42-frame-contexts-sender-based-non-blocking)): frame *N+1*'s build starts only after frame *N*'s recording has finished, so the arena can be reset safely. The GPU never reads arena memory. |
+| Lifetime | One arena per `render_graph`. The frame chain is strictly sequential ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)): frame *N+1*'s build starts only after frame *N*'s recording has finished, so the arena can be reset safely. The GPU never reads arena memory. |
 | Threading | Not thread-safe. Allocation happens only during build and compile, which run on one thread. During parallel recording the arena is read-only, apart from per-group scratch blocks reserved before the `bulk` starts. |
 | Type-erased callbacks | Execute lambdas are stored with `create<Lambda>` plus a function-pointer trampoline (`void(*)(const void* callable, const void* data, const resource_bag&, context&)`). No `std::function` and no heap allocation per pass. |
 
@@ -304,8 +321,8 @@ namespace avis::graphics
 An extremely simple but complete frame: clear a transient color target, draw a full-screen triangle into it, and copy the result into an imported output texture (for example, a slot of the shared texture ring). It shows every step from frame acquisition to `end_frame`:
 
 ```cpp
+#include "avis/graphics/frame_scheduler.h"
 #include "avis/graphics/render_graph.h"
-#include "avis/rhi/render_hardware_interface.h"
 #include "avis/runtime.h"
 
 namespace graphics = avis::graphics;
@@ -323,16 +340,16 @@ struct present_data
 };
 
 // builds, compiles and executes one frame; completes when the frame is submitted
-auto render_one_frame(rhi::render_hardware_interface& hardware_interface,
+auto render_one_frame(graphics::frame_scheduler& frames,                // frames left the RHI (17), D-96
                       graphics::render_graph& graph,
                       rhi::graphics_pipeline_handle triangle_pipeline,
                       rhi::texture_handle output_texture)
 {
     auto parallel = stdexec::get_parallel_scheduler();
 
-    return hardware_interface.begin_frame()                              // completes when a frame context is free
+    return frames.begin_frame()                                          // completes when a frame context is free
          | stdexec::continues_on(parallel)
-         | stdexec::let_value([&, triangle_pipeline, output_texture](rhi::frame_token& frame)
+         | stdexec::let_value([&, triangle_pipeline, output_texture](graphics::frame_token& frame)
            {
                // ---- build ----
                graph.reset();
@@ -351,15 +368,15 @@ auto render_one_frame(rhi::render_hardware_interface& hardware_interface,
                    [triangle_pipeline](const triangle_data& data, const graphics::resource_bag& resources,
                                        graphics::graphics_pass_context& context)
                    {
-                       rhi::graphics_command_list& command_list = context.command_list();
+                       rhi::graphics_recorder& recorder = context.recorder();
                        rhi::texture_view target = resources.render_target_view(data.color);
                        const float clear_color[4] = { 0.1f, 0.1f, 0.1f, 1.0f };
-                       command_list.clear_render_target(target, clear_color);
-                       command_list.set_render_targets({ &target, 1 }, std::nullopt);
-                       command_list.set_viewport({ .width = static_cast<float>(context.render_width()),
-                                                   .height = static_cast<float>(context.render_height()) });
-                       command_list.set_pipeline(triangle_pipeline);
-                       command_list.draw(3);                             // full-screen triangle from SV_VertexID
+                       recorder.clear_render_target(target, clear_color);
+                       recorder.set_render_targets({ &target, 1 }, std::nullopt);
+                       recorder.set_viewport({ .width = static_cast<float>(context.render_width()),
+                                               .height = static_cast<float>(context.render_height()) });
+                       recorder.set_pipeline(triangle_pipeline);
+                       recorder.draw(3);                                 // full-screen triangle from SV_VertexID
                    });
 
                graph.add_copy_pass<present_data>("present",
@@ -371,8 +388,8 @@ auto render_one_frame(rhi::render_hardware_interface& hardware_interface,
                    [](const present_data& data, const graphics::resource_bag& resources,
                       graphics::copy_pass_context& context)
                    {
-                       context.command_list().copy_texture(resources.texture_handle(data.output), {},
-                                                           resources.texture_handle(data.source), {});
+                       context.recorder().copy_texture(resources.texture_handle(data.output), {},
+                                                       resources.texture_handle(data.source), {});
                    });
 
                // ---- compile ----
@@ -380,15 +397,15 @@ auto render_one_frame(rhi::render_hardware_interface& hardware_interface,
 
                // ---- execute ----
                return graph.execute(frame)                               // bulk recording + submission
-                    | stdexec::then([&hardware_interface, &frame](rhi::synchronization_point last)
+                    | stdexec::then([&frames, &frame](const graphics::submitted_frame& submitted)
                       {
-                          hardware_interface.end_frame(std::move(frame), { &last, 1 });
+                          frames.end_frame(std::move(frame), submitted.last_submissions());
                       });
            });
 }
 
 // usage (inside the renderer's async scope; nothing blocks):
-// scope.spawn(render_one_frame(hardware_interface, graph, triangle_pipeline, shared_ring.slot(n)));
+// scope.spawn(render_one_frame(frames, graph, triangle_pipeline, shared_ring.slot(n)));
 ```
 
 What happens: `triangle` writes a transient texture, and `present` reads it and writes the imported output, so neither is culled. The compiler inserts `render_target → copy_source` on `color` and `common → copy_destination → common` on `output`. The copy pass falls back to the graphics queue, because `color` isn't in `common` layout ([§6.2](#62-scheduling-and-queue-assignment)). Both passes form one recording group and one submission.
@@ -457,7 +474,7 @@ For each resource, walk its uses in execution order and compute `access_state` t
 ### 6.4 Aliasing and transient memory
 1. **Lifetime:** for every transient resource, `[first_use, last_use]` in global execution order (pass index). For resources touched by async compute batches, the interval is widened to the span between the fences that bound those batches, because concurrently executing queues can't share memory safely.
 2. **Placement:** resources are sorted by size (descending) and placed into **transient heaps** with a greedy interval-graph allocation. A resource can take an offset range already occupied by another only when their lifetimes don't overlap. Alignment is 64 KiB (4 MiB for MSAA, which is unused).
-3. **Heaps:** the `transient_resource_pool` owns a set of placed-resource heaps per frame in flight (`heap_kind::render_targets_and_textures` and `heap_kind::buffers`, combined when Tier 2 allows). It grows in 64 MiB steps on demand and shrinks after 120 frames under the high-water mark.
+3. **Heaps:** the `transient_resource_pool` takes the `rhi::memory` and `rhi::resources` views (D-95, D-96): it creates heaps and placed resources through `memory` (`requirements`, `create_heap`, `create_placed_texture`, `create_placed_buffer`, `destroy(heap_handle)`) and destroys evicted placed resources through `resources::destroy`. It owns a set of placed-resource heaps per frame in flight (`heap_kind::render_targets_and_textures` and `heap_kind::buffers`, combined when Tier 2 allows). It grows in 64 MiB steps on demand and shrinks after 120 frames under the high-water mark.
 4. **Physical resource cache:** placed resources are cached by `(description hash, heap, offset)` across frames, so a steady-state frame creates no D3D12 resources. Bindless SRV/UAV indices for transient resources come from the **dynamic descriptor region** each frame.
 5. **Aliasing barriers:** the first use of a resource that shares memory with an earlier one gets `layout undefined → target` with `discard` (§6.3), followed by a clear or a full overwrite. Passes that write only part of a fresh aliased resource are flagged at compile time, and must declare `needs_clear`.
 6. Aliasing can be switched off (`render.graph_aliasing: false`) for debugging, and is always off for resources selected in the debug blit pass.
@@ -476,13 +493,15 @@ struct compiled_graph
 
 ## 7. Execution phase
 1. **Materialise:** for each transient resource, look up or create the placed resource in the pool, then allocate dynamic descriptors (SRV, UAV per mip) and RTV/DSV views. Imported resources map directly. The results fill the **`resource_bag`** (§3.4).
-2. **Record in parallel:** the ordered pass list (per queue) is split into **recording groups** of about 1 ms estimated GPU work. Estimates come from the previous frame's GPU timings; without timings, a group is 4 passes. Groups are recorded in parallel with `stdexec::bulk` on the parallel scheduler ([15 §4.1](15-parallel-scheduler.md#41-scheduler)). `execute` returns a sender: the bulk is composed into the frame chain with `let_value`, so nothing waits on it ([09 §4.2](09-rhi.md#42-frame-contexts-sender-based-non-blocking)). Each group acquires its own command list of the matching queue type (`render_hardware_interface::acquire_command_list<Queue>`, [09 §4.3](09-rhi.md#43-command-lists-and-multi-threaded-recording)), and for each pass:
+2. **Record in parallel:** the ordered pass list (per queue) is split into **recording groups** of about 1 ms estimated GPU work. Estimates come from the GPU profiler's timings of frame *N − F* (`completed_gpu_timings`, [17 §6](17-graphics-frames-and-transfers.md#6-graphicsgpu_profilerh)); without a profiler or timings, a group is 4 passes. Groups are recorded in parallel with `stdexec::bulk` on the parallel scheduler ([15 §4.1](15-parallel-scheduler.md#41-scheduler)). `execute` returns a sender: the bulk is composed into the frame chain with `let_value`, so nothing waits on it ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)). Each group acquires its own command list of the matching queue type (`rhi::command_lists::acquire<Queue>`, the RHI's command-list view, [09 §4.3](09-rhi.md#43-subsystem-views), [09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)) and keeps it until submit. Every pass in the group records through a recorder of its own type cut from that list: the list's own recorder for a pass of the list's type, `narrow()` for a compute or copy pass on the graphics queue (D-92). The acquire returns a `result` ([D-86](09-rhi.md#d-86-result-from-acquire_command_list)); a failure (out of memory, device lost) makes `execute` complete with `set_error`, and the lists already acquired for the frame are discarded when the graph destroys them. For each pass, the group:
    - emits the pass's barrier batch,
-   - `begin_event(pass name)` and `begin_timing`,
+   - `begin_event(pass name)` and, with a profiler, `begin_timing`,
    - calls the execute lambda with its pass data, the `resource_bag` and the pass context of the type fixed by its add function,
    - `end_timing` and `end_event`.
+
+   **Frame memory exhaustion** (17 Q3, D-98): when materialise or a pass's `allocate_constants` finds the frame's allocator or descriptor range full, `execute` completes with `set_error(transient_memory_exhausted)` once the groups have finished, and submits nothing. The lists already acquired are discarded when the graph destroys them, and the frame chain skips the frame ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)). `allocate_constants` returns a plain address, so it reports the failure by throwing `avis::runtime_error`, which the group catches.
 3. **Submit:** after all groups finish, the command lists are submitted **in order** per queue, with the waits and signals from the compiled batches. Imported resources with pending `upload_ticket`s add a wait on the copy queue's synchronization point to the first batch that uses them.
-4. **End of frame:** final-state transitions for imported resources are recorded in a trailing list per queue that used them. The returned `synchronization_point` is handed to `render_hardware_interface::end_frame`.
+4. **End of frame:** final-state transitions for imported resources are recorded in a trailing list per queue that used them. `execute` completes with a `submitted_frame` holding the last submission of every queue the graph used (graphics, async compute, copy), which is handed to `end_frame`. All of them are needed: async compute work whose result no later graphics batch waits on (a histogram read next frame, for example) still reads the frame's upload memory and descriptors, so the frame context may only be recycled once it's complete too.
 
 Determinism of recording: command list contents don't depend on which worker recorded them, and submission order is fixed.
 

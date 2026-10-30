@@ -25,7 +25,7 @@ Deliberately **not** required (D-62, D-63):
 | Use case | Mechanism | Document |
 |---|---|---|
 | Parallel render command recording | `stdexec::bulk` over recording groups, composed into the frame chain | [10 §7](10-render-graph.md#7-execution-phase) |
-| Parallel PSO creation at startup | `bulk` over pipeline descriptions | [09 §9.2](09-rhi.md#92-pso-cache) |
+| Parallel PSO creation at startup | `bulk` over pipeline descriptions | [18 §11](18-graphics-shaders-and-pipelines.md#11-graphicspipeline_cacheh) |
 | CPU work after IO (PNG/glTF decode, point-cloud tile decode, scenario parsing) | `continues_on(stdexec::get_parallel_scheduler())` after an IO sender | [07 §3](07-io-layer.md#3-execution-model), [08 §5](08-scene-management.md#5-assets-gltf) |
 | Driver sensor decode during prefetch | IO sender → `continues_on` → decode | [05 §3.1](05-driver.md#31-sensor-replay) |
 
@@ -43,7 +43,7 @@ flowchart LR
 
 ### 3.1 Replacing the backend at link time
 - `stdexec::get_parallel_scheduler()` asks `stdexec::parallel_scheduler_replacement::query_parallel_scheduler_backend()` for a `std::shared_ptr<parallel_scheduler_backend>` on **every call**, and wraps it in a `parallel_scheduler`.
-- The vendored stdexec only **declares** that function. Its default definition (a lazily created, process-wide `exec::static_thread_pool` with `hardware_concurrency` threads) is compiled only when `STDEXEC_PARALLEL_SCHEDULER_HEADER_ONLY` is defined or when the optional `STDEXEC::parallel_scheduler` library (`STDEXEC_BUILD_PARALLEL_SCHEDULER`) is linked. **Avis uses neither.** `AVIS_LIB` provides the only definition, in `parallel_backend.cpp`.
+- The vendored stdexec only **declares** that function. Its default definition (a lazily created, process-wide `exec::static_thread_pool` with `hardware_concurrency` threads) is compiled only when `STDEXEC_PARALLEL_SCHEDULER_HEADER_ONLY` is defined or when the optional `STDEXEC::parallel_scheduler` library (`STDEXEC_BUILD_PARALLEL_SCHEDULER`) is linked. **Avis uses neither.** `AVIS_LIB` provides the only definition, in `runtime.cpp`, which fails to compile with an `#error` if either macro is defined.
 - This is the link-time replacement the standard intends, and it doesn't rely on weak symbols, which MSVC doesn't have. If someone enables stdexec's default as well, the link fails with a duplicate symbol, so the mistake is loud. The deprecated run-time hook `set_parallel_scheduler_backend` is not used.
 - Avis's definition lives in `runtime.cpp` and returns the live runtime's backend, or `nullptr`. The runtime publishes its backend in a file-level atomic there at the end of construction and clears it at the start of shutdown (§5); nothing else can publish one, so there's no install function. The cost is that the parallel scheduler can only be used, and tested, with a runtime alive (the runtime fixture, [14 §2](14-library-runtime.md#2-api)). With `nullptr`, `get_parallel_scheduler()` throws `std::runtime_error`. Using the parallel scheduler with no runtime alive is a programming error, like the runtime's own accessors ([14 §5](14-library-runtime.md#5-static-access-rules)).
 
@@ -93,7 +93,8 @@ Like the IO layer ([07 §5](07-io-layer.md#5-error-propagation)), Avis pipelines
 
 ### 4.3 Waiting
 - `stdexec::sync_wait` **must not be called from parallel work**: it would block a worker and could deadlock when every worker waits. Library code calls `avis::threading::sync_wait` instead. It throws `std::logic_error` when the thread-local marker of §3.2 is set (in every build, because the check is cheap and testable) and otherwise forwards to `stdexec::sync_wait`.
-- Other threads (the step executor, tests, shutdown code) may call `sync_wait`. The renderer never does: its frame chain composes the recording `bulk` with `let_value` ([09 §4.2](09-rhi.md#42-frame-contexts-sender-based-non-blocking)).
+- The same rule covers **IO threads**: a wait in an IO context body could deadlock the completions it waits for. Each body runs inside a `detail::forbid_blocking_waits` scope (a second thread-local marker), and `sync_wait` throws there too. `avis::threading::sync_wait_result` ([07 §5.2](07-io-layer.md#52-consuming-io-senders)) goes through `sync_wait`, so it has the same checks.
+- Other threads (the step executor, tests, shutdown code) may call `sync_wait`. The renderer never does: its frame chain composes the recording `bulk` with `let_value` ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)).
 - Inside parallel work, composition (`let_value`, `when_all`) replaces blocking. Work may block only briefly. Long or indefinite blocking (waiting on a fence, sleeping on IO) belongs to IO senders or to long-running pool threads ([06](06-thread-pool.md)).
 
 ### 4.4 Fire-and-forget
@@ -126,7 +127,7 @@ auto image = avis::io::read_file(path)
 ## 6. Determinism and priorities
 - Which worker runs a piece of work, and in what order, varies between runs. Driver code on the simulation path that uses the parallel scheduler must therefore reduce per-index results **in index order** ([03 §6](03-simulation-core.md#6-determinism-rules)). Plug-in code never runs on parallel workers.
 - **No priorities** in iteration 1: all parallel work is equal. Frame-critical recording competes with background decode. The mitigations are the pool's LIFO local queues (a recording batch issued from the frame chain is picked up first) and keeping decode work small (one image or tile per operation). A priority lane would need a second scheduler and is out of scope.
-- Per-thread state that a component needs on parallel workers (for example the RHI's command allocator pools) is keyed by the component's own per-thread slot, not by a worker index ([09 §4.3](09-rhi.md#43-command-lists-and-multi-threaded-recording)). The parallel scheduler exposes no worker index.
+- Per-thread state that a component needs on parallel workers (for example the RHI's command allocator pools) is keyed by the component's own per-thread slot, not by a worker index ([09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)). The parallel scheduler exposes no worker index.
 
 ## 7. Configuration
 From `runtime_configuration::parallel` ([14 §3](14-library-runtime.md#3-configuration)):
@@ -140,5 +141,5 @@ From `runtime_configuration::parallel` ([14 §3](14-library-runtime.md#3-configu
 - `schedule` completes on a worker; `bulk` covers `[0, n)` exactly once for sizes around the chunking thresholds; an exception in a `bulk` body arrives as one `set_error`, mapped to `avis::error` by `into_internal_error()`.
 - Stop: a receiver whose stop token is signalled completes with `set_stopped()`.
 - After `detach()`, a scheduler copied earlier completes new operations with `set_stopped()`.
-- `avis::threading::sync_wait` throws on a parallel worker and works on other threads.
+- `avis::threading::sync_wait` throws on a parallel worker and on an IO thread, and works on other threads.
 - Runtime shutdown with no outstanding parallel work leaves no worker running (thread count before and after).
