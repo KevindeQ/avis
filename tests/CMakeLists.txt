@@ -60,6 +60,7 @@ target_sources(AVIS_TESTS
 		test_graphics_public_headers.cpp
 		test_graphics_readback_queue.cpp
 		test_graphics_shader_library.cpp
+		test_graphics_shader_loading.cpp
 		test_graphics_upload_queue.cpp
 		test_helpers.cpp
 		test_io_context.cpp
