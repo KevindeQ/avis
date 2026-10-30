@@ -10,6 +10,8 @@
 | Tests | `tests/test_graphics_public_headers.cpp`, `tests/test_graphics_error.cpp`, `tests/test_graphics_frame_scheduler.cpp`, `tests/test_graphics_gpu_profiler.cpp`, `tests/test_graphics_upload_queue.cpp`, `tests/test_graphics_readback_queue.cpp`, `tests/test_graphics_gpu_completion_thread.cpp`; helper `tests/helpers/graphics_fixture.h/.cpp` |
 | Prerequisites | [Task 6](06-rhi.md): every RHI view used here (`synchronization`, `transient_objects`, `resources`, `command_lists`, `queue<Queue>` with a thread-safe `submit`, D-101), `copyable_footprint`, the test fixture `tests/helpers/rhi_fixture.h` and `tests/helpers/rhi_waits.h`. [Task 2](02-thread-pool.md) for `gpu_completion_thread`. |
 
+> **Status (2026-10-30): done.** All 49 `[graphics]` test cases pass in Debug, Release and an AddressSanitizer build, including 20 random-order runs each in Debug and ASan; the full Debug suite (272 test cases) passes too. One planned test was dropped: the 7.2 reset check, which the RHI can't detect (see *As implemented*). Decisions made while implementing are under *As implemented*.
+
 The graphics layer's first policies on top of the RHI: frame pacing with *F* frames in flight and the per-frame services (frame scheduler), named GPU timings (GPU profiler), CPU→GPU uploads (upload queue), GPU→CPU readbacks (readback queue), and the thread that drives an RHI's completions for applications without an event loop (`gpu_completion_thread`). Everything here uses only public RHI calls, through the views it takes as parameters (D-96). None of it takes `rhi::completion_driver` except `gpu_completion_thread`, whose job is to drive.
 
 **Not in this task.** The shader library, binding layout, root signatures and pipeline cache ([task 8](08-graphics-shaders-and-pipelines.md)); the render graph and its transient resource pool ([task 9](09-render-graph.md)); the renderer's use of these pieces (11) and the Visualizer's frame chain and Qt completion driver (12).
@@ -176,7 +178,7 @@ flowchart LR
 - [x] 09 §5.2: `gpu_completion_thread`'s creation as implemented.
 - [x] The "existing code diverges" note in 99 no longer lists the frame scheduler, the upload and readback queues or the profiler.
 - [x] Add an **As implemented** section here.
-- [ ] 20 random-order runs of the `[graphics]` tests in Debug and ASan.
+- [x] 20 random-order runs of the `[graphics]` tests in Debug and ASan.
 
 ## As implemented
 Per step, the differences from the plan and from [17](../design/17-graphics-frames-and-transfers.md) as first drafted. 17, 09 §5.2, 11 and 99 were updated to match in 7.9, so these notes are the history; 17 is the reference.
@@ -228,6 +230,7 @@ Per step, the differences from the plan and from [17](../design/17-graphics-fram
 - **Thread name.** The pool prefixes names, so the thread appears as `avis-gpu-completions` in logs and debuggers.
 
 ### 7.9 (2026-10-30)
+- **Random-order runs.** 20 runs of `[graphics]` in Debug and 20 in ASan, each with a random seed: all passed, with no ASan report.
 - 17 records the differences above in **As implemented** notes. Its draft status stays until task 8 settles 18's shared parts (the error domain).
 - 11 §5.1 no longer names `rhi::readback_buffer`; it and §12.1 point standalone readbacks at `graphics::readback_queue`. 09 §5.2 shows `create`. 99's diverging-code note names only the parked render pass prototype.
 
