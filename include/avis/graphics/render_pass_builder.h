@@ -36,6 +36,11 @@ namespace avis::graphics
         texture read(texture input, texture_read usage, subresource_range range = all_subresources);
         buffer read(buffer input, buffer_read usage);
 
+        // The debug view's read of the resource selected in the debug UI (10 §9): a read like the ones above, so its
+        // producers are kept, that also keeps the resource out of aliasing, so its memory holds only its own content
+        texture read_for_debug(texture input, texture_read usage, subresource_range range = all_subresources);
+        buffer read_for_debug(buffer input, buffer_read usage);
+
         // Records a write: the version passed in is consumed and a new one, produced by this pass, is returned. A
         // version may be written once; writing one that already has a successor fails a debug check (use the handle
         // the previous write returned). A partial first write of an aliased texture needs write_flags::needs_clear.
@@ -59,7 +64,9 @@ namespace avis::graphics
             pass_index_{ pass_index }
         {}
 
-        void record_read(resource handle, detail::resource_kind kind, std::uint8_t usage, subresource_range range);
+        // False after a failed debug check
+        bool record_read(resource handle, detail::resource_kind kind, std::uint8_t usage, subresource_range range);
+        void select_for_debug(resource handle) noexcept;
         // The version-table index of the version produced, or detail::no_index after a failed debug check
         std::uint32_t record_write(
             resource handle,

@@ -76,7 +76,7 @@ namespace avis::graphics
         return { size_mode::view_relative, 1, 1, scale };
     }
 
-    // Replaces the prototype's texture_descriptor
+    // A texture the graph creates; its RHI usages come from the declared accesses
     struct texture_description
     {
         texture_size size = absolute(1, 1);

@@ -115,6 +115,32 @@ namespace avis::graphics
                        output.index(), graph_.tables_->versions[version].version, graph_.frame_serial_);
     }
 
+    texture render_pass_builder::read_for_debug(
+        const texture input, const texture_read usage, const subresource_range range)
+    {
+        if (record_read(input, resource_kind::texture, static_cast<std::uint8_t>(usage), range))
+        {
+            select_for_debug(input);
+        }
+        return input;
+    }
+
+    buffer render_pass_builder::read_for_debug(const buffer input, const buffer_read usage)
+    {
+        if (record_read(input, resource_kind::buffer, static_cast<std::uint8_t>(usage), all_subresources))
+        {
+            select_for_debug(input);
+        }
+        return input;
+    }
+
+    void render_pass_builder::select_for_debug(const resource handle) noexcept
+    {
+        detail::resource_entry& entry = graph_.tables_->resources[handle.index()];
+        entry.debug_selected = true;
+        entry.aliasable = false;
+    }
+
     void render_pass_builder::set_side_effects()
     {
         pass_.side_effects = true;
@@ -126,14 +152,14 @@ namespace avis::graphics
         pass_.render_height = height;
     }
 
-    void render_pass_builder::record_read(
+    bool render_pass_builder::record_read(
         const resource handle, const resource_kind kind, const std::uint8_t usage, const subresource_range range)
     {
         render_graph_tables& tables = *graph_.tables_;
         const std::uint32_t version = find_version(tables, handle, kind, graph_.frame_serial_);
         if (version == no_index)
         {
-            return;
+            return false;
         }
 
         consume(version);
@@ -144,6 +170,7 @@ namespace avis::graphics
                              .direction = access_direction::read,
                              .usage = usage,
                              .range = range });
+        return true;
     }
 
     std::uint32_t render_pass_builder::record_write(

@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
+#include <span>
 #include <string_view>
 
 namespace avis::graphics
@@ -37,6 +39,95 @@ namespace avis::graphics
         private:
             transient_resource_pool& pool_;
         };
+
+        // The debug UI's view of a compiled frame (§9), in the arena
+        graph_debug_information& build_debug_information(
+            const detail::render_graph_tables& tables, const detail::compiled_graph& compiled, linear_arena& arena)
+        {
+            graph_debug_information& information = arena.create<graph_debug_information>();
+            information.transient_heap_size = compiled.statistics.heap_size;
+            information.aliased_bytes = compiled.statistics.aliased_bytes;
+            information.non_aliased_bytes = compiled.statistics.non_aliased_bytes;
+
+            const std::span<pass_debug_information> passes =
+                detail::make_array<pass_debug_information>(arena, tables.passes.size());
+            for (std::size_t pass = 0; pass < passes.size(); ++pass)
+            {
+                const detail::render_pass_node& node = *tables.passes[pass];
+                passes[pass] = { .name = node.name,
+                                 .type = node.type,
+                                 .queue = compiled.queues[pass],
+                                 .culled = compiled.culled[pass] != 0 };
+            }
+            information.passes = passes;
+
+            // Producers and consumers: counted, then filled; a pass is listed once per resource and role
+            const std::size_t resource_count = tables.resources.size();
+            const std::span<std::uint32_t> producer_counts = arena.allocate_array<std::uint32_t>(resource_count);
+            const std::span<std::uint32_t> consumer_counts = arena.allocate_array<std::uint32_t>(resource_count);
+            std::ranges::fill(producer_counts, 0u);
+            std::ranges::fill(consumer_counts, 0u);
+            const std::span<std::uint32_t> last_producer = arena.allocate_array<std::uint32_t>(resource_count);
+            const std::span<std::uint32_t> last_consumer = arena.allocate_array<std::uint32_t>(resource_count);
+            const auto count_roles = [&](const auto& visit)
+            {
+                std::ranges::fill(last_producer, detail::no_index);
+                std::ranges::fill(last_consumer, detail::no_index);
+                for (std::uint32_t pass = 0; pass < tables.passes.size(); ++pass)
+                {
+                    for (const detail::declared_access& access : tables.passes[pass]->declared_accesses())
+                    {
+                        const bool write = access.direction == detail::access_direction::write;
+                        std::uint32_t& last = write ? last_producer[access.resource] : last_consumer[access.resource];
+                        if (last != pass)
+                        {
+                            last = pass;
+                            visit(access.resource, pass, write);
+                        }
+                    }
+                }
+            };
+            count_roles([&](const std::uint32_t resource, std::uint32_t, const bool write)
+                        { ++(write ? producer_counts : consumer_counts)[resource]; });
+
+            const std::span<resource_debug_information> resources =
+                detail::make_array<resource_debug_information>(arena, resource_count);
+            const std::span<std::span<std::uint32_t>> producers =
+                arena.allocate_array<std::span<std::uint32_t>>(resource_count);
+            const std::span<std::span<std::uint32_t>> consumers =
+                arena.allocate_array<std::span<std::uint32_t>>(resource_count);
+            for (std::size_t index = 0; index < resource_count; ++index)
+            {
+                const detail::resource_entry& entry = tables.resources[index];
+                const detail::compiled_resource& compiled_resource = compiled.resources[index];
+                resource_debug_information& resource = resources[index];
+                resource.name = entry.name;
+                resource.is_texture = entry.kind == detail::resource_kind::texture;
+                resource.texture = entry.texture;
+                resource.texture.size = absolute(entry.extent.width, entry.extent.height);
+                resource.buffer = entry.buffer;
+                resource.imported = entry.imported;
+                resource.debug_selected = entry.debug_selected;
+                resource.heap_offset = compiled_resource.offset;
+                resource.aliased = compiled_resource.aliased;
+                resource.first_use = compiled_resource.lifetime.first;
+                resource.last_use = compiled_resource.lifetime.last;
+                producers[index] = arena.allocate_array<std::uint32_t>(producer_counts[index]);
+                consumers[index] = arena.allocate_array<std::uint32_t>(consumer_counts[index]);
+                resource.producers = producers[index];
+                resource.consumers = consumers[index];
+            }
+            std::ranges::fill(producer_counts, 0u);
+            std::ranges::fill(consumer_counts, 0u);
+            count_roles(
+                [&](const std::uint32_t resource, const std::uint32_t pass, const bool write)
+                {
+                    std::uint32_t& next = (write ? producer_counts : consumer_counts)[resource];
+                    (write ? producers : consumers)[resource][next++] = pass;
+                });
+            information.resources = resources;
+            return information;
+        }
     } // namespace
 
     render_graph::render_graph(
@@ -57,13 +148,20 @@ namespace avis::graphics
         pool_{ pool },
         frames_{ frames },
         profiler_{ profiler },
-        configuration_{ configuration }
+        configuration_{ configuration },
+        executor_{ std::make_unique<detail::render_graph_executor>(*this) }
     {
         create_tables();
     }
 
     // The arena destroys the frame's passes, pass data and tables
     render_graph::~render_graph() = default;
+
+    const graph_debug_information& render_graph::debug_information() const noexcept
+    {
+        static const graph_debug_information empty;
+        return debug_information_ != nullptr ? *debug_information_ : empty;
+    }
 
     texture render_graph::import_texture(
         const std::string_view name,
@@ -163,6 +261,7 @@ namespace avis::graphics
     {
         AVIS_CHECK(logger_name, open_view_.empty(), "reset: a view scope is still open");
         compiled_ = nullptr;
+        debug_information_ = nullptr;
         tables_ = nullptr;
         arena_.reset();
         ++frame_serial_;
@@ -174,6 +273,7 @@ namespace avis::graphics
         AVIS_CHECK(logger_name, open_view_.empty(), "compile: a view scope is still open");
         pool_requirements requirements{ pool_ };
         compiled_ = &detail::compile(*tables_, configuration_, requirements, arena_);
+        debug_information_ = &build_debug_information(*tables_, *compiled_, arena_);
     }
 
     result<const resource_bag*> render_graph::materialise(const frame_token& frame)

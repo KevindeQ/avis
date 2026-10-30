@@ -7,7 +7,9 @@
 
 #include "avis/error.h"
 #include "avis/graphics/buffer.h"
+#include "avis/graphics/detail/render_graph_execute_sender.h"
 #include "avis/graphics/detail/render_pass_storage.h"
+#include "avis/graphics/graph_debug_information.h"
 #include "avis/graphics/linear_arena.h"
 #include "avis/graphics/pass_context.h"
 #include "avis/graphics/render_pass_builder.h"
@@ -25,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -43,6 +46,7 @@ namespace avis::graphics
     {
         struct compiled_graph; // lib/avis/graphics/render_graph_compiler.h
         struct render_graph_tables; // lib/avis/graphics/render_graph_tables.h
+        class render_graph_executor; // lib/avis/graphics/render_graph_executor.h
     } // namespace detail
 
     // The application maps render.async_compute and render.graph_aliasing onto it, together with the device's
@@ -53,19 +57,6 @@ namespace avis::graphics
         bool aliasing = true; // transient resources share heap memory when their lifetimes don't overlap
         std::uint32_t passes_per_group_without_timings = 4; // recording group size without GPU timings
         double group_target_milliseconds = 1.0; // recording group size from GPU timings
-    };
-
-    // The last submission of each queue the graph submitted to in one frame (at most one per queue), for end_frame. A
-    // graphics point alone wouldn't cover async compute work that no later graphics batch waits on.
-    struct submitted_frame
-    {
-        std::array<rhi::synchronization_point, 3> points{};
-        std::uint32_t count = 0;
-
-        std::span<const rhi::synchronization_point> last_submissions() const noexcept
-        {
-            return { points.data(), count };
-        }
     };
 
     class render_graph
@@ -177,6 +168,22 @@ namespace avis::graphics
         // (debug check).
         void compile();
 
+        // Records and submits the compiled frame (§7): materialises, records the passes in groups on the parallel
+        // scheduler (a bulk), then submits each batch in order with its waits, and the trailing lists with the imports'
+        // final transitions. Completes on a parallel worker with the last submission of every queue used, or with the
+        // first error (materialise, acquiring a list, an exception from an execute callback such as
+        // transient_memory_exhausted from allocate_constants) or set_stopped; then nothing is submitted. With a
+        // profiler, the frame chain calls gpu_profiler::prepare_frame(frame) before execute. One execute per compile;
+        // the graph and the token must outlive it, and the graph isn't touched until it completes.
+        render_graph_execute_sender execute(const frame_token& frame) noexcept
+        {
+            return render_graph_execute_sender{ *this, frame };
+        }
+
+        // Passes and resources of the last compile for the debug UI (§9); empty before it. GPU times and the group
+        // count are filled in by execute.
+        const graph_debug_information& debug_information() const noexcept;
+
         // The first step of execute (§7 step 1): prepares the pool's heap for the frame's context, acquires the placed
         // resources of the live transient resources and their views for this frame, and maps imports to their
         // handles. Fails with the pool's or the scheduler's error (transient_memory_exhausted when the frame's
@@ -208,6 +215,8 @@ namespace avis::graphics
     private:
         friend class render_pass_builder;
         friend class view_scope;
+        friend class detail::render_graph_executor;
+        friend class detail::render_graph_execute_operation;
 
         template<typename PassData, typename Context, typename Setup, typename Execute>
         const PassData& add_pass(
@@ -270,7 +279,10 @@ namespace avis::graphics
         std::string_view open_view_; // empty when no scope is open (view names aren't empty)
         texture_extent open_view_size_;
         texture_extent default_view_size_;
+        graph_debug_information* debug_information_ = nullptr; // in the arena; set by compile
+        std::unique_ptr<detail::render_graph_executor> executor_; // reused across frames
     };
+
 } // namespace avis::graphics
 
 #endif

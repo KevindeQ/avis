@@ -45,7 +45,9 @@ namespace avis::graphics::detail
         std::string_view name; // qualified; in the arena
         resource_kind kind = resource_kind::texture;
         bool imported = false;
-        bool aliasable = true; // transient resources may share memory (not for the debug selection, 9.10)
+        bool aliasable = true; // transient resources may share memory (not the debug selection)
+        bool debug_selected = false; // read with render_pass_builder::read_for_debug
+
         // Textures. For imports with a valid handle, built from the RHI's description at import.
         texture_description texture;
         texture_extent extent; // the size, resolved against the view size at creation

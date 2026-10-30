@@ -1,9 +1,11 @@
-// Compiling render graphs (docs/tasks/09-render-graph.md §9.4): culling, order, queue assignment and batches. On a
-// graph over the test RHI, which executes nothing; the checks read the compiled_graph directly.
+// Compiling render graphs (docs/tasks/09-render-graph.md §9.4, §9.10): culling, order, queue assignment, batches and
+// the debug information. On a graph over the test RHI, which executes nothing; the checks read the compiled_graph
+// directly.
 
 #include "helpers/render_graph_fixture.h"
 
 #include "avis/graphics/buffer.h"
+#include "avis/graphics/graph_debug_information.h"
 #include "avis/graphics/pass_context.h"
 #include "avis/graphics/render_graph.h"
 #include "avis/graphics/render_graph_compiler.h" // private, lib/avis/graphics/
@@ -583,4 +585,103 @@ TEST_CASE("render graph: compiling 100 passes takes under 0.2 ms", "[render_grap
 #else
     WARN(std::format("compiling 100 passes: median {:.1f} µs (checked in Release only)", median));
 #endif
+}
+
+TEST_CASE("render graph debug information lists passes and resources", "[render_graph]")
+{
+    render_graph_fixture fixture;
+    render_graph& graph = fixture.graph;
+    CHECK(graph.debug_information().passes.empty()); // before compile
+
+    const texture output = import_output(graph);
+    const texture a = add_producer(graph, "a").output;
+    const texture b = add_producer(graph, "b", std::span{ &a, 1 }).output;
+    const texture unused = add_producer(graph, "unused", std::span{ &a, 1 }).output;
+    add_present(graph, "present", b, output);
+
+    graph.compile();
+    const graph_debug_information& information = graph.debug_information();
+
+    REQUIRE(information.passes.size() == 4);
+    CHECK(information.passes[0].name == "a");
+    CHECK(information.passes[2].name == "unused");
+    CHECK(information.passes[2].culled);
+    CHECK_FALSE(information.passes[3].culled);
+    CHECK(information.passes[3].queue == queue_type::graphics);
+    CHECK_FALSE(information.passes[0].gpu_milliseconds.has_value());
+
+    const auto list = [](const std::span<const std::uint32_t> passes)
+    { return std::vector<std::uint32_t>{ passes.begin(), passes.end() }; };
+    const resource_debug_information& first = information.resources[a.index()];
+    CHECK(first.name == "a");
+    CHECK(first.is_texture);
+    CHECK(first.texture.size == absolute(16, 16));
+    CHECK(list(first.producers) == std::vector<std::uint32_t>{ 0 });
+    CHECK(list(first.consumers) == std::vector<std::uint32_t>{ 1, 2 });
+    CHECK(first.first_use == 0);
+    CHECK(first.last_use == 1); // the culled reader isn't a use
+    CHECK(first.heap_offset != resource_debug_information::no_offset);
+
+    const resource_debug_information& culled = information.resources[unused.index()];
+    CHECK(list(culled.producers) == std::vector<std::uint32_t>{ 2 });
+    CHECK(culled.consumers.empty());
+    CHECK(culled.first_use == resource_debug_information::no_position);
+    CHECK(culled.heap_offset == resource_debug_information::no_offset);
+
+    const resource_debug_information& imported = information.resources[output.index()];
+    CHECK(imported.imported);
+    CHECK(list(imported.producers) == std::vector<std::uint32_t>{ 3 });
+    CHECK(imported.first_use == 2);
+    CHECK(imported.last_use == 2);
+    CHECK(information.transient_heap_size > 0);
+
+    graph.reset();
+    CHECK(graph.debug_information().passes.empty());
+}
+
+TEST_CASE("render graph debug information: the debug selection isn't aliased", "[render_graph]")
+{
+    render_graph_fixture fixture;
+    render_graph& graph = fixture.graph;
+    const bool selected = GENERATE(false, true);
+
+    // x and y have disjoint lifetimes: they share memory unless x is the debug view's selection
+    const texture first_output = import_output(graph, "first");
+    const texture second_output = import_output(graph, "second");
+    const texture x = add_producer(graph, "x").output;
+    graph.add_graphics_pass<empty_data>(
+        "show x",
+        [&](render_pass_builder& builder, empty_data&)
+        {
+            if (selected)
+            {
+                builder.read_for_debug(x, texture_read::srv_pixel);
+            }
+            else
+            {
+                builder.read(x, texture_read::srv_pixel);
+            }
+            builder.write(first_output, texture_write::render_target);
+        },
+        graphics_execute);
+    const texture y = add_producer(graph, "y").output;
+    add_present(graph, "show y", y, second_output);
+
+    graph.compile();
+    const graph_debug_information& information = graph.debug_information();
+    const resource_debug_information& selection = information.resources[x.index()];
+    const resource_debug_information& other = information.resources[y.index()];
+    CHECK(selection.debug_selected == selected);
+    CHECK_FALSE(information.passes[1].culled); // the read keeps its producer
+    CHECK_FALSE(information.passes[0].culled);
+    if (selected)
+    {
+        CHECK_FALSE(selection.aliased);
+        CHECK(selection.heap_offset != other.heap_offset);
+    }
+    else
+    {
+        CHECK(selection.aliased);
+        CHECK(selection.heap_offset == other.heap_offset);
+    }
 }
