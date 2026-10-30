@@ -24,6 +24,13 @@ namespace avis::graphics
         copy
     };
 
+    // Where a compute pass would like to run; it gets the compute queue only with async compute enabled (10 §6.2)
+    enum class compute_queue_hint : std::uint8_t
+    {
+        graphics,
+        async_compute
+    };
+
     namespace detail
     {
         struct resource_handles;

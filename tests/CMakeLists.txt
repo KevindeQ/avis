@@ -77,6 +77,7 @@ target_sources(AVIS_TESTS
 		test_operation_registry.cpp
 		test_parallel_backend.cpp
 		test_render_graph_build.cpp
+		test_render_graph_compile.cpp
 		test_rhi_command_lists.cpp
 		test_rhi_completions.cpp
 		test_rhi_conversions.cpp
@@ -178,7 +179,7 @@ file(GLOB_RECURSE AVIS_GRAPHICS_PUBLIC_HEADERS CONFIGURE_DEPENDS
 	RELATIVE "${AVIS_INCLUDE_DIR}"
 	"${AVIS_INCLUDE_DIR}/avis/graphics/*.h")
 list(FILTER AVIS_GRAPHICS_PUBLIC_HEADERS EXCLUDE REGEX
-	"^avis/graphics/(render_pass|render_pass_builder|render_pipeline|resource_bag)\\.h$")
+	"^avis/graphics/(render_pass|render_pipeline|resource_bag)\\.h$")
 list(SORT AVIS_GRAPHICS_PUBLIC_HEADERS)
 list(LENGTH AVIS_GRAPHICS_PUBLIC_HEADERS AVIS_GRAPHICS_PUBLIC_HEADER_COUNT)
 if(AVIS_GRAPHICS_PUBLIC_HEADER_COUNT EQUAL 0)
