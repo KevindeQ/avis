@@ -150,5 +150,6 @@ TEST_CASE("domains and generic codes have names", "[error]")
 {
     CHECK(avis::to_string(avis::error_domain::generic) == "generic");
     CHECK(avis::to_string(avis::error_domain::protocol) == "protocol");
+    CHECK(avis::to_string(avis::error_domain::graphics) == "graphics");
     CHECK(avis::to_string(avis::generic_error_kind::pool_stopping) == "pool_stopping");
 }

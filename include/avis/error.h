@@ -21,7 +21,8 @@ namespace avis
         rhi,
         scene,
         plugin,
-        protocol
+        protocol,
+        graphics
     };
 
     // Codes of errors in error_domain::generic

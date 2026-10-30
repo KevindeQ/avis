@@ -25,6 +25,8 @@ namespace avis
             return "plugin";
         case error_domain::protocol:
             return "protocol";
+        case error_domain::graphics:
+            return "graphics";
         }
         return "unknown";
     }

@@ -3,14 +3,15 @@
 
 #include "avis/error.h"
 
+#include <spdlog/logger.h>
+#include <spdlog/sinks/sink.h>
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
-#include <spdlog/logger.h>
-#include <spdlog/sinks/sink.h>
 #include <string>
 #include <string_view>
 
@@ -42,9 +43,9 @@ namespace avis::log
 {
     // Component loggers registered at initialisation. Other names, such as "plugin.<name>",
     // are created on first use.
-    inline constexpr std::array<std::string_view, 10> component_loggers{ "core",  "io",     "network", "rhi",
-                                                                         "graph", "render", "scene",   "simulation",
-                                                                         "ui",    "driver" };
+    inline constexpr std::array<std::string_view, 11> component_loggers{ "core",       "io",    "network", "rhi",
+                                                                         "graphics",   "graph", "render",  "scene",
+                                                                         "simulation", "ui",    "driver" };
 
     // Returns the named logger. Safe to call at any time and from any thread: before initialisation and
     // after shutdown the logger has no output sinks and drops every message.
