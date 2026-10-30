@@ -10,6 +10,7 @@
 #include "avis/error.h"
 #include "avis/graphics/frame_scheduler.h"
 #include "avis/graphics/gpu_profiler.h"
+#include "avis/graphics/upload_queue.h"
 #include "avis/rhi/queue.h"
 #include "avis/rhi/types.h"
 
@@ -43,6 +44,10 @@ namespace avis::tests
     // A profiler on the RHI's three queues
     std::unique_ptr<graphics::gpu_profiler> make_test_gpu_profiler(
         test_rhi& hardware_interface, std::uint32_t frames_in_flight = 2, std::uint32_t timestamps_per_frame = 64);
+
+    // An upload queue with a test_staging_ring_size ring, unless `ring_size` says otherwise
+    std::unique_ptr<graphics::upload_queue>
+        make_test_upload_queue(test_rhi& hardware_interface, std::size_t ring_size = test_staging_ring_size);
 
     // What a begin_frame operation completed with
     struct frame_outcome

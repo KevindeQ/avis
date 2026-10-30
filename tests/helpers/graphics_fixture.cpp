@@ -1,6 +1,7 @@
 #include "graphics_fixture.h"
 
 #include "avis/rhi/command_list.h"
+#include "avis/rhi/resources.h"
 #include "avis/rhi/synchronization.h"
 #include "avis/rhi/transient.h"
 
@@ -55,6 +56,19 @@ namespace avis::tests
             { .timestamps_per_frame = timestamps_per_frame });
         REQUIRE(profiler.has_value());
         return std::move(*profiler);
+    }
+
+    std::unique_ptr<graphics::upload_queue>
+        make_test_upload_queue(test_rhi& hardware_interface, const std::size_t ring_size)
+    {
+        auto queue = graphics::upload_queue::create(
+            rhi::resources{ *hardware_interface },
+            rhi::command_lists{ *hardware_interface },
+            rhi::queue<rhi::queue_type::copy>{ *hardware_interface },
+            rhi::synchronization{ *hardware_interface },
+            { .staging_ring_size = ring_size });
+        REQUIRE(queue.has_value());
+        return std::move(*queue);
     }
 
     graphics::frame_token begin_frame_inline(graphics::frame_scheduler& scheduler)
