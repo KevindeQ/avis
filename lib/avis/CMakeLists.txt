@@ -67,6 +67,7 @@ target_sources(AVIS_LIB
 		virtual_clock_state.cpp
 
 		graphics/error.cpp
+		graphics/frame_scheduler.cpp
 
 		io/async_file.cpp
 		io/detail/file_sender.cpp

@@ -53,6 +53,7 @@ target_sources(AVIS_TESTS
 		test_file_operations.cpp
 		test_finite_state_machine.cpp
 		test_graphics_error.cpp
+		test_graphics_frame_scheduler.cpp
 		test_graphics_public_headers.cpp
 		test_helpers.cpp
 		test_io_context.cpp
