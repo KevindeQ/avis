@@ -737,13 +737,19 @@ namespace avis::graphics
     class gpu_completion_thread
     {
     public:
-        gpu_completion_thread(threading::thread_pool& pool, rhi::completion_driver driver);   // §4.3
+        static constexpr std::string_view thread_name = "gpu-completions";   // "avis-gpu-completions" in logs
+
+        // Starts the body. Fails with the pool's errors (pool_exhausted, pool_stopping), or the system error when
+        // the stop event can't be created.
+        static result<std::unique_ptr<gpu_completion_thread>> create(threading::thread_pool& pool,
+                                                                     rhi::completion_driver driver);   // §4.3
         ~gpu_completion_thread();          // signals its stop event and joins; destroy before the RHI
     };
 }
 ```
 
 - **Without a driver, waits never complete.** Debug builds log a warning when waiters have been pending for over a second and `poll_completions()` hasn't run since (§23.4).
+- **Created with `create`, not a constructor** (task 7.8): `threading::thread_pool::start` returns a `result`, so starting the thread can fail, and `create` returns `result<std::unique_ptr<…>>` like the other graphics-layer objects. The body waits with `WaitForMultipleObjects` on the stop event first, then the completion event, so stopping wins when both are set. The pool's stop request (or the thread handle's) sets the stop event too, so a pool stopped first ends the body. Waits still pending when it stops stay pending until another driver polls. `<windows.h>` stays in its `.cpp`.
 - An application may combine drivers (the Qt notifier and a `gpu_completion_thread`, or a test calling `poll_completions()` next to either); the RHI handles concurrent calls.
 - **`poll_completions` was `process_completions`** in earlier versions of this design. "Poll" says what kind of call it is: one non-blocking pass over whatever is ready, like asio's `io_context::poll()`. The pass also frees deferred releases, which the name leaves to its comment.
 

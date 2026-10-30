@@ -535,6 +535,7 @@ Applied:
 - **10 and 11:** imports take `ready_after` points, and the upload queue's flush carries the residency uploads (Q5, D-103). The render graph takes the frame scheduler and an optional GPU profiler (Q1, D-97).
 
 - **11 §5.1 and §12.1:** the in-frame readback path is unchanged (render-graph copy, `when_complete`, `mapped_bytes`); the reference to `rhi::readback_buffer` became an imported readback buffer, and standalone readbacks point at `graphics::readback_queue`.
+- **09 §5.2:** `gpu_completion_thread` is created with `create`, which returns a `result`, instead of a constructor (task 7.8).
 
 ## 12. Open questions
 
