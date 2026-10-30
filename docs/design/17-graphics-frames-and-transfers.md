@@ -1,6 +1,6 @@
 # 17 — Graphics layer: frames and transfers (draft for review)
 
-> **Status: draft.** The RHI offers mechanism only ([09](09-rhi.md)); the graphics layer builds the policies on top of it. This document covers two of them: **frames** (the frame scheduler: frame pacing with *F* frames in flight, the frame token, per-frame upload memory and descriptors; and the GPU profiler, which turns timestamp queries into named per-frame timings), which left the RHI ([09 §6](09-rhi.md#6-transient-memory-descriptors-and-timestamps-rhitransienth)), and **CPU↔GPU transfers** (the upload and readback queues: staging ring, upload tickets, readback pooling and leases), which left it too ([09 §11](09-rhi.md#11-copy-footprints-and-readback)) and replace the former RHI draft 09h. It also defines the graphics error domain. Shaders, root signatures and pipelines are in [18](18-graphics-shaders-and-pipelines.md). The render graph ([10](10-render-graph.md)) and the renderer ([11](11-renderer.md)) use these pieces where they used RHI frames and uploads before (§11). Once decided, the graphics-layer design is folded into 10 or 11, or kept as its own document.
+> **Status: draft.** The RHI offers mechanism only ([09](09-rhi.md)); the graphics layer builds the policies on top of it. This document covers two of them: **frames** (the frame scheduler: frame pacing with *F* frames in flight, the frame token, per-frame upload memory and descriptors; and the GPU profiler, which turns timestamp queries into named per-frame timings), which left the RHI ([09 §6](09-rhi.md#6-transient-memory-descriptors-and-timestamps-rhitransienth)), and **CPU↔GPU transfers** (the upload and readback queues: staging ring, upload tickets, readback pooling and leases), which left it too ([09 §11](09-rhi.md#11-copy-footprints-and-readback)) and replace the former RHI draft 09h. It also defines the graphics error domain. Implemented in [task 7](../tasks/07-graphics-frames-and-transfers.md); the sections below describe the code, with **As implemented** notes where it departs from the first draft. The draft status stays until task 8 settles the parts shared with [18](18-graphics-shaders-and-pipelines.md) (the error domain). Shaders, root signatures and pipelines are in [18](18-graphics-shaders-and-pipelines.md). The render graph ([10](10-render-graph.md)) and the renderer ([11](11-renderer.md)) use these pieces where they used RHI frames and uploads before (§11). Once decided, the graphics-layer design is folded into 10 or 11, or kept as its own document.
 
 ## 0. Summary
 
@@ -24,13 +24,18 @@
 
 | Feature | Namespace | CMake target | Location |
 |---|---|---|---|
-| `frame_scheduler`, `frame_scheduler_configuration`, `frame_token` | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/frame_scheduler.h`, `lib/avis/graphics/frame_scheduler.cpp` |
+| `frame_scheduler`, `frame_scheduler_configuration` | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/frame_scheduler.h`, `lib/avis/graphics/frame_scheduler.cpp` |
+| `frame_token` | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/frame_token.h` (its own header, because `detail/frame_sender.h` delivers it) |
 | `gpu_profiler`, `gpu_profiler_configuration`, `gpu_scope_id`, `gpu_timing` | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/gpu_profiler.h`, `lib/avis/graphics/gpu_profiler.cpp` |
 | `frame_sender` and its operation state | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/detail/frame_sender.h` |
 | Graphics error codes | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/error.h` |
 | Upload queue | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/upload_queue.h`, `lib/avis/graphics/upload_queue.cpp` |
-| Readback queue, leases | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/readback_queue.h`, `lib/avis/graphics/readback_queue.cpp` |
+| `upload_ticket`, `subresource_data` | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/upload_ticket.h` (shared with `detail/upload_sender.h`) |
+| Readback queue | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/readback_queue.h`, `lib/avis/graphics/readback_queue.cpp` |
+| Readback leases (`readback_data`, `readback_image`) | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/readback_data.h` (shared with `detail/readback_sender.h`) |
 | Sender templates | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/detail/upload_sender.h`, `readback_sender.h` |
+| `gpu_completion_thread` ([09 §5.2](09-rhi.md#52-driving-completions)) | `avis::graphics` | `AVIS_LIB` | `include/avis/graphics/gpu_completion_thread.h`, `lib/avis/graphics/gpu_completion_thread.cpp` |
+| Texture mip and layer counts (private) | `avis::graphics::detail` | `AVIS_LIB` | `lib/avis/graphics/texture_subresources.h`, used by both queues |
 
 Everything here depends on `avis/rhi/` only: not on the IO layer, not on D3D12. The frame scheduler, the GPU profiler and the upload and readback queues each span several RHI groups, and take each view they use as a `create` parameter, never the `render_hardware_interface&` (D-96, [09 §4.3](09-rhi.md#43-subsystem-views)). None of them takes `rhi::completion_driver`: they wait, and the application drives the RHI (D-93, D-94). The other graphics-layer pieces built on the RHI are `gpu_completion_thread` ([09 §5.2](09-rhi.md#52-driving-completions)) and the shader library, root signatures and pipeline cache ([18](18-graphics-shaders-and-pipelines.md)).
 
@@ -58,10 +63,13 @@ namespace avis::graphics
     std::string_view to_string(error_kind kind) noexcept;
     avis::error make_error(error_kind kind, std::string message,
                            std::source_location location = std::source_location::current());
+    bool is_error(const avis::error& error, error_kind kind) noexcept;   // graphics domain and this kind
 }
+
+template<> struct std::formatter<avis::graphics::error_kind>;            // prints to_string(kind), like the RHI's
 ```
 
-RHI errors pass through unchanged (`error_domain::rhi`, `device_lost` included).
+RHI errors pass through unchanged (`error_domain::rhi`, `device_lost` included). Arguments the graphics layer rejects itself (a size of 0 in a configuration, a range outside a destination, a subresource outside a texture, a token that isn't the frame being recorded) fail with `graphics::error_kind::invalid_argument`.
 
 ## 3. Frame scheduler: concepts
 
@@ -132,8 +140,9 @@ namespace avis::graphics
     class frame_scheduler
     {
     public:
-        // Creates the per-context transient objects. Fails with the RHI's error (invalid_argument for sizes,
-        // transient_memory_exhausted when the descriptor ranges don't fit the RHI's transient region).
+        // Creates the per-context transient objects. Fails with invalid_argument for frames_in_flight outside 1..3 or
+        // a size of 0, and passes the RHI's errors through (transient_memory_exhausted when the descriptor ranges
+        // don't fit the RHI's transient region).
         // Views (D-96): waits for frame N − F; the per-context transient objects
         static result<std::unique_ptr<frame_scheduler>> create(rhi::synchronization synchronization,
                                                                rhi::transient_objects transient_objects,
@@ -141,7 +150,7 @@ namespace avis::graphics
         ~frame_scheduler();              // no frame may be outstanding; destroy before the RHI
 
         // ---- pacing ----
-        frame_sender begin_frame();
+        frame_sender begin_frame() noexcept;
         std::optional<frame_token> try_begin_frame();      // never waits
         void end_frame(frame_token&& frame, std::span<const rhi::synchronization_point> last_submissions);
         std::uint32_t frames_in_flight() const noexcept;
@@ -179,6 +188,12 @@ namespace avis::graphics
 
 **Ordering:** one `begin_frame()` outstanding at a time, and the next one only after the current token is ended, explicitly or by its destructor (asserted).
 
+**As implemented.**
+- The pacing state is one atomic (idle, waiting, recording), so the ordering checks take no lock. A second `begin_frame` while one is outstanding asserts and completes with `generic_error_kind::logic_error`.
+- A per-frame service called with a token that isn't the frame being recorded (ended, or of another scheduler) asserts and returns `invalid_argument`.
+- Exhaustion warnings are kept to one per frame by two atomic flags per context (memory, descriptors), cleared by the recycle.
+- The reset check of 09 §23.6 asserts only that the points it's given are complete. A frame ended with points that miss one of its submissions can't be caught when that submission happens to be complete already, so task 7's planned test for it was dropped.
+
 **`frame_token::recycled_submissions()`** returns the points `end_frame` recorded for frame *N − F*, the frame that used the context before. They are all complete when the token is delivered. Components that keep their own per-context objects reset them with these points after the token arrives, as the GPU profiler does (§6), so the scheduler has no recycle hook to register with.
 
 **Per-frame services** forward to the context's objects: `allocate_frame_memory` and `write_frame_constants` to the linear upload allocator, `create_frame_*` to the descriptor range. They are lock-free and callable from any thread for the current frame.
@@ -212,9 +227,10 @@ namespace avis::graphics
         std::uint32_t timestamps_per_frame = 1'024;        // per queue type (2 per scope)
     };
 
-    struct gpu_scope_id
+    struct gpu_scope_id                  // the queue and the scope's index in its context; 0 = a dropped scope
     {
         std::uint32_t value = 0;
+        constexpr bool is_valid() const noexcept;
     };
 
     struct gpu_timing
@@ -259,10 +275,11 @@ namespace avis::graphics
 
   Debug builds assert that frame indices only increase, and that `begin_timing` is only called for the prepared frame.
 - **Why not a hook in the scheduler:** a recycle callback registered with the scheduler would run before the token is delivered, but it needs registration and lifetime rules, and it would run on the thread that completed the wait (possibly Qt's GUI thread). The explicit call keeps the scheduler unaware of the profiler, and the recycle runs on the frame chain.
-- **`begin_timing(frame, recorder, name)`** takes a recorder, so a pass's narrowed recorder works as well as a whole list (D-92). It takes the next two (consecutive) query indices of the context's set for the recorder's `submission_queue()` (the owning list's queue for a narrowed recorder, [09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)), writes the first timestamp, copies `name` into the context's name arena, and pushes the scope on a per-list nesting stack (kept in the profiler, keyed by the list). `end_timing` writes the second timestamp and pops.
+- **`begin_timing(frame, recorder, name)`** takes a recorder, so a pass's narrowed recorder works as well as a whole list (D-92). It takes the next two (consecutive) query indices of the context's set for the recorder's `submission_queue()` (the owning list's queue for a narrowed recorder, [09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)), writes the first timestamp, copies `name` into the context's name arena, and raises the nesting depth. `end_timing` writes the second timestamp and lowers it.
+- **Nesting depth (as implemented)** is kept per thread for each profiler, not per list: the public `command_recorder` has no list identity to key a stack by. So **a scope begins and ends on one thread**. The render graph meets this, because it times each pass from the thread recording it. A dropped scope (out of indices, or a copy-queue scope without copy-queue timestamps) doesn't change the depth, and `end_timing` ignores it.
 - **Resolve** happens automatically when the list is submitted (09 §24.4).
 - **Results.** In `prepare_frame`, the profiler reads frame *N − F*'s ticks with `timestamp_query_set::ticks`, converts them with the `timestamp_frequency()` of the queue the set belongs to, relative to the frame's first timestamp on each queue, and fills the context's results. `completed_gpu_timings(frame)` returns them until the next `prepare_frame`. The first *F* frames have no results.
-- **Name lifetime.** Each context has two name arenas: one collects frame *N*'s scope names, the other holds the names that frame *N − F*'s results point to. `prepare_frame` swaps them and clears the new collecting arena, so result names stay valid while frame *N* records new scopes.
+- **Name lifetime.** Each context has two name arenas: one collects frame *N*'s scope names, the other holds the names that frame *N − F*'s results point to. `prepare_frame` swaps them and clears the new collecting arena, so result names stay valid while frame *N* records new scopes. **As implemented,** an arena is a fixed buffer sized from `timestamps_per_frame` (64 bytes per scope), filled through an atomic bump offset, so concurrent `begin_timing` calls take no lock. A name that doesn't fit is truncated, and it's empty once the arena is full.
 - Running out of query indices drops the remaining scopes with one warning per frame. Copy-queue scopes are skipped when the device has no copy-queue timestamps: `create` asks for a copy-queue set and, when `create_timestamp_query_set` fails with `unsupported_hardware` (09 §6), goes on without one. So the profiler needs no `hardware_capabilities` and no root.
 - The render graph takes the profiler as an optional constructor argument. It times every pass with it and uses the results to size recording groups ([10 §7](10-render-graph.md#7-execution-phase)). The Visualizer forwards the results to the statistics overlay.
 
@@ -276,7 +293,8 @@ namespace avis::graphics
         std::size_t staging_ring_size = 64ull << 20;     // was rhi::upload_configuration
     };
 
-    // Names the flush that carries an upload's copy. Resolves to a copy-queue point once that flush happened.
+    // graphics/upload_ticket.h. Names the flush that carries an upload's copy. Resolves to a copy-queue point once
+    // that flush happened.
     struct upload_ticket
     {
         std::uint64_t flush_index = 0;                   // 0 = nothing to wait for
@@ -311,11 +329,12 @@ namespace avis::graphics
 
         // Complete once the data is in the ring (inline when it fits now). The data must stay valid until then.
         upload_sender upload_buffer_async(rhi::buffer_handle destination, std::uint64_t destination_offset,
-                                          std::span<const std::byte> data);
-        upload_sender upload_texture_async(rhi::texture_handle destination, std::span<const subresource_data> data);
+                                          std::span<const std::byte> data) noexcept;
+        upload_sender upload_texture_async(rhi::texture_handle destination,
+                                           std::span<const subresource_data> data) noexcept;
 
         // Records the queued copies on a copy list and submits it on the copy queue. Returns the submission's point,
-        // or the last flush's point when nothing was queued.
+        // or the last flush's point when nothing was queued. An acquire or submit failure keeps the copies queued.
         result<rhi::synchronization_point> flush();
 
         // The copy-queue point a ticket waits on: the point of its flush, a default point (always complete) when
@@ -351,19 +370,26 @@ struct in_flight_flush
 {
     std::uint64_t flush_index;
     rhi::synchronization_point point;
-    std::uint64_t ring_end;                     // ring counter covered by this flush
+};
+
+// Ring space handed out and not yet free again, in ring order
+struct reservation
+{
+    std::uint64_t end;                          // ring counter past the reservation
+    std::uint64_t flush_index;                  // the flush carrying its copies; 0 while they aren't queued yet
 };
 ```
 
-- **Ring.** One RHI buffer (`rhi::buffer_handle`) in `memory_type::upload`, mapped for its lifetime (`mapped_bytes`). `head` is an atomic byte counter (reservations are a CAS, then the bytes are copied without a lock); `tail` and everything else are guarded by the queue's `mutex_`.
+- **Ring.** One RHI buffer (`rhi::buffer_handle`) in `memory_type::upload`, mapped for its lifetime (`mapped_bytes`). Reservations are aligned to 512 bytes (the placement alignment of texture copies) and wrap to the start when a request doesn't fit before the end, the padding counted as used.
+- **Reservations take `mutex_` (as implemented).** The first draft reserved with a lock-free CAS on an atomic `head`. That allows a bug: an upload reserves space before a flush and queues its copy after it, so retiring that flush frees space whose copy hasn't run yet. Now `head`, `tail` and a deque of reservations in ring order are all under `mutex_`. A reservation records the flush that carries its copies, and the tail only advances over leading reservations whose own flush is complete. The bytes are still copied without the lock, and the lock is held only for the reservation and for queueing the copy.
 - **Texture rows** are laid out with `rhi::resources::copyable_footprint(texture, subresource)` ([09 §11.1](09-rhi.md#111-copy-footprints)): its row pitch and offset are where the copy will read, so the queue copies the caller's rows (`row_pitch`) into those positions. `copy_buffer_to_texture` computes the same footprint on the RHI side.
 - **Dedicated buffers** for requests larger than half the ring are created with `rhi::resources::create_buffer` (`memory_type::upload`) before `mutex_` is taken, and destroyed with `rhi::resources::destroy` right after their flush is submitted. The RHI's deferred release keeps them alive until the GPU is done ([09 §23.7–23.8](09-rhi.md#237-open-command-lists-and-release-grace-periods)), so the queue doesn't track them.
 - **Flush sequence:**
   1. Under `mutex_`: if nothing is queued, return the last flush's point.
   2. Without the lock: `command_lists::acquire<copy>`.
-  3. Under `mutex_`: take the pending copies and dedicated buffers, record the copies, `submit` the list on the copy queue view (`rhi::queue<copy>`), push `in_flight_flush{index, point, head}`, advance the flush index, and note whether async uploads wait for space. `mutex_` is held across `submit` so flushes are submitted in flush-index order. Holding it across an RHI call is safe: RHI locks are leaves and the RHI never calls back into the graphics layer ([09 §19.4](09-rhi.md#194-locking)).
+  3. Under `mutex_`: take the pending copies and dedicated buffers, record the copies, `submit` the list on the copy queue view (`rhi::queue<copy>`), push `in_flight_flush{index, point}`, stamp the queued reservations with the index, advance the flush index, and note whether async uploads wait for space. `mutex_` is held across `submit` so flushes are submitted in flush-index order. Holding it across an RHI call is safe: RHI locks are leaves and the RHI never calls back into the graphics layer ([09 §19.4](09-rhi.md#194-locking)).
   4. Without the lock: `rhi::resources::destroy` the dedicated buffers; if uploads wait for space, start a `when_complete(point)` whose continuation retires and wakes them (§7.2).
-- **Retiring.** The tail advances past every in-flight flush whose point `is_complete` says is done; the entries are dropped, and their tickets resolve to the default point from then on. Retiring happens in every upload call and in the space waiters' continuation; it's a few comparisons.
+- **Retiring.** In-flight flushes whose point `is_complete` says is done are dropped, and their tickets resolve to the default point from then on. The tail then advances over the leading reservations whose flush is no longer in flight. Retiring happens in every upload call, in `flush` and in the space waiters' continuation; it's a few comparisons.
 
 ### 7.2 Asynchronous uploads and back-pressure
 
@@ -371,6 +397,12 @@ struct in_flight_flush
 - When space can free up (a flush is in flight), the queue holds one `rhi::synchronization::when_complete` on the oldest in-flight point. Its continuation runs from the RHI's `poll_completions()`, retires, unlinks the waiters that now fit under `mutex_` (stopping at the first that doesn't, so a large request isn't starved), **releases the lock**, and resumes them. Each retries the synchronous path; one that loses the space to another upload goes back to the front.
 - When nothing is in flight but the ring is full (all space queued, not flushed), the next `flush` starts that wait (§7.1 step 4).
 - **Stop:** the stop callback removes the waiter under `mutex_` and completes with `set_stopped` after releasing it; a waiter already unlinked is being resumed, and its retry completes it.
+
+**As implemented.**
+- A new async upload first tries the synchronous path, like `upload_buffer`, so one that fits right away doesn't wait behind the queue. One that doesn't fit links itself at the back, and retries ahead of the queue only when no waiter is queued. A waiter checks a stop flag under `mutex_` before it links itself, so a stop that arrives during its first attempt isn't missed.
+- The space wait's operation states are heap-allocated and owned by the queue, not kept in one fixed slot. A wait whose point is already complete completes inside its own `start()`, and the next wait it starts would overwrite a slot that is still running. Finished waits are freed only once no space-wait completion is running.
+- If the space wait fails (`device_lost`), every queued waiter completes with that error.
+- The destructor requests stop on a space wait still pending, then asserts that no waiter is queued and no wait is completing on another thread.
 
 ## 8. `graphics/readback_queue.h`
 
@@ -427,6 +459,13 @@ namespace avis::graphics
 - **Texture readbacks** use `rhi::resources::copyable_footprint` for the size and the 256-byte-aligned row pitch reported in `readback_image`.
 - **Leases** return the buffer to its class when destroyed. The GPU is done with it then (a lease is only delivered after the copy completed), so no deferred release is needed.
 - **Stop before completion:** the copy still runs, and the GPU may be writing the buffer. The queue doesn't wait for it: it `rhi::resources::destroy`s the buffer instead of pooling it, and the RHI's deferred release frees it once the GPU is done. No detached wait is needed.
+- **As implemented:**
+  - The leases are in `graphics/readback_data.h`, and the two senders are aliases of one template, `detail::readback_sender<Value>`. `read_buffer` and `read_texture` are `noexcept`; every error arrives through `set_error`.
+  - The size classes run from `smallest_pooled_size` (64 KiB) to `largest_pooled_size` (64 MiB), and `buffers_per_class` (4) are kept free per class. `statistics()` returns a `readback_pool_statistics` (buffers created and destroyed, pooled buffers, live leases, outstanding readbacks) for tests and diagnostics.
+  - The queue type is a runtime argument, so the operation switches on it to the matching `command_lists::acquire<Queue>` and `queue<Queue>`.
+  - `invalid_argument` for an invalid source, a size of 0, a range outside the buffer, or a subresource outside the texture. A stop requested before `start()` submits nothing. An acquire or submit failure returns the buffer to the pool, since nothing was submitted.
+  - `readback_image::bytes()` is `row_pitch × rows × depth` bytes, where the rows are block rows for BC formats. The buffer is sized to whole rows, although the copy leaves the last row's padding unwritten.
+  - The source must already hold its data: the copy waits for no point, so a caller reading what an upload wrote waits for the upload first.
 - **In-frame readbacks** (picking, screenshots) don't use this queue: the render graph copies into a `memory_type::readback` buffer it imported, waits with `when_complete`, and reads `mapped_bytes` ([11 §5.1](11-renderer.md#51-picking), [11 §12.1](11-renderer.md#121-screenshot-capture)). The readback queue is for tests, tools, and work outside the frame.
 
 ## 9. Threading
@@ -446,7 +485,7 @@ The destructor destroys the transient objects; the RHI defers their release unti
 | Call | Thread safety |
 |---|---|
 | `prepare_frame`, `completed_gpu_timings` | Serialised by the frame chain (asserted) |
-| `begin_timing`, `end_timing` | The thread recording that list; different lists concurrently |
+| `begin_timing`, `end_timing` | The thread recording that list; one scope begins and ends on one thread; different lists concurrently |
 | Destructor | One thread, no frame recording |
 
 Like the scheduler, the destructor leaves its query sets to the RHI's deferred release.
@@ -468,7 +507,7 @@ Completions (async uploads resumed, readbacks delivered) run on the thread that 
 
 - On WARP with the RHI's test setup, a test calls `poll_completions()` itself ([09 §5.2](09-rhi.md#52-driving-completions)), so frame pacing is deterministic: with *F* = 2, frame 3's `begin_frame` completes only after frame 1's submissions are complete and `poll_completions()` ran.
 - Recycle steps: after a frame completes, the context's allocator and descriptor range are empty, and the other context is untouched. `recycled_submissions()` is empty for the first *F* tokens and then holds the points `end_frame` recorded for frame *N − F*.
-- Reset checks: ending a frame with points that don't cover a submission that used the context's memory trips the RHI's debug assertion on the next recycle.
+- Reset checks: not tested. The RHI's debug check only asserts that the points it's given are complete, so ending a frame with points that miss one of its submissions isn't detectable (§4, As implemented).
 - Stopped frames: `end_frame(frame, {})` with acquired but unsubmitted lists frees the context at once, and the lists' allocators are reused. Dropping a token, move-assigning over one, and stopping a `when_all(begin_frame(), stopped_sender)` after the token was delivered each end the frame (logged at debug level), and the next `begin_frame` completes. A moved-from token ends nothing.
 - Exhaustion: allocating past `upload_memory_per_frame` (or `descriptors_per_frame`) fails with `transient_memory_exhausted` and one warning with the high-water mark; `end_frame(frame, {})` after it, and the next frame allocates normally.
 
@@ -495,8 +534,7 @@ Applied:
 - **RHI (09):** `upload_buffer`, `upload_texture`, `*_async`, `flush_uploads`, `rhi::upload_ticket`, `rhi::subresource_data`, `upload_ring_full`, `readback_buffer`/`readback_texture`, `rhi::readback_data`/`readback_image` and `upload_configuration` are removed. `copyable_footprint` is added (09 §11.1).
 - **10 and 11:** imports take `ready_after` points, and the upload queue's flush carries the residency uploads (Q5, D-103). The render graph takes the frame scheduler and an optional GPU profiler (Q1, D-97).
 
-Left to apply:
-- **11 §5.1 and §12.1:** the in-frame readback path is unchanged (render-graph copy, `when_complete`, `mapped_bytes`); only the reference to `rhi::readback_buffer` for standalone readbacks becomes `graphics::readback_queue`.
+- **11 §5.1 and §12.1:** the in-frame readback path is unchanged (render-graph copy, `when_complete`, `mapped_bytes`); the reference to `rhi::readback_buffer` became an imported readback buffer, and standalone readbacks point at `graphics::readback_queue`.
 
 ## 12. Open questions
 

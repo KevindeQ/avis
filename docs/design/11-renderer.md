@@ -442,7 +442,7 @@ That's 20 bytes per pixel plus 4 for depth. On frames where the user clicked the
 | `overlay` | `overlay` and `overlay_on_top` instances (box edges, frusta, trajectories, axes) | Drawn after the scene, so overlays win over the world |
 
   Later passes overwrite earlier ones, so the result is "what the user sees on top" at the clicked pixel.
-- **Readback:** a copy pass inside the graph copies a 9×9 texel window around the cursor into a readback buffer (`rhi::readback_buffer`, [09 §11.2](09-rhi.md#112-readback)). The Visualizer picks the non-zero id closest to the centre, which makes 1–2 px lines and small points clickable.
+- **Readback:** a copy pass inside the graph copies a 9×9 texel window around the cursor into a `memory_type::readback` buffer the graph imported, read through `mapped_bytes` once `when_complete` reports the frame's submission done ([09 §11.2](09-rhi.md#112-readback)). Standalone readbacks outside the frame (tests, tools) use `graphics::readback_queue` instead ([17 §8](17-graphics-frames-and-transfers.md#8-graphicsreadback_queueh)). The Visualizer picks the non-zero id closest to the centre, which makes 1–2 px lines and small points clickable.
 - The id the renderer reports is the opaque `object_id`. The Visualizer maps it back to the entity ([12 §5](12-visualizer.md#5-camera)).
 
 ## 6. Lighting
@@ -558,7 +558,7 @@ Screenshots of the 3D viewport are taken **inside the renderer**, so they contai
 **Request.** The GUI posts a `screenshot_request {id, mode (viewport | custom), width, height, include_debug_blit}` as latest-value state to the renderer ([12 §4](12-visualizer.md#4-threads-visualizer-view)). One request is handled at a time; a request made while one is running is queued.
 
 **Viewport resolution** (`mode = viewport`), on the next frame:
-1. The renderer adds a `capture` copy pass to the main view, right after `overlay` (or after `debug_blit` when `include_debug_blit` is set). It copies `ldr_color` into an **imported `readback` buffer** (`copy_texture_to_buffer`), so the render graph places the barriers.
+1. The renderer adds a `capture` copy pass to the main view, right after `overlay` (or after `debug_blit` when `include_debug_blit` is set). It copies `ldr_color` into an **imported `readback` buffer** (`copy_texture_to_buffer`), so the render graph places the barriers. The capture stays in the frame; `graphics::readback_queue` is only for standalone readbacks ([17 §8](17-graphics-frames-and-transfers.md#8-graphicsreadback_queueh)).
 2. The frame is submitted as usual. `when_complete` on its graphics synchronization point ([09 §5](09-rhi.md#5-queues-and-synchronization-rhiqueueh)) resumes the capture on a parallel worker. Nothing waits.
 3. The worker encodes a PNG with WIC. `ldr_color` already holds sRGB-encoded `RGBA8` values, so they're written as they are (alpha forced to 255). It then writes the file with the IO layer's atomic replace ([07 §4.5](07-io-layer.md#45-whole-file-operations-avisiofile_operationsh)).
 
