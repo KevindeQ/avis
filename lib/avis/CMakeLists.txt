@@ -67,6 +67,7 @@ target_sources(AVIS_LIB
 		runtime_configuration.cpp
 		virtual_clock_state.cpp
 
+		graphics/binding_layout.cpp
 		graphics/error.cpp
 		graphics/frame_scheduler.cpp
 		graphics/gpu_completion_thread.cpp
