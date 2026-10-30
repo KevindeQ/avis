@@ -5,6 +5,7 @@
 // declares passes and their virtual resources (§3), compile culls, orders and schedules them (§6), execute records and
 // submits them (§7). Free of D3D12 and <windows.h>.
 
+#include "avis/error.h"
 #include "avis/graphics/buffer.h"
 #include "avis/graphics/detail/render_pass_storage.h"
 #include "avis/graphics/linear_arena.h"
@@ -33,6 +34,7 @@
 namespace avis::graphics
 {
     class frame_scheduler;
+    class frame_token;
     class gpu_profiler;
     class resource_bag;
     class transient_resource_pool;
@@ -149,15 +151,37 @@ namespace avis::graphics
             std::optional<rhi::synchronization_point> ready_after = {});
 
         // Qualifies names with "<view_name>/" while the scope lives (§8). Debug checks: no scope open, a name not used
-        // this frame, non-empty and without '/'. A refused scope qualifies nothing.
+        // this frame, non-empty and without '/'. A refused scope qualifies nothing. View-relative textures created in
+        // the scope resolve against `view_size`; without one, against the graph's view size.
         [[nodiscard]] view_scope begin_view(std::string_view view_name);
+        [[nodiscard]] view_scope begin_view(std::string_view view_name, texture_extent view_size);
+
+        // The size view-relative textures resolve against outside view scopes, and in scopes begun without a size.
+        // Kept across reset(); 1 × 1 until set.
+        void set_view_size(texture_extent view_size) noexcept
+        {
+            default_view_size_ = view_size;
+        }
+
+        // The size view-relative textures created now resolve against
+        texture_extent view_size() const noexcept
+        {
+            return open_view_.empty() ? default_view_size_ : open_view_size_;
+        }
 
         // Starts a new frame: destroys the previous frame's passes, pass data and tables, resets the arena, and makes
         // the previous frame's handles stale
         void reset();
 
-        // Culls, orders and schedules the passes (§6). No view scope may be open (debug check).
+        // Culls, orders and schedules the passes, places barriers and transient memory (§6). No view scope may be open
+        // (debug check).
         void compile();
+
+        // The first step of execute (§7 step 1): prepares the pool's heap for the frame's context, acquires the placed
+        // resources of the live transient resources and their views for this frame, and maps imports to their
+        // handles. Fails with the pool's or the scheduler's error (transient_memory_exhausted when the frame's
+        // descriptors run out) before anything is recorded. The bag lives in the arena until the next reset().
+        result<const resource_bag*> materialise(const frame_token& frame);
 
         // The frame's build tables and the result of the last compile (nullptr before it); for the executor and tests
         const detail::render_graph_tables& tables() const noexcept
@@ -244,6 +268,8 @@ namespace avis::graphics
         detail::compiled_graph* compiled_ = nullptr; // in the arena
         std::uint32_t frame_serial_ = 1; // in the handles of debug builds; bumped by reset()
         std::string_view open_view_; // empty when no scope is open (view names aren't empty)
+        texture_extent open_view_size_;
+        texture_extent default_view_size_;
     };
 } // namespace avis::graphics
 

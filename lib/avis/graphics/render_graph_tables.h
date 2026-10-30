@@ -13,15 +13,30 @@
 #include "avis/rhi/queue.h"
 #include "avis/rhi/types.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace avis::graphics::detail
 {
     template<typename T>
     using arena_vector = std::vector<T, arena_allocator<T>>;
+
+    // Default-constructed array in the arena, for types that aren't trivially copyable (allocate_array) but need no
+    // destructor
+    template<typename T>
+    std::span<T> make_array(linear_arena& arena, const std::size_t count)
+    {
+        static_assert(std::is_trivially_destructible_v<T>, "make_array registers no destructor");
+        T* const first = static_cast<T*>(arena.allocate(count * sizeof(T), alignof(T)));
+        std::uninitialized_value_construct_n(first, count);
+        return { first, count };
+    }
 
     struct resource_entry
     {
@@ -30,7 +45,10 @@ namespace avis::graphics::detail
         std::string_view name; // qualified; in the arena
         resource_kind kind = resource_kind::texture;
         bool imported = false;
-        texture_description texture; // textures
+        bool aliasable = true; // transient resources may share memory (not for the debug selection, 9.10)
+        // Textures. For imports with a valid handle, built from the RHI's description at import.
+        texture_description texture;
+        texture_extent extent; // the size, resolved against the view size at creation
         buffer_description buffer; // buffers
 
         // Imports

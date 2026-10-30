@@ -61,6 +61,7 @@ namespace avis::graphics
         entry.name = graph_.qualify(name);
         entry.kind = resource_kind::texture;
         entry.texture = description;
+        entry.extent = description.size.resolve(graph_.view_size().width, graph_.view_size().height);
         entry.creator = pass_index_;
         entry.versions.push_back(static_cast<std::uint32_t>(tables.versions.size()));
         tables.versions.push_back(version_entry{ .resource = index, .version = 0 });
@@ -93,10 +94,11 @@ namespace avis::graphics
         return input;
     }
 
-    texture render_pass_builder::write(const texture output, const texture_write usage, const subresource_range range)
+    texture render_pass_builder::write(
+        const texture output, const texture_write usage, const subresource_range range, const write_flags flags)
     {
-        const std::uint32_t version =
-            record_write(output, resource_kind::texture, static_cast<std::uint8_t>(usage), range);
+        const std::uint32_t version = record_write(
+            output, resource_kind::texture, static_cast<std::uint8_t>(usage), range, flags == write_flags::needs_clear);
         return version == no_index ?
                    output :
                    detail::resource_handles::make<texture>(
@@ -145,7 +147,11 @@ namespace avis::graphics
     }
 
     std::uint32_t render_pass_builder::record_write(
-        const resource handle, const resource_kind kind, const std::uint8_t usage, const subresource_range range)
+        const resource handle,
+        const resource_kind kind,
+        const std::uint8_t usage,
+        const subresource_range range,
+        const bool needs_clear)
     {
         render_graph_tables& tables = *graph_.tables_;
         const std::uint32_t input = find_version(tables, handle, kind, graph_.frame_serial_);
@@ -180,7 +186,8 @@ namespace avis::graphics
                              .kind = kind,
                              .direction = access_direction::write,
                              .usage = usage,
-                             .range = range });
+                             .range = range,
+                             .needs_clear = needs_clear });
         return output;
     }
 

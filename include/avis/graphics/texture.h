@@ -103,6 +103,15 @@ namespace avis::graphics
         copy_destination
     };
 
+    // How a texture write treats the content it doesn't overwrite
+    enum class write_flags : std::uint8_t
+    {
+        none,
+        // The pass writes only part of the texture and relies on the rest being cleared: the executor clears it
+        // before the pass. Required for a partial first write of an aliased texture (10 §6.4 step 5).
+        needs_clear
+    };
+
     // The access state of a usage (10 §6.3). UAVs and depth reads synchronise with the shading stage of the pass's
     // type; copies use the common layout on the copy queue.
     constexpr rhi::access_state

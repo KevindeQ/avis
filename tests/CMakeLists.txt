@@ -76,8 +76,11 @@ target_sources(AVIS_TESTS
 		test_observables.cpp
 		test_operation_registry.cpp
 		test_parallel_backend.cpp
+		test_render_graph_aliasing.cpp
+		test_render_graph_barriers.cpp
 		test_render_graph_build.cpp
 		test_render_graph_compile.cpp
+		test_render_graph_execute.cpp
 		test_rhi_command_lists.cpp
 		test_rhi_completions.cpp
 		test_rhi_conversions.cpp
@@ -97,7 +100,8 @@ target_sources(AVIS_TESTS
 		test_runtime.cpp
 		test_runtime_configuration.cpp
 		test_sender_of.cpp
-		test_thread_pool.cpp)
+		test_thread_pool.cpp
+		test_transient_resource_pool.cpp)
 
 # RHI test shaders (docs/tasks/06-rhi.md §6.8): compiled at build time into headers with the bytecode as byte arrays,
 # so the tests need no shader library. Generated, never checked in, rebuilt when the HLSL changes.
@@ -179,7 +183,7 @@ file(GLOB_RECURSE AVIS_GRAPHICS_PUBLIC_HEADERS CONFIGURE_DEPENDS
 	RELATIVE "${AVIS_INCLUDE_DIR}"
 	"${AVIS_INCLUDE_DIR}/avis/graphics/*.h")
 list(FILTER AVIS_GRAPHICS_PUBLIC_HEADERS EXCLUDE REGEX
-	"^avis/graphics/(render_pass|render_pipeline|resource_bag)\\.h$")
+	"^avis/graphics/(render_pass|render_pipeline)\\.h$")
 list(SORT AVIS_GRAPHICS_PUBLIC_HEADERS)
 list(LENGTH AVIS_GRAPHICS_PUBLIC_HEADERS AVIS_GRAPHICS_PUBLIC_HEADER_COUNT)
 if(AVIS_GRAPHICS_PUBLIC_HEADER_COUNT EQUAL 0)

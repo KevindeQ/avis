@@ -45,6 +45,7 @@ namespace avis::graphics
             access_direction direction = access_direction::read;
             std::uint8_t usage = 0; // the texture_read, texture_write, buffer_read or buffer_write value
             subresource_range range = all_subresources; // textures
+            bool needs_clear = false; // texture writes declared with write_flags::needs_clear
         };
 
         template<typename Context>

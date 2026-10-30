@@ -78,10 +78,13 @@ target_sources(AVIS_LIB
 		graphics/readback_queue.cpp
 		graphics/render_graph.cpp
 		graphics/render_graph_compiler.cpp
+		graphics/render_graph_executor.cpp
 		graphics/render_pass_builder.cpp
+		graphics/resource_bag.cpp
 		graphics/root_signature_registry.cpp
 		graphics/shader_library.cpp
 		graphics/shader_loading.cpp
+		graphics/transient_resource_pool.cpp
 		graphics/upload_queue.cpp
 
 		io/async_file.cpp

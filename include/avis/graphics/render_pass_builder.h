@@ -38,8 +38,12 @@ namespace avis::graphics
 
         // Records a write: the version passed in is consumed and a new one, produced by this pass, is returned. A
         // version may be written once; writing one that already has a successor fails a debug check (use the handle
-        // the previous write returned).
-        texture write(texture output, texture_write usage, subresource_range range = all_subresources);
+        // the previous write returned). A partial first write of an aliased texture needs write_flags::needs_clear.
+        texture write(
+            texture output,
+            texture_write usage,
+            subresource_range range = all_subresources,
+            write_flags flags = write_flags::none);
         buffer write(buffer output, buffer_write usage);
 
         // Never cull this pass
@@ -57,8 +61,12 @@ namespace avis::graphics
 
         void record_read(resource handle, detail::resource_kind kind, std::uint8_t usage, subresource_range range);
         // The version-table index of the version produced, or detail::no_index after a failed debug check
-        std::uint32_t
-            record_write(resource handle, detail::resource_kind kind, std::uint8_t usage, subresource_range range);
+        std::uint32_t record_write(
+            resource handle,
+            detail::resource_kind kind,
+            std::uint8_t usage,
+            subresource_range range,
+            bool needs_clear = false);
         // Counts this pass as a reader of the version and records the edge from its producer
         void consume(std::uint32_t version);
 
