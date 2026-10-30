@@ -1,5 +1,7 @@
 #include "avis/graphics/upload_queue.h"
 
+#include "texture_subresources.h"
+
 #include "avis/detail/check.h"
 #include "avis/detail/safe_error.h"
 #include "avis/graphics/error.h"
@@ -198,20 +200,6 @@ namespace avis::graphics
             return make_error(error_kind::invalid_argument, std::move(message));
         }
 
-        std::uint32_t mip_count(const rhi::texture_description& description) noexcept
-        {
-            if (description.mip_levels != 0)
-            {
-                return description.mip_levels;
-            }
-            std::uint32_t largest = std::max(description.width, description.height);
-            if (description.dimension == rhi::texture_dimension::texture_3d)
-            {
-                largest = std::max(largest, description.depth_or_layers);
-            }
-            return static_cast<std::uint32_t>(std::bit_width(std::max(largest, 1u)));
-        }
-
         // Where a reservation of `size` bytes starts after `head`: aligned for texture copies, and wrapped to the
         // ring's start (the padding counted as used) when it doesn't fit before the end
         constexpr std::uint64_t
@@ -223,21 +211,6 @@ namespace avis::graphics
                 start = (start / capacity + 1) * capacity;
             }
             return start;
-        }
-
-        std::uint32_t layer_count(const rhi::texture_description& description) noexcept
-        {
-            switch (description.dimension)
-            {
-            case rhi::texture_dimension::texture_3d:
-                return 1;
-            case rhi::texture_dimension::cube:
-                return 6 * description.depth_or_layers;
-            case rhi::texture_dimension::texture_1d:
-            case rhi::texture_dimension::texture_2d:
-                return description.depth_or_layers;
-            }
-            return description.depth_or_layers;
         }
 
         // One subresource of a texture upload: where the caller's rows are, and where they go in the staging block
@@ -398,8 +371,8 @@ namespace avis::graphics
         try
         {
             const rhi::texture_description& description = resources_.description(destination);
-            const std::uint32_t mips = mip_count(description);
-            const std::uint32_t layers = layer_count(description);
+            const std::uint32_t mips = detail::mip_count(description);
+            const std::uint32_t layers = detail::layer_count(description);
 
             // Validate everything and lay the subresources out in one staging block, each 512-byte aligned
             std::vector<texture_piece> pieces;

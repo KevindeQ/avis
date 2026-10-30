@@ -71,6 +71,19 @@ namespace avis::tests
         return std::move(*queue);
     }
 
+    std::unique_ptr<graphics::readback_queue> make_test_readback_queue(test_rhi& hardware_interface)
+    {
+        auto queue = graphics::readback_queue::create(
+            rhi::resources{ *hardware_interface },
+            rhi::command_lists{ *hardware_interface },
+            rhi::queue<rhi::queue_type::graphics>{ *hardware_interface },
+            rhi::queue<rhi::queue_type::compute>{ *hardware_interface },
+            rhi::queue<rhi::queue_type::copy>{ *hardware_interface },
+            rhi::synchronization{ *hardware_interface });
+        REQUIRE(queue.has_value());
+        return std::move(*queue);
+    }
+
     graphics::frame_token begin_frame_inline(graphics::frame_scheduler& scheduler)
     {
         started_frame frame{ scheduler.begin_frame() };

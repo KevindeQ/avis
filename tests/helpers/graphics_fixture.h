@@ -10,6 +10,7 @@
 #include "avis/error.h"
 #include "avis/graphics/frame_scheduler.h"
 #include "avis/graphics/gpu_profiler.h"
+#include "avis/graphics/readback_queue.h"
 #include "avis/graphics/upload_queue.h"
 #include "avis/rhi/queue.h"
 #include "avis/rhi/types.h"
@@ -48,6 +49,9 @@ namespace avis::tests
     // An upload queue with a test_staging_ring_size ring, unless `ring_size` says otherwise
     std::unique_ptr<graphics::upload_queue>
         make_test_upload_queue(test_rhi& hardware_interface, std::size_t ring_size = test_staging_ring_size);
+
+    // A readback queue on the RHI's three queues
+    std::unique_ptr<graphics::readback_queue> make_test_readback_queue(test_rhi& hardware_interface);
 
     // What a begin_frame operation completed with
     struct frame_outcome
