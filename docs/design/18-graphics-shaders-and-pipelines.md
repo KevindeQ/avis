@@ -1,6 +1,6 @@
 # 18 — Graphics layer: shaders and pipelines (draft for review)
 
-> **Status: draft.** The RHI creates root signatures from descriptions and pipelines from bytecode, and nothing else ([09 §12](09-rhi.md#12-pipelines-rhipipelineh), [09 §12.1](09-rhi.md#121-root-signatures-rhiroot_signatureh)). Everything above that is graphics-layer policy, collected here: the shader library and its manifest, the reflection data that says which registers each shader binds, the Avis binding layout, choosing a root signature per pipeline, and the pipeline cache. The motivation for root signatures as an RHI mechanism is future flexibility, for example sensor visualisation (camera images, lidar point clouds) with a binding model of its own. Frames and data transfers are in [17](17-graphics-frames-and-transfers.md), which also defines the graphics error domain. Once decided, this is folded into the graphics-layer design with 17.
+> **Status: draft.** The RHI creates root signatures from descriptions and pipelines from bytecode, and nothing else ([09 §12](09-rhi.md#12-pipelines-rhipipelineh), [09 §12.1](09-rhi.md#121-root-signatures-rhiroot_signatureh)). Everything above that is graphics-layer policy, collected here: the shader library and its manifest, the reflection data that says which registers each shader binds, the Avis binding layout, choosing a root signature per pipeline, and the pipeline cache. The motivation for root signatures as an RHI mechanism is future flexibility, for example sensor visualisation (camera images, lidar point clouds) with a binding model of its own. Frames and data transfers are in [17](17-graphics-frames-and-transfers.md), which also defines the graphics error domain. Implemented in [task 8](../tasks/08-graphics-shaders-and-pipelines.md) (2026-10-30); the sections below describe the code, with **As implemented** notes where it departs from the first draft. Once decided, this is folded into the graphics-layer design with 17.
 
 ## 0. Summary
 
@@ -92,6 +92,12 @@ namespace avis::graphics
 
 - The FNV-1a id hash replaces 09's unspecified "compile-time hashed string". It's unrelated to the manifest's xxh3 blob checksum.
 - **Debug check (optional):** compare the declared stage with the shader kind in the DXIL container header, to catch a mislabelled blob early.
+
+**As implemented.**
+- `make_shader_id(std::string_view)` is the `constexpr` hash both the literal and the library use.
+- The debug check is in: debug builds read the shader kind from the `DXIL` part's program header and fail `create` with `invalid_argument` naming the id on a mismatch. Bytes that aren't a DXIL container aren't checked, so tests can use fake bytecode.
+- `find` searches a sorted vector of `(hash, blob index)`. Serials come from a process-wide counter starting at 1; a moved-from library is empty, with an empty name and serial 0. The bytecode doesn't move with the library, so views taken before a move stay valid.
+- `detail::create_shader_library(blobs, name, hashes)` takes the id hashes instead of computing them, so tests reach the collision branch without a real FNV-1a collision. Messages start with `shader library '<name>': ` when the library has a name.
 - `shader_bindings` ([§5](#5-graphicsshader_bindingsh)) is the reflection record used to match root signatures; `shader_library.h` includes `shader_bindings.h`.
 
 ## 3. `graphics/shader_manifest.h`
@@ -138,6 +144,12 @@ namespace avis::graphics
 - `static_assert(avis::sender_of<shader_library_load_sender, shader_library>)`.
 - Doesn't need an RHI: a library can be loaded before the device exists, in parallel with device creation.
 - A tool or test with bytecode in memory skips the loader and calls `shader_library::create`.
+
+**As implemented.**
+- **No counting scope.** The operation state owns the connected `read_file` operations and counts the outstanding ones with an atomic (one reference per read, plus one held while they start), then hops to the parallel scheduler. Its state, reads included, is in `shader_loading.cpp`; the header has only the receiver-facing template.
+- **Paths.** An empty blob path, a rooted one, or one with a `..` element fails with `invalid_argument` naming the id, before any read.
+- **First failure wins** and stops the other reads through an internal stop source. A stop request from the receiver wins over the errors it causes and completes with `set_stopped`. So does a read that its IO context stopped (the context is stopping), since that blob is missing.
+- The library is named after the directory (UTF-8). `shader_hash_mismatch` names the id, the file and both hashes as 16 hex digits.
 
 ## 5. `graphics/shader_bindings.h`
 
@@ -223,7 +235,8 @@ namespace avis::graphics
       - {register: 1, space: 0}
   ```
 - 12a's parser maps the key to `shader_manifest_entry::bindings`; the round-trip test keeps writer and parser in step.
-- **Status:** the command and its tests exist (`tools/data-trace/src/data_trace/shaders/`, `tools/data-trace/tests/shaders/`, including probe shaders compiled with `tools/dxc`). `avis_add_shaders` and the 12a parser changes are not implemented yet.
+- **Status:** the command and its tests exist (`tools/data-trace/src/data_trace/shaders/`, `tools/data-trace/tests/shaders/`, including probe shaders compiled with `tools/dxc`), and `avis_add_shaders` (`cmake/AvisShaders.cmake`, [13 §3](13-build-and-quality.md#3-shader-build-pipeline)) runs it; the tests build their shaders with it and load the manifest (task 8.7). The 12a parser changes are left for the Visualizer task (§13).
+- **As implemented:** reflection reports a constant buffer's size padded to whole 16-byte registers, so an 8-byte struct has `size: 16`. Matching (§10.1) compares against that size.
 
 **How B would work.** `graphics::reflect_shader(std::span<const std::byte> bytecode) -> result<shader_bindings>`, called by `load_shader_library` when an entry has no bindings, loading `dxcompiler.dll` on first use. The build must not pass `-Qstrip_reflect`. A tool that compiles shaders at runtime already ships DXC, so B costs it nothing extra.
 
@@ -283,14 +296,16 @@ namespace avis::graphics::binding_layout
     // Typed helpers over the generic RHI calls, for pipelines on the standard signature. They take a recorder, the
     // type passes get from their context (D-92, 10 §3.1); a command_list is one too, since it derives from it.
     template<class Constants, rhi::queue_type Queue>
+        requires(Queue != rhi::queue_type::copy && std::is_trivially_copyable_v<Constants> &&
+                 sizeof(Constants) % 4 == 0 && sizeof(Constants) <= draw_constant_count * 4)
     void push_draw_constants(rhi::command_recorder<Queue>& recorder, const Constants& constants)
     {
-        static_assert(sizeof(Constants) <= draw_constant_count * 4);
         recorder.set_root_constants(draw_constants_parameter, constants);
     }
-    template<rhi::queue_type Queue>
+    // Defined in binding_layout.cpp for the graphics and compute queues
+    template<rhi::queue_type Queue> requires(Queue != rhi::queue_type::copy)
     void set_pass_constants(rhi::command_recorder<Queue>& recorder, rhi::gpu_address address);
-    template<rhi::queue_type Queue>
+    template<rhi::queue_type Queue> requires(Queue != rhi::queue_type::copy)
     void set_view_constants(rhi::command_recorder<Queue>& recorder, rhi::gpu_address address);
 }
 ```
@@ -299,6 +314,11 @@ namespace avis::graphics::binding_layout
 - The compile-time size check that `command_list::push_constants<T>` had moves here; the RHI's typed `set_root_constants` checks at runtime in debug builds, since it doesn't know the layout at compile time.
 - `bindless.hlsli` in the Visualizer mirrors these constants, and the probe-shader test compares against them ([11 §13](11-renderer.md#13-shaders-location-and-build)).
 - A second binding model (sensor rendering, a tool) gets its own header of the same shape and registers its description next to the standard one.
+
+**As implemented.**
+- **The size check is a constraint**, not a `static_assert`: an oversized struct then fails a `requires` expression instead of the build, which the tests check. It still fails at compile time.
+- **No copy-queue helpers.** `set_pass_constants` and `set_view_constants` are instantiated for the graphics and compute queues only: copy recorders have no root calls.
+- **Sampler states.** Point and linear samplers filter mips like they filter texels; `anisotropic_wrap` is 16x with linear mips; `shadow_comparison` filters linearly, uses point mips, clamps, and compares with `greater_equal`. The description's debug name is "avis standard", and `static_sampler_count` is 6.
 
 ## 10. `graphics/root_signature_registry.h`
 
@@ -329,6 +349,8 @@ namespace avis::graphics
         result<void> check_compatible(rhi::root_signature_handle signature,
                                       std::span<const stage_bindings> stages) const;
 
+        std::uint64_t lookup_count() const noexcept;   // find_compatible and check_compatible calls, for tests
+
     private:
         struct candidate;                   // name, handle, owned copy of the description
         rhi::pipelines pipelines_;
@@ -350,6 +372,11 @@ A signature is compatible with a pipeline when, for each stage's `shader_binding
 | `ResourceDescriptorHeap` / `SamplerDescriptorHeap` | nothing: every signature allows it (09 §12.1) |
 
 Parameters the shaders don't use are fine. A pipeline's stages are checked together against the same signature, each with its own visibility, so a vertex shader's `b0` and a pixel shader's `b0` can be matched by two different stage-limited parameters.
+
+**As implemented.**
+- The check is `detail::first_mismatch(description, stages)`, a pure function exposed to tests through `lib/avis/graphics/root_signature_matching.h`. A mismatch says whether the slot is missing (`"compute shader b1 space0 (16 bytes): no root parameter"`, `"compute shader s4 space0: no static sampler"`), hidden from the stage (`"pixel shader b3 space0 (64 bytes) not visible"`), or too small (`"vertex shader b0 space0 (96 bytes): root constants hold 64"`).
+- A stage with null bindings fails a debug check and counts as a mismatch.
+- `add` rejects an empty or already registered name with `invalid_argument`, so messages always name one candidate. The RHI signature's debug name defaults to the candidate's name.
 
 ### 10.2 Use by the pipeline cache
 
@@ -397,6 +424,8 @@ namespace avis::graphics
         result<rhi::compute_pipeline_handle> get_or_create(const shader_library& shaders,
                                                            const compute_pipeline_description& description);
 
+        std::size_t size() const;                  // distinct descriptions cached, for tests
+
     private:
         // key = hash over the state fields (not debug_name), the library's serial, the shader ids and the explicit
         // root signature if any; libraries are immutable, so (serial, id) identifies the bytecode without hashing it
@@ -414,6 +443,12 @@ namespace avis::graphics
 - **Creation outside the lock.** A miss builds the `rhi::graphics_pipeline_description` with the library's bytecode spans and calls `rhi::pipelines::create_pipeline` without holding the mutex, then inserts under the exclusive lock. If another worker inserted the same key meanwhile, the second PSO is kept alive by the RHI (no `destroy`, D-87) but unused, and the first handle returned, so the startup `bulk` never serialises on PSO compilation. A duplicate PSO only happens when two workers race on the same description, which the renderer's variant registry avoids in practice.
 - The renderer's `pipeline_variant_registry` ([11 §4](11-renderer.md)) keys its variants and calls the cache; nothing else in the renderer creates pipelines.
 - The library is only read during `get_or_create`, so it can be released once the startup pipelines exist; later variants need it again.
+
+**As implemented.**
+- **Key.** xxh3 over a buffer packed field by field: a kind tag, the library's serial, the shader id hashes, the explicit root signature (a presence byte and the handle), and every field of `rhi::graphics_pipeline_state`. `sizeof` static_asserts on the state and its rasterizer, depth and blend structures fail the build when a field is added without packing it. Floats are packed by their bits.
+- **Unknown ids** are reported by their hash: the cache has no string for an id that isn't in the library. Every error from the cache or the registry starts with `pipeline '<debug name>': `.
+- **A named signature is checked against the stages that have bindings;** stages without bindings aren't checked. Without a named signature, a stage without bindings is `shader_bindings_missing`.
+- **Tests** read the RHI's pipeline counts through `pipeline_factory` (white box), to check that rejected descriptions never reach the RHI.
 
 ## 12. Testing
 
@@ -444,7 +479,7 @@ Applied with this draft:
 - **99:** D-106 for root signatures as handles. (D-34 says the graphics layer publishes the binding layout; Q3 and Q4 are D-82 and D-83.)
 
 Left to apply:
-- **12a:** manifest format 2 with `bindings` (Q3 decided A): the version check accepts 2, and the parser reads `bindings` into `shader_manifest_entry::bindings`.
+- **12a:** manifest format 2 with `bindings` (Q3 decided A): the version check accepts 2, and the parser reads `bindings` into `shader_manifest_entry::bindings`. Left for the Visualizer task, which brings 12a's parser and moves the Visualizer's shaders to `avis_add_shaders`; task 8 tests the format with a minimal reader in `tests/test_graphics_shader_build.cpp`.
 
 ## 14. Open questions
 
