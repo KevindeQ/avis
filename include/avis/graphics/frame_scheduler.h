@@ -11,13 +11,17 @@
 #include "avis/rhi/queue.h"
 #include "avis/rhi/synchronization.h"
 #include "avis/rhi/transient.h"
+#include "avis/rhi/types.h"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <span>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace avis::graphics
@@ -67,6 +71,39 @@ namespace avis::graphics
 
         std::uint32_t frames_in_flight() const noexcept;
 
+        // ---- per-frame services: any thread, concurrently, for the frame being recorded; lock-free ----
+        // They fail with the RHI's transient_memory_exhausted when the context is full, and log one warning per frame
+        // with the budget to raise (D-98). A token that isn't the frame being recorded fails a debug check and
+        // invalid_argument.
+
+        // From the context's linear upload allocator: write-only, valid until the context is recycled
+        result<rhi::upload_allocation>
+            allocate_frame_memory(const frame_token& frame, std::size_t size, std::size_t alignment = 256);
+
+        // Copies `value` into 256-byte aligned frame memory, for a root CBV
+        template<class T>
+            requires std::is_trivially_copyable_v<T>
+        result<rhi::gpu_address> write_frame_constants(const frame_token& frame, const T& value)
+        {
+            auto allocation = allocate_frame_memory(frame, sizeof(T), 256);
+            if (!allocation)
+            {
+                return std::unexpected(std::move(allocation.error()));
+            }
+            std::memcpy(allocation->cpu.data(), &value, sizeof(T));
+            return allocation->gpu;
+        }
+
+        // Views in the context's descriptor range, for placed (transient) resources; valid until it is recycled
+        result<rhi::bindless_index> create_frame_srv(
+            const frame_token& frame,
+            rhi::texture_handle texture,
+            rhi::subresource_range range = rhi::all_subresources);
+        result<rhi::bindless_index>
+            create_frame_uav(const frame_token& frame, rhi::texture_handle texture, std::uint32_t mip = 0);
+        result<rhi::bindless_index> create_frame_srv(const frame_token& frame, rhi::buffer_handle buffer);
+        result<rhi::bindless_index> create_frame_uav(const frame_token& frame, rhi::buffer_handle buffer);
+
     private:
         friend class frame_token;
         friend class detail::frame_operation;
@@ -91,6 +128,14 @@ namespace avis::graphics
         // Recycles the next context (§5) and makes its token; waiting → recording
         frame_token recycle_and_deliver();
         std::span<const rhi::synchronization_point> recycled_submissions(const frame_token& frame) const noexcept;
+
+        // The context of the frame being recorded; a failed debug check and invalid_argument for any other token
+        result<detail::frame_context*> recording_context(const frame_token& frame, const char* service) noexcept;
+        // The once-per-frame exhaustion warnings
+        void warn_memory_exhausted(detail::frame_context& context, const frame_token& frame) const noexcept;
+        void warn_descriptors_exhausted(detail::frame_context& context, const frame_token& frame) const noexcept;
+        result<rhi::bindless_index> checked_view(
+            detail::frame_context& context, const frame_token& frame, result<rhi::bindless_index> view) const noexcept;
 
         rhi::synchronization synchronization_;
         frame_scheduler_configuration configuration_;

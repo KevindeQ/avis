@@ -6,6 +6,7 @@
 #include "helpers/recorded_assertions.h"
 #include "helpers/rhi_fixture.h"
 #include "helpers/rhi_waits.h"
+#include "rhi_test_compute_shader.h"
 
 #include "avis/error.h"
 #include "avis/graphics/error.h"
@@ -15,7 +16,11 @@
 #include "avis/rhi/d3d12/device.h"
 #include "avis/rhi/d3d12/device_state.h"
 #include "avis/rhi/error.h"
+#include "avis/rhi/memory.h"
+#include "avis/rhi/pipeline.h"
 #include "avis/rhi/queue.h"
+#include "avis/rhi/resources.h"
+#include "avis/rhi/root_signature.h"
 #include "avis/rhi/synchronization.h"
 #include "avis/rhi/transient.h"
 
@@ -28,14 +33,18 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
 using namespace avis;
+using rhi::buffer_usage;
 using rhi::queue_type;
+using rhi::texture_usage;
 
 namespace
 {
@@ -428,4 +437,344 @@ TEST_CASE("frame_scheduler: debug checks on pacing", "[graphics]")
         CHECK_FALSE(other->try_begin_frame().has_value());
         scheduler->end_frame(std::move(mine), {});
     }
+}
+
+// ---- per-frame services (7.3) ----
+
+namespace
+{
+    template<std::size_t Size>
+    std::span<const std::byte> bytes(const unsigned char (&code)[Size]) noexcept
+    {
+        return std::as_bytes(std::span{ code });
+    }
+} // namespace
+
+TEST_CASE("frame_scheduler: write_frame_constants feeds a root CBV", "[graphics]")
+{
+    struct fill_constants
+    {
+        std::uint32_t buffer_index;
+        std::uint32_t base;
+        std::uint32_t count;
+    };
+    constexpr std::uint32_t count = 64;
+    constexpr std::uint32_t base = 1000;
+
+    tests::test_rhi hardware_interface;
+    const auto scheduler = tests::make_test_frame_scheduler(hardware_interface, 2);
+    rhi::resources resources{ *hardware_interface };
+    rhi::pipelines pipelines{ *hardware_interface };
+
+    // The fill shader reads its constants from b0; here b0 is a root CBV instead of root constants
+    const std::array parameters{ rhi::root_parameter{ .kind = rhi::root_parameter_kind::constant_buffer,
+                                                      .shader_register = 0 } };
+    const auto signature = pipelines.create_root_signature({ .parameters = parameters, .debug_name = "fill cbv" });
+    REQUIRE(signature.has_value());
+    const auto pipeline = pipelines.create_pipeline(
+        rhi::compute_pipeline_description{
+            .root_signature = *signature, .compute_shader = bytes(rhi_test_compute_shader), .debug_name = "fill cbv" });
+    REQUIRE(pipeline.has_value());
+
+    const auto target = resources.create_buffer(
+        { .size = count * 4u,
+          .usage = buffer_usage::unordered_access | buffer_usage::copy_source,
+          .debug_name = "target" });
+    REQUIRE(target.has_value());
+    const auto readback = resources.create_buffer(
+        { .size = count * 4u, .usage = buffer_usage::copy_destination, .memory = rhi::memory_type::readback });
+    REQUIRE(readback.has_value());
+
+    graphics::frame_token frame = tests::begin_frame_inline(*scheduler);
+    REQUIRE(scheduler->allocate_frame_memory(frame, 4, 4).has_value()); // so the constants need aligning
+    const auto address =
+        scheduler->write_frame_constants(frame, fill_constants{ resources.uav(*target).value, base, count });
+    REQUIRE(address.has_value());
+    CHECK(address->value % 256 == 0);
+
+    auto list = rhi::command_lists{ *hardware_interface }.acquire<queue_type::compute>("fill from frame constants");
+    REQUIRE(list.has_value());
+    list->set_pipeline(*pipeline);
+    list->set_root_constant_buffer(0, *address);
+    list->dispatch(1, 1, 1);
+    const std::array barriers{ rhi::buffer_barrier{
+        .buffer = *target,
+        .before = { rhi::pipeline_synchronization::compute_shading, rhi::resource_access::unordered_access },
+        .after = { rhi::pipeline_synchronization::copy, rhi::resource_access::copy_source } } };
+    list->barrier({}, barriers, {});
+    list->copy_buffer(*readback, 0, *target, 0, count * 4u);
+    const auto point = rhi::queue<queue_type::compute>{ *hardware_interface }.submit(std::span{ &*list, 1 });
+    REQUIRE(point.has_value());
+    hardware_interface.wait_for(*point);
+
+    const std::span<std::byte> values = resources.mapped_bytes(*readback);
+    bool matches = true;
+    for (std::uint32_t index = 0; index < count; ++index)
+    {
+        std::uint32_t value = 0;
+        std::memcpy(&value, values.data() + index * 4, 4);
+        matches = matches && value == base + index;
+    }
+    CHECK(matches);
+
+    const std::array points{ *point };
+    scheduler->end_frame(std::move(frame), points);
+    resources.destroy(*target);
+    resources.destroy(*readback);
+}
+
+TEST_CASE("frame_scheduler: a recycle empties only its own context", "[graphics]")
+{
+    tests::test_rhi hardware_interface;
+    const auto scheduler = tests::make_test_frame_scheduler(hardware_interface, 2);
+    constexpr std::size_t capacity = tests::test_frame_memory_size;
+
+    const auto full_allocation = [&](const graphics::frame_token& frame)
+    {
+        const auto allocation = scheduler->allocate_frame_memory(frame, capacity);
+        REQUIRE(allocation.has_value());
+        return allocation->gpu;
+    };
+
+    graphics::frame_token first = tests::begin_frame_inline(*scheduler);
+    const rhi::gpu_address first_base = full_allocation(first);
+    CHECK_FALSE(scheduler->allocate_frame_memory(first, 1).has_value());
+    scheduler->end_frame(std::move(first), {});
+
+    graphics::frame_token second = tests::begin_frame_inline(*scheduler);
+    const auto half = scheduler->allocate_frame_memory(second, capacity / 2);
+    REQUIRE(half.has_value());
+    const rhi::gpu_address second_base = half->gpu;
+    CHECK(second_base != first_base); // the other context's allocator
+    scheduler->end_frame(std::move(second), {});
+
+    graphics::frame_token third = tests::begin_frame_inline(*scheduler); // recycles frame 1's context
+    CHECK(full_allocation(third) == first_base);
+    scheduler->end_frame(std::move(third), {});
+
+    graphics::frame_token fourth = tests::begin_frame_inline(*scheduler); // recycles frame 2's context
+    CHECK(full_allocation(fourth) == second_base);
+    scheduler->end_frame(std::move(fourth), {});
+}
+
+TEST_CASE("frame_scheduler: frame views come from the context's range and are reused after the recycle", "[graphics]")
+{
+    tests::test_rhi hardware_interface;
+    const auto scheduler = tests::make_test_frame_scheduler(hardware_interface, 2);
+    rhi::memory memory{ *hardware_interface };
+    rhi::resources resources{ *hardware_interface };
+
+    const auto heap = memory.create_heap({ .size = 1 << 20 });
+    REQUIRE(heap.has_value());
+    const auto texture = memory.create_placed_texture(
+        *heap,
+        0,
+        { .width = 64,
+          .height = 64,
+          .format = rhi::format::rgba8_unorm,
+          .usage = texture_usage::shader_resource | texture_usage::unordered_access });
+    REQUIRE(texture.has_value());
+    const auto buffer = resources.create_buffer(
+        { .size = 4096, .usage = buffer_usage::shader_resource | buffer_usage::unordered_access, .debug_name = "raw" });
+    REQUIRE(buffer.has_value());
+
+    const std::uint32_t persistent =
+        hardware_interface->state().descriptors().configuration().persistent_descriptor_count;
+    constexpr std::uint32_t capacity = tests::test_frame_descriptor_count;
+
+    // Every view of a frame, in creation order, until the range is full
+    const auto fill_range = [&](const graphics::frame_token& frame)
+    {
+        std::vector<std::uint32_t> indices;
+        const auto add = [&indices](const result<rhi::bindless_index>& view)
+        {
+            REQUIRE(view.has_value());
+            indices.push_back(view->value);
+        };
+        add(scheduler->create_frame_srv(frame, *texture));
+        add(scheduler->create_frame_uav(frame, *texture));
+        add(scheduler->create_frame_srv(frame, *texture, { .first_mip = 0, .mip_count = 1 }));
+        add(scheduler->create_frame_srv(frame, *buffer));
+        add(scheduler->create_frame_uav(frame, *buffer));
+        while (indices.size() < capacity)
+        {
+            add(scheduler->create_frame_srv(frame, *texture));
+        }
+        return indices;
+    };
+
+    graphics::frame_token first = tests::begin_frame_inline(*scheduler);
+    const std::vector<std::uint32_t> first_views = fill_range(first);
+    // One contiguous range in the transient region, after the persistent one
+    CHECK(first_views.front() > persistent);
+    bool contiguous = true;
+    for (std::size_t index = 1; index < first_views.size(); ++index)
+    {
+        contiguous = contiguous && first_views[index] == first_views[0] + index;
+    }
+    CHECK(contiguous);
+    scheduler->end_frame(std::move(first), {});
+
+    graphics::frame_token second = tests::begin_frame_inline(*scheduler);
+    const std::vector<std::uint32_t> second_views = fill_range(second);
+    const bool separate = second_views.back() < first_views.front() || second_views.front() > first_views.back();
+    CHECK(separate);
+    scheduler->end_frame(std::move(second), {});
+
+    graphics::frame_token third = tests::begin_frame_inline(*scheduler);
+    CHECK(fill_range(third) == first_views);
+    scheduler->end_frame(std::move(third), {});
+
+    resources.destroy(*buffer);
+    resources.destroy(*texture);
+    memory.destroy(*heap);
+}
+
+TEST_CASE("frame_scheduler: concurrent frame allocations don't overlap", "[graphics]")
+{
+    constexpr int threads = 16;
+    constexpr int per_thread = 60; // 16 × 60 × 64 bytes fit the 64 KiB of frame memory
+    constexpr std::size_t size = 64;
+
+    tests::test_rhi hardware_interface;
+    const auto scheduler = tests::make_test_frame_scheduler(hardware_interface, 2);
+    graphics::frame_token frame = tests::begin_frame_inline(*scheduler);
+
+    std::vector<std::vector<std::uint64_t>> addresses(threads);
+    std::vector<int> failures(threads, 0);
+    {
+        std::vector<std::jthread> workers;
+        for (int thread = 0; thread < threads; ++thread)
+        {
+            workers.emplace_back(
+                [&, thread]
+                {
+                    for (int index = 0; index < per_thread; ++index)
+                    {
+                        const auto allocation = scheduler->allocate_frame_memory(frame, size, size);
+                        if (allocation)
+                        {
+                            addresses[thread].push_back(allocation->gpu.value);
+                        }
+                        else
+                        {
+                            ++failures[thread];
+                        }
+                    }
+                });
+        }
+    }
+
+    std::vector<std::uint64_t> all;
+    for (const auto& list : addresses)
+    {
+        all.insert(all.end(), list.begin(), list.end());
+    }
+    CHECK(std::ranges::count(failures, 0) == threads);
+    REQUIRE(all.size() == std::size_t{ threads } * per_thread);
+    std::ranges::sort(all);
+    bool overlapping = false;
+    for (std::size_t index = 1; index < all.size(); ++index)
+    {
+        overlapping = overlapping || all[index] - all[index - 1] < size;
+    }
+    CHECK_FALSE(overlapping);
+    scheduler->end_frame(std::move(frame), {});
+}
+
+TEST_CASE(
+    "frame_scheduler: exhaustion fails, warns once per frame, and the next frame allocates normally", "[graphics]")
+{
+    tests::log_capture graphics_log{ "graphics" };
+    tests::test_rhi hardware_interface;
+    const auto scheduler = tests::make_test_frame_scheduler(hardware_interface, 1);
+    rhi::memory memory{ *hardware_interface };
+    rhi::resources resources{ *hardware_interface };
+    const auto heap = memory.create_heap({ .size = 1 << 20 });
+    REQUIRE(heap.has_value());
+    const auto texture = memory.create_placed_texture(
+        *heap,
+        0,
+        { .width = 16, .height = 16, .format = rhi::format::rgba8_unorm, .usage = texture_usage::shader_resource });
+    REQUIRE(texture.has_value());
+
+    const auto exhaust = [&](const graphics::frame_token& frame)
+    {
+        REQUIRE(scheduler->allocate_frame_memory(frame, tests::test_frame_memory_size).has_value());
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            const auto failed = scheduler->allocate_frame_memory(frame, 1);
+            REQUIRE_FALSE(failed.has_value());
+            CHECK(rhi::is_error(failed.error(), rhi::error_kind::transient_memory_exhausted));
+            const auto constants = scheduler->write_frame_constants(frame, std::uint32_t{ 7 });
+            REQUIRE_FALSE(constants.has_value());
+            CHECK(rhi::is_error(constants.error(), rhi::error_kind::transient_memory_exhausted));
+        }
+
+        for (std::uint32_t index = 0; index < tests::test_frame_descriptor_count; ++index)
+        {
+            REQUIRE(scheduler->create_frame_srv(frame, *texture).has_value());
+        }
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            const auto failed = scheduler->create_frame_srv(frame, *texture);
+            REQUIRE_FALSE(failed.has_value());
+            CHECK(rhi::is_error(failed.error(), rhi::error_kind::transient_memory_exhausted));
+        }
+    };
+
+    graphics::frame_token first = tests::begin_frame_inline(*scheduler);
+    exhaust(first);
+    CHECK(count_lines(graphics_log, "frame upload memory is exhausted") == 1);
+    CHECK(
+        count_lines(
+            graphics_log,
+            "[warning] frame 1: frame upload memory is exhausted (high-water mark 65536 of 65536 bytes)") == 1);
+    CHECK(count_lines(graphics_log, "frame descriptors are exhausted") == 1);
+    CHECK(count_lines(graphics_log, "frame 1: frame descriptors are exhausted (64 views)") == 1);
+    scheduler->end_frame(std::move(first), {}); // the frame is skipped
+
+    // The frame that reuses the context allocates normally, and warns again when it runs out
+    graphics::frame_token second = tests::begin_frame_inline(*scheduler);
+    exhaust(second);
+    CHECK(count_lines(graphics_log, "frame 2: frame upload memory is exhausted") == 1);
+    CHECK(count_lines(graphics_log, "frame 2: frame descriptors are exhausted") == 1);
+    CHECK(count_lines(graphics_log, "are exhausted") + count_lines(graphics_log, "is exhausted") == 4);
+    scheduler->end_frame(std::move(second), {});
+
+    resources.destroy(*texture);
+    memory.destroy(*heap);
+}
+
+TEST_CASE("frame_scheduler: per-frame services check the token", "[graphics]")
+{
+    tests::recorded_assertions assertions;
+    tests::test_rhi hardware_interface;
+    const auto scheduler = tests::make_test_frame_scheduler(hardware_interface, 2);
+
+    graphics::frame_token frame = tests::begin_frame_inline(*scheduler);
+    graphics::frame_token holder = std::move(frame); // frame is moved from
+    REQUIRE(scheduler->allocate_frame_memory(holder, 16).has_value());
+    CHECK(assertions.count() == 0);
+
+    const auto stale = scheduler->allocate_frame_memory(frame, 16);
+    REQUIRE_FALSE(stale.has_value());
+    CHECK(graphics::is_error(stale.error(), graphics::error_kind::invalid_argument));
+    const auto stale_view = scheduler->create_frame_srv(frame, rhi::buffer_handle{});
+    REQUIRE_FALSE(stale_view.has_value());
+    CHECK(graphics::is_error(stale_view.error(), graphics::error_kind::invalid_argument));
+#ifndef NDEBUG
+    CHECK(assertions.contains("isn't the frame being recorded"));
+#endif
+
+    // A token of another scheduler
+    assertions.clear();
+    const auto other = tests::make_test_frame_scheduler(hardware_interface, 2);
+    graphics::frame_token foreign = tests::begin_frame_inline(*other);
+    CHECK_FALSE(scheduler->allocate_frame_memory(foreign, 16).has_value());
+#ifndef NDEBUG
+    CHECK(assertions.contains("isn't the frame being recorded"));
+#endif
+    other->end_frame(std::move(foreign), {});
+    scheduler->end_frame(std::move(holder), {});
 }

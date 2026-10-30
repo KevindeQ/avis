@@ -4,9 +4,11 @@
 #include "avis/detail/safe_error.h"
 #include "avis/graphics/error.h"
 #include "avis/log.h"
+#include "avis/rhi/error.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <format>
 #include <string>
 #include <utility>
@@ -46,6 +48,11 @@ namespace avis::graphics
             std::uint32_t recycled_count = 0;
 
             std::uint64_t frame_index = 0; // the frame that last held the context; 0 before its first frame
+
+            // Set by the first exhaustion warning of the frame, cleared by the recycle: one warning per frame each
+            // for upload memory and for descriptors
+            std::atomic<bool> memory_exhaustion_logged{ false };
+            std::atomic<bool> descriptor_exhaustion_logged{ false };
         };
     } // namespace detail
 
@@ -317,6 +324,8 @@ namespace avis::graphics
         context.descriptors.reset(context.recycled());
         context.last_count = 0;
         context.frame_index = index;
+        context.memory_exhaustion_logged.store(false, std::memory_order_relaxed);
+        context.descriptor_exhaustion_logged.store(false, std::memory_order_relaxed);
 
         delivered_index_ = index;
         current_index_.store(index, std::memory_order_relaxed);
@@ -328,6 +337,135 @@ namespace avis::graphics
         frame_scheduler::recycled_submissions(const frame_token& frame) const noexcept
     {
         return contexts_[frame.context_index_]->recycled();
+    }
+
+    // ---- per-frame services ----
+
+    result<rhi::upload_allocation> frame_scheduler::allocate_frame_memory(
+        const frame_token& frame, const std::size_t size, const std::size_t alignment)
+    {
+        auto context = recording_context(frame, "allocate_frame_memory");
+        if (!context)
+        {
+            return std::unexpected(std::move(context.error()));
+        }
+        auto allocation = (*context)->allocator.allocate(size, alignment);
+        if (!allocation && rhi::is_error(allocation.error(), rhi::error_kind::transient_memory_exhausted))
+        {
+            warn_memory_exhausted(**context, frame);
+        }
+        return allocation;
+    }
+
+    result<rhi::bindless_index> frame_scheduler::create_frame_srv(
+        const frame_token& frame, const rhi::texture_handle texture, const rhi::subresource_range range)
+    {
+        auto context = recording_context(frame, "create_frame_srv");
+        if (!context)
+        {
+            return std::unexpected(std::move(context.error()));
+        }
+        return checked_view(**context, frame, (*context)->descriptors.create_srv(texture, range));
+    }
+
+    result<rhi::bindless_index> frame_scheduler::create_frame_uav(
+        const frame_token& frame, const rhi::texture_handle texture, const std::uint32_t mip)
+    {
+        auto context = recording_context(frame, "create_frame_uav");
+        if (!context)
+        {
+            return std::unexpected(std::move(context.error()));
+        }
+        return checked_view(**context, frame, (*context)->descriptors.create_uav(texture, mip));
+    }
+
+    result<rhi::bindless_index>
+        frame_scheduler::create_frame_srv(const frame_token& frame, const rhi::buffer_handle buffer)
+    {
+        auto context = recording_context(frame, "create_frame_srv");
+        if (!context)
+        {
+            return std::unexpected(std::move(context.error()));
+        }
+        return checked_view(**context, frame, (*context)->descriptors.create_srv(buffer));
+    }
+
+    result<rhi::bindless_index>
+        frame_scheduler::create_frame_uav(const frame_token& frame, const rhi::buffer_handle buffer)
+    {
+        auto context = recording_context(frame, "create_frame_uav");
+        if (!context)
+        {
+            return std::unexpected(std::move(context.error()));
+        }
+        return checked_view(**context, frame, (*context)->descriptors.create_uav(buffer));
+    }
+
+    result<detail::frame_context*>
+        frame_scheduler::recording_context(const frame_token& frame, const char* const service) noexcept
+    {
+        // Lock-free: the token is only current between its delivery and end_frame, which the caller orders before
+        // and after its per-frame calls
+        const bool recording =
+            frame.owner_ == this && frame.index_ != 0 && current_index_.load(std::memory_order_relaxed) == frame.index_;
+        if (!AVIS_CHECK(
+                logger_name, recording, "per-frame service called with a token that isn't the frame being recorded"))
+        {
+            return std::unexpected(
+                avis::detail::safe_error(
+                    error_domain::graphics, static_cast<std::int32_t>(error_kind::invalid_argument), service));
+        }
+        return contexts_[frame.context_index_].get();
+    }
+
+    void frame_scheduler::warn_memory_exhausted(detail::frame_context& context, const frame_token& frame) const noexcept
+    {
+        if (context.memory_exhaustion_logged.exchange(true, std::memory_order_relaxed))
+        {
+            return;
+        }
+        try
+        {
+            log::get(logger_name)
+                ->warn(
+                    "frame {}: frame upload memory is exhausted (high-water mark {} of {} bytes); raise "
+                    "frame_scheduler_configuration::upload_memory_per_frame",
+                    frame.index_,
+                    context.allocator.high_water_mark(),
+                    context.allocator.capacity());
+        }
+        catch (...)
+        {}
+    }
+
+    void frame_scheduler::warn_descriptors_exhausted(
+        detail::frame_context& context, const frame_token& frame) const noexcept
+    {
+        if (context.descriptor_exhaustion_logged.exchange(true, std::memory_order_relaxed))
+        {
+            return;
+        }
+        try
+        {
+            log::get(logger_name)
+                ->warn(
+                    "frame {}: frame descriptors are exhausted ({} views); raise "
+                    "frame_scheduler_configuration::descriptors_per_frame",
+                    frame.index_,
+                    context.descriptors.capacity());
+        }
+        catch (...)
+        {}
+    }
+
+    result<rhi::bindless_index> frame_scheduler::checked_view(
+        detail::frame_context& context, const frame_token& frame, result<rhi::bindless_index> view) const noexcept
+    {
+        if (!view && rhi::is_error(view.error(), rhi::error_kind::transient_memory_exhausted))
+        {
+            warn_descriptors_exhausted(context, frame);
+        }
+        return view;
     }
 
     // ---- detail::frame_operation ----
