@@ -146,6 +146,7 @@ target_sources(AVIS_LIB
 		scene/bounds.cpp
 		scene/components/driver.cpp
 		scene/error.cpp
+		scene/reflection.cpp
 		scene/scene.cpp
 		scene/scene_graph.cpp
 		scene/types.cpp

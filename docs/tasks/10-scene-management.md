@@ -256,18 +256,18 @@ flowchart LR
 ## 10.8 Reflection
 08 §3, §9.7.
 
-- [ ] `reflection.h`: `field_value`, `field_description`, the primary template `reflection<T>` (undefined), `reflected_field`, `reflected_component` and `reflected_entity`.
-- [ ] Specialisations next to each component that the inspector shows, with `constexpr` tables and plain-function readers:
+- [x] `reflection.h`: `field_value`, `field_description`, the primary template `reflection<T>` (undefined), `reflected_field`, `reflected_component` and `reflected_entity`.
+- [x] Specialisations next to each component that the inspector shows, with `constexpr` tables and plain-function readers:
   - `identity`, `vehicle` (with `vehicle_state` fields flattened), `sensor`, `light`, `display_shape`, `render_options`, `visibility`, `label`, `trail` (settings and sample count) and `update_stamp`
   - `mesh` and `material`, as handles and counts only
 
   `properties` is not reflected: `reflected_entity::properties` carries it as rows (08 §3). `node_reference`, `previous_world`, `represents`, `belief_geometry` and `lidar_points` have no specialisation; the last two show chunk and sweep counts through a `geometry` pseudo-component (see Open points).
-- [ ] A `detail::reflected_components` type list in the order of the headers in 08 §9.2. `scene::reflect` (10.9) iterates it.
+- [x] A `detail::reflected_components` type list in the order of the headers in 08 §9.2. `scene::reflect` (10.9) iterates it.
 
 **Tests** (`test_scene_reflection.cpp`, `[scene][unit]`):
-- [ ] Each specialisation's field names are unique, and its units are from the set used by 08 (`""`, `"m"`, `"m/s"`, `"m/s²"`, `"rad"`, `"rad/s"`, `"s"`, `"lx"`, `"cd"`).
-- [ ] The readers return the stored values for a hand-filled `vehicle`.
-- [ ] The tables are `constexpr` (`static_assert` on `reflection<vehicle>::fields.size()`).
+- [x] Each specialisation's field names are unique, and its units are from the set used by 08 (`""`, `"m"`, `"m/s"`, `"m/s²"`, `"rad"`, `"rad/s"`, `"s"`, `"lx"`, `"cd"`).
+- [x] The readers return the stored values for a hand-filled `vehicle`.
+- [x] The tables are `constexpr` (`static_assert` on `reflection<vehicle>::fields.size()`).
 
 ## 10.9 `scene`: entities, ids, asset lifetime
 08 §2, §9.2, §9.5.
