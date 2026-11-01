@@ -134,6 +134,8 @@ target_sources(AVIS_LIB
 		rhi/d3d12/transient_upload.cpp
 		rhi/d3d12/view_descriptions.cpp
 
+		scene/assets/mesh_builder.cpp
+		scene/assets/mesh_data.cpp
 		scene/bounds.cpp
 		scene/error.cpp
 		scene/scene.cpp

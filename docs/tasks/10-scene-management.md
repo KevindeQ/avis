@@ -132,31 +132,31 @@ flowchart LR
 ## 10.4 Mesh data, materials, textures
 08 §5.1, §9.4, [11 §3.2, §3.3](../design/11-renderer.md#32-geometry).
 
-- [ ] `assets/mesh_data.h`:
+- [x] `assets/mesh_data.h`:
   - forward declarations of `mesh_asset`, `material_asset` and `texture_asset`
   - `asset_handle<T>` and its aliases
   - `mesh_topology`, `vertex_attribute` (with `ALLOW_FLAGS_FOR_ENUM`), `mesh_primitive` and `mesh_data`
   - `mesh_data::byte_size()`: vertex and index bytes of the encoded streams
-- [ ] `detail::validate_and_bound(mesh_data&)` (private, used by the cache) checks four things:
+- [x] `detail::validate_and_bound(mesh_data&)` (private, used by the cache) checks four things:
   - every present attribute stream has `positions.size()` entries, and absent ones are empty
   - indices are in range
   - there's at least one primitive, and each primitive lies within the streams
   - `indices` is empty when every primitive has `index_count == 0`
 
   It then computes each primitive's bounds and their union. A failure returns `invalid_mesh` with the first problem found.
-- [ ] `assets/mesh_builder.h` and `.cpp`:
+- [x] `assets/mesh_builder.h` and `.cpp`:
   - The builder encodes normals and tangents as octahedral `u16x2` and `uv` as f16 bit patterns.
   - `add_vertex` starts a vertex; the attribute calls apply to the last one. The first vertex fixes the attribute set, and a mismatch is a debug check and an `invalid_mesh` from `build`.
   - `end_primitive` closes the range since the previous primitive.
   - `build() &&` closes an open primitive and returns `mesh_data`, without bounds (the cache computes them).
-- [ ] `assets/material.h`: `shading_model`, `alpha_mode`, `blend_operation`, `material_description` as in 08 §9.4.
-- [ ] `assets/texture_data.h`: `texture_format`, `texture_data`, and `texture_data::byte_size()`.
+- [x] `assets/material.h`: `shading_model`, `alpha_mode`, `blend_operation`, `material_description` as in 08 §9.4.
+- [x] `assets/texture_data.h`: `texture_format`, `texture_data`, and `texture_data::byte_size()`.
 
 **Tests** (`test_scene_mesh_data.cpp`, `[scene][unit]`):
-- [ ] Octahedral encoding round-trips unit normals within 1e-3 rad, including ±Z and the octahedron's folds. f16 uv round-trips 0, 1, 0.5 and 1/3 to f16 precision.
-- [ ] A builder with two primitives gives the right ranges. A vertex missing an attribute that the first one has fails.
-- [ ] Validation rejects: an index out of range, a stream of the wrong length, no primitives, and a primitive past the end. The bounds equal a brute-force scan, and empty positions give empty bounds.
-- [ ] `byte_size` matches the stream sizes.
+- [x] Octahedral encoding round-trips unit normals within 1e-3 rad, including ±Z and the octahedron's folds. f16 uv round-trips 0, 1, 0.5 and 1/3 to f16 precision.
+- [x] A builder with two primitives gives the right ranges. A vertex missing an attribute that the first one has fails.
+- [x] Validation rejects: an index out of range, a stream of the wrong length, no primitives, and a primitive past the end. The bounds equal a brute-force scan, and empty positions give empty bounds.
+- [x] `byte_size` matches the stream sizes.
 
 ## 10.5 Asset cache
 08 §5.1, §5.2, §8.5, §9.4.

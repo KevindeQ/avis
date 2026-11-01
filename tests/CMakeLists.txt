@@ -103,6 +103,7 @@ target_sources(AVIS_TESTS
 		test_scene_bounds.cpp
 		test_scene_error.cpp
 		test_scene_graph.cpp
+		test_scene_mesh_data.cpp
 		test_scene_public_headers.cpp
 		test_scene_types.cpp
 		test_sender_of.cpp
