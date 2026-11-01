@@ -164,7 +164,9 @@ namespace avis::tests
         settings{ options.settings },
         output_size{ options.output_size }
     {
-        uploads = make_test_upload_queue(graphics.hardware_interface);
+        uploads = options.staging_ring_size > 0 ?
+                      make_test_upload_queue(graphics.hardware_interface, options.staging_ring_size) :
+                      make_test_upload_queue(graphics.hardware_interface);
         readbacks = make_test_readback_queue(graphics.hardware_interface);
 
         auto library = threading::sync_wait_result(
@@ -208,6 +210,7 @@ namespace avis::tests
             rendering::renderer_dependencies{
                 .resources = rhi::resources{ *graphics.hardware_interface },
                 .pipelines = rhi::pipelines{ *graphics.hardware_interface },
+                .synchronization = rhi::synchronization{ *graphics.hardware_interface },
                 .graph = graphics.graph,
                 .pool = graphics.pool,
                 .frames = *graphics.frames,

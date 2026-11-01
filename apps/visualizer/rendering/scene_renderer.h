@@ -6,18 +6,23 @@
 //
 // So far (task 11.2) each view's frame is a placeholder tonemap pass that clears ldr_color to background_color, and
 // present_to_shared, which copies it into the view's output. The passes of 11 §2.3 replace the placeholder step by
-// step.
+// step. Mesh residency (11.3) runs in every frame's prepare stage: the snapshot's meshes are uploaded into the
+// geometry arena, and the arena is imported into the graph.
 
+#include "rendering/geometry_arena.h"
 #include "rendering/render_settings.h"
+#include "rendering/residency_cache.h"
 #include "rendering/view.h"
 #include "rendering/view_history.h"
 
 #include "avis/error.h"
+#include "avis/graphics/buffer.h"
 #include "avis/graphics/frame_token.h"
 #include "avis/graphics/graph_debug_information.h"
 #include "avis/graphics/render_graph.h"
 #include "avis/rhi/pipeline.h"
 #include "avis/rhi/resources.h"
+#include "avis/rhi/synchronization.h"
 #include "avis/scene/snapshot.h"
 #include "avis/sender_of.h"
 #include "avis/threading/parallel_helpers.h"
@@ -55,6 +60,7 @@ namespace avis::visualizer::rendering
     {
         rhi::resources resources;
         rhi::pipelines pipelines;
+        rhi::synchronization synchronization; // residency: whether a version's copies are complete (11 §3.6)
         graphics::render_graph& graph;
         graphics::transient_resource_pool& pool;
         graphics::frame_scheduler& frames;
@@ -74,13 +80,23 @@ namespace avis::visualizer::rendering
         std::uint64_t last_publish_sequence = 0; // of the last snapshot rendered
         std::uint32_t views = 0; // in the last frame
         std::size_t view_histories = 0;
+        residency_statistics residency; // meshes, pending uploads and arena use (11.3)
+    };
+
+    // The geometry arena in this frame's graph (11 §3.2), imported outside any view with the newest ready_after of the
+    // mesh versions the frame draws (D-103). The passes that draw read them (11.10).
+    struct frame_geometry
+    {
+        graphics::buffer vertices;
+        graphics::buffer indices;
     };
 
     class scene_renderer
     {
     public:
-        // Registers the standard root signature (18 §9) as "standard" and creates the renderer's persistent resources.
-        // The shader library must outlive the renderer.
+        // Registers the standard root signature (18 §9) as "standard" and creates the renderer's persistent resources,
+        // the geometry arena among them (geometry.arena_mib; invalid_argument for an arena the RHI can't address). The
+        // shader library must outlive the renderer.
         static result<std::unique_ptr<scene_renderer>> create(
             const renderer_dependencies& dependencies,
             const render_settings& settings,
@@ -94,7 +110,10 @@ namespace avis::visualizer::rendering
         // returns the sender that executes it (10 §7), completing with the frame's submitted_frame for end_frame.
         // The frame, the snapshot's data used by the passes, the renderer and its graph must outlive the sender; the
         // views are copied while building. A frame that can't be built (an invalid view, history resources that can't
-        // be created) completes with that error and submits nothing.
+        // be created, a failed upload flush) completes with that error and submits nothing.
+        //
+        // Before building the graph, the prepare stage makes the snapshot's meshes resident (11 §3.6): it queues their
+        // uploads, flushes the upload queue and imports the geometry arena.
         //
         // Views must have distinct, non-empty names without '/' and a non-zero size. An output must be an
         // RGBA8_UNORM texture of the view's size that allows copy_destination.
@@ -121,8 +140,8 @@ namespace avis::visualizer::rendering
         }
 
         // Frame `completed_frame_index` and every earlier one are complete on the GPU: called by the frame chain when
-        // begin_frame recycles a context (11 §3.6, 17 §4)
-        void retire(std::uint64_t completed_frame_index) noexcept;
+        // begin_frame recycles a context (11 §3.6, 17 §4). Frees the geometry ranges no frame can read any more.
+        void retire(std::uint64_t completed_frame_index);
 
         renderer_debug_information debug_information() const;
 
@@ -137,12 +156,24 @@ namespace avis::visualizer::rendering
             return histories_;
         }
 
+        // For tests: mesh residency and the arena (11 §3.6)
+        const residency_cache& residency() const noexcept
+        {
+            return *residency_;
+        }
+
+        const geometry_arena& arena() const noexcept
+        {
+            return *arena_;
+        }
+
     private:
         scene_renderer(
             const renderer_dependencies& dependencies,
             const render_settings& settings,
             graphics::shader_library& shaders,
-            rhi::root_signature_handle standard_signature);
+            rhi::root_signature_handle standard_signature,
+            std::unique_ptr<geometry_arena> arena);
 
         // The graph of one frame, compiled; the first failure otherwise
         std::optional<error> build_frame(
@@ -160,6 +191,9 @@ namespace avis::visualizer::rendering
         graphics::shader_library& shaders_;
         rhi::root_signature_handle standard_signature_;
         view_history_store histories_;
+        std::unique_ptr<geometry_arena> arena_;
+        std::unique_ptr<residency_cache> residency_; // refers to arena_ and the upload queue
+        frame_geometry geometry_; // of the frame being built
 
         std::optional<error> build_failure_; // of the last render; thrown by its sender
         std::uint64_t frames_rendered_ = 0;

@@ -145,22 +145,46 @@ flowchart LR
 ## 11.3 Geometry arena and mesh residency
 11 §3.2, §3.6, D-41, D-103.
 
-- [ ] `geometry_arena.h/.cpp`: two persistent `gpu_only` buffers, vertices and indices, sized from `geometry.arena_mib` (split by a fixed ratio, see Open points), each sub-allocated by an offset allocator. The allocator uses a free list ordered by offset, best fit, and coalesces neighbours on free; alignment is 16 bytes for vertices and 4 for indices. `allocate(vertex_bytes, index_bytes)` returns `std::optional<geometry_range>`. Vertex streams are laid out per range as structure of arrays (positions, then each present attribute), with offsets in `geometry_range`.
-- [ ] `residency_cache.h/.cpp` as in 11 §3.6, for meshes:
+- [x] `geometry_arena.h/.cpp`: two persistent `gpu_only` buffers, vertices and indices, sized from `geometry.arena_mib` (split by a fixed ratio, see Open points), each sub-allocated by an offset allocator. The allocator uses a free list ordered by offset, best fit, and coalesces neighbours on free; alignment is 16 bytes for vertices and 4 for indices. `allocate(vertex_bytes, index_bytes)` returns `std::optional<geometry_range>`. Vertex streams are laid out per range as structure of arrays (positions, then each present attribute), with offsets in `geometry_range`.
+
+  *As implemented:*
+  - The split is 80% vertices, 20% indices. Each buffer must stay below 4 GiB, because `geometry_range` and the shaders use 32-bit offsets; `create` fails with `invalid_argument` otherwise.
+  - `offset_allocator` keeps a second index by size, so best fit is a `lower_bound`; ties go to the lowest offset.
+  - Each stream starts on a 16-byte boundary, in the order position (f32x3), normal, tangent, uv0, color0 (4 bytes each). The tangent's bitangent sign is bit 0 of its second octahedral component (1 = −1). Indices are u32.
+  - A second `allocate(vertex_stream_layout, index_bytes)` fills in the absolute stream offsets. `last_exhausted()` says which buffer was full, for the warning.
+- [x] `residency_cache.h/.cpp` as in 11 §3.6, for meshes:
   - `update(snapshot, frame_index)` walks `snapshot.meshes`. For each `(handle, version)` that isn't resident, it allocates a range and calls `upload_queue::upload_buffer` for every stream, keeping the tickets. The version becomes the newest resident version **after** the flush; until then the previous version keeps drawing.
   - It marks every referenced entry with `last_used_frame`, and drops its `shared_ptr` to the CPU data once `upload_buffer` has returned.
   - `after_flush()` resolves each ticket with `point()` into `ready_after`; `nullopt` is a debug check.
   - `find(handle)` returns the newest resident version, with its `geometry_range`, counts, attribute mask, topology, `progressive` flag and bounds.
   - `retire(completed)` frees ranges that are superseded, or absent from the latest snapshot, and whose `last_used_frame ≤ completed`.
   - When the ring is full (`upload_queue_full`) or the arena can't fit a version, the upload is retried next frame. A warning is logged, rate-limited to once per second per handle.
-- [ ] The arena buffers are imported into the graph every frame with the newest `ready_after` of the versions this frame uses (D-103). The prepare stage calls the queue's `flush()` after `update` and before building the graph.
+
+  *As implemented:*
+  - `after_flush()` also marks the version each mesh draws this frame (the newest ready one) with `last_used_frame`, so a version replaced in the same frame isn't marked as drawn by it.
+  - A ring that fills partway through a version's streams keeps the streams already queued: the retry continues from the stream that failed, and the CPU data is held until every stream is queued.
+  - A version still uploading when a newer one arrives, or when its mesh leaves the snapshot, is *abandoned*: it never draws, and `retire` frees it like a superseded one.
+  - `retire` frees a range only when its `last_used_frame ≤ completed` **and** its copies are complete. That covers abandoned versions, whose copies no frame waited on. For that check `renderer_dependencies` gained an `rhi::synchronization` view.
+  - `statistics()` (residency counts, pending uploads, uploaded bytes, deferred attempts, arena use) is in `renderer_debug_information::residency`.
+- [x] The arena buffers are imported into the graph every frame with the newest `ready_after` of the versions this frame uses (D-103). The prepare stage calls the queue's `flush()` after `update` and before building the graph.
+
+  *As implemented:* they're imported outside any view as `geometry_vertices` and `geometry_indices` (`frame_geometry`, for the passes of 11.10), with `frame_ready_after()`. A failed flush fails the frame: nothing is submitted, and the copies stay queued for the next one.
 
 **Tests** (`test_geometry_arena.cpp` `[renderer][unit]`, `test_residency_cache.cpp` `[renderer]`):
-- [ ] Allocator: random allocate and free sequences never overlap, coalescing restores one free block once everything is freed, and best fit avoids a split that first fit would make.
-- [ ] A new version draws only after its flush. The previous version draws in the meantime and is freed only after `retire` passes its `last_used_frame`.
-- [ ] Ten versions of one mesh published while no frame completes keep all their ranges, and they're freed in order as frames retire (11 §3.6: "never freed while a frame can still read it").
-- [ ] A full ring: the upload is retried next frame and the old version keeps drawing. A mesh with no resident version isn't drawn.
-- [ ] After the CPU `shared_ptr` is dropped, the asset cache's retained bytes go down (task 10 statistics).
+- [x] Allocator: random allocate and free sequences never overlap, coalescing restores one free block once everything is freed, and best fit avoids a split that first fit would make.
+- [x] A new version draws only after its flush. The previous version draws in the meantime and is freed only after `retire` passes its `last_used_frame`.
+- [x] Ten versions of one mesh published while no frame completes keep all their ranges, and they're freed in order as frames retire (11 §3.6: "never freed while a frame can still read it").
+- [x] A full ring: the upload is retried next frame and the old version keeps drawing. A mesh with no resident version isn't drawn.
+- [x] After the CPU `shared_ptr` is dropped, the asset cache's retained bytes go down (task 10 statistics).
+
+*As implemented:* until 11.10 draws, "draws" means `find()` returns that version. Further tests cover:
+- the stream layout, the arena split, and an arena that is full in either buffer
+- a full arena, with its warning given at most once a second
+- a mesh leaving the snapshot
+- the `nullopt` ticket debug check
+- the renderer making a cube resident, importing both buffers, and freeing the range once the cube is destroyed and its frames retire
+
+`renderer_fixture` now uses a 16 MiB arena (`test_render_settings()`) and takes a `staging_ring_size`.
 
 ## 11.4 Textures and materials
 11 §3.3, §3.6.
@@ -546,7 +570,7 @@ flowchart LR
 - **Invalid `world_previous`.** Extraction needs task 10's decision on how a pop-in or jump is marked (`history_invalid` flag or `world_previous == world_current`). Both work here; the flag also lets TAA reset that instance's pixels through the reactive mask.
 - **Interpolating matrices.** The snapshot carries `Matrix4f`s, so interpolation decomposes them into TRS each frame (slerp for rotation). That's about 10k decompositions per frame, which is cheap. The alternative is carrying TRS in the snapshot, which would change 08 §6.1.
 - **`depth_mips` layout.** 11 says "min/max per tile" for clusters but "view-space Z, 5 mips" for GTAO. Proposed: an RG32F chain with min in R and max in G. GTAO reads R. Alternative: two R32F chains.
-- **Arena split.** `geometry.arena_mib` is one number, but there are two buffers. Proposed: 80% vertices, 20% indices, with a log line when either fills first. Alternative: one buffer holding both as raw ranges, which avoids the split; the index buffer view can point anywhere in a raw buffer.
+- **Arena split.** `geometry.arena_mib` is one number, but there are two buffers. Proposed: 80% vertices, 20% indices, with a log line when either fills first. Alternative: one buffer holding both as raw ranges, which avoids the split; the index buffer view can point anywhere in a raw buffer. *Done in 11.3: 80% / 20%. The residency warning names the buffer that filled, its use and its largest free block.*
 - **Selection mask.** 11 §10.5 describes "a stencil-like mask written by the selected instances". A stencil bit would need stencil in the depth format (D32_S8) and the new `set_stencil_reference`. An R8 extra target in the passes that draw selected instances needs no RHI change. Recommended: the R8 target, written only on frames with a selection, the same way as picking. In that case `set_stencil_reference` and `clear_depth_stencil` stay unused and can be left out of 11.9.
 - **Pick and inspector results.** How results reach 12: a `take_pick_results()` poll on the frame chain, or a sender completed per request. Recommended: the poll. The frame chain posts results to the GUI with the rest of its per-frame state.
 - **Hosek–Wilkie data.** The model's published coefficient tables (from the authors' reference implementation, under a BSD-style licence) need to be vendored, either as a header under `apps/visualizer/rendering/third_party/` or in `external/`. Check the licence first. Alternative: Preetham, which is simpler, analytic and lower quality.

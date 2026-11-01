@@ -9,6 +9,7 @@
 #include "avis/graphics/resource_bag.h"
 #include "avis/graphics/root_signature_registry.h"
 #include "avis/graphics/texture.h"
+#include "avis/graphics/upload_queue.h"
 #include "avis/graphics/view_scope.h"
 #include "avis/rhi/formats.h"
 
@@ -80,30 +81,41 @@ namespace avis::visualizer::rendering
         {
             return std::unexpected{ std::move(standard).error() };
         }
-        return std::unique_ptr<scene_renderer>{ new scene_renderer{ dependencies, settings, shaders, *standard } };
+
+        auto arena = geometry_arena::create(dependencies.resources, split_geometry_arena(settings.geometry.arena_mib));
+        if (!arena)
+        {
+            return std::unexpected{ std::move(arena).error() };
+        }
+        return std::unique_ptr<scene_renderer>{ new scene_renderer{
+            dependencies, settings, shaders, *standard, std::move(*arena) } };
     }
 
     scene_renderer::scene_renderer(
         const renderer_dependencies& dependencies,
         const render_settings& settings,
         graphics::shader_library& shaders,
-        const rhi::root_signature_handle standard_signature) :
+        const rhi::root_signature_handle standard_signature,
+        std::unique_ptr<geometry_arena> arena) :
         dependencies_{ dependencies },
         graph_{ dependencies.graph },
         settings_{ settings },
         shaders_{ shaders },
         standard_signature_{ standard_signature },
-        histories_{ dependencies.resources }
+        histories_{ dependencies.resources },
+        arena_{ std::move(arena) },
+        residency_{ std::make_unique<residency_cache>(*arena_, dependencies.uploads, dependencies.synchronization) }
     {}
 
     scene_renderer::~scene_renderer() = default;
 
-    void scene_renderer::retire(const std::uint64_t completed_frame_index) noexcept
+    void scene_renderer::retire(const std::uint64_t completed_frame_index)
     {
         if (completed_frame_index > completed_frame_index_)
         {
             completed_frame_index_ = completed_frame_index;
         }
+        residency_->retire(completed_frame_index_);
     }
 
     renderer_debug_information scene_renderer::debug_information() const
@@ -116,6 +128,7 @@ namespace avis::visualizer::rendering
             .last_publish_sequence = last_publish_sequence_,
             .views = last_view_count_,
             .view_histories = histories_.size(),
+            .residency = residency_->statistics(),
         };
     }
 
@@ -141,7 +154,26 @@ namespace avis::visualizer::rendering
             }
         }
 
-        // Shared work, outside any view scope (10 §8): the frame data upload comes with extraction (11.5)
+        // Residency (11 §3.6, D-103): queue the uploads of the snapshot's new mesh versions, flush them on the copy
+        // queue (the graph records none of them), then make the uploaded versions current. A failed flush keeps the
+        // copies queued for the next frame; this one submits nothing.
+        residency_->update(snapshot, frame.index());
+        if (auto flushed = dependencies_.uploads.flush(); !flushed)
+        {
+            return std::move(flushed).error();
+        }
+        residency_->after_flush();
+
+        // Shared work, outside any view scope (10 §8). The arena waits on the newest copies this frame draws; the
+        // frame data upload (pass 0) comes with extraction (11.5).
+        const rhi::access_state common = rhi::access_states::common;
+        const rhi::synchronization_point ready_after = residency_->frame_ready_after();
+        const std::optional<rhi::synchronization_point> wait =
+            ready_after.value != 0 ? std::optional{ ready_after } : std::nullopt;
+        geometry_ = {
+            .vertices = graph_.import_buffer("geometry_vertices", arena_->vertex_buffer(), common, common, wait),
+            .indices = graph_.import_buffer("geometry_indices", arena_->index_buffer(), common, common, wait),
+        };
 
         for (const view_description& view : views)
         {

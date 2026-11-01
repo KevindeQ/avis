@@ -3,8 +3,10 @@
 # Visualizer data under data/shaders/visualizer/ (11 §13), compiled by avis_add_shaders next to the executable.
 
 add_library(AVIS_VISUALIZER_RENDERING STATIC
+	geometry_arena.cpp
 	render_settings.cpp
 	renderer_shaders.cpp
+	residency_cache.cpp
 	scene_renderer.cpp
 	shader_manifest_parser.cpp
 	view.cpp
@@ -33,7 +35,11 @@ set(AVIS_VISUALIZER_SHADER_SOURCE_DIRECTORY "${AVIS_SRC_DIR}/data/shaders/visual
 target_include_directories(AVIS_VISUALIZER_RENDERING
 	PUBLIC
 		"${CMAKE_CURRENT_SOURCE_DIR}/.."
-		"${AVIS_VISUALIZER_SHADER_SOURCE_DIRECTORY}/include")
+		"${AVIS_VISUALIZER_SHADER_SOURCE_DIRECTORY}/include"
+
+	# AVIS_CHECK ("avis/detail/check.h") for the renderer's debug checks (docs/tasks/11-renderer.md, Conventions)
+	PRIVATE
+		"${AVIS_SRC_DIR}/lib")
 
 target_link_libraries(AVIS_VISUALIZER_RENDERING
 	PUBLIC

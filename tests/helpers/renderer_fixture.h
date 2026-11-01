@@ -54,11 +54,21 @@ namespace avis::tests
     // visualizer::rendering::background_color in RGBA8
     inline constexpr rgba8 background_rgba8{ 51, 102, 153, 255 };
 
+    // The defaults of 11 §14, with a 16 MiB geometry arena: the default 768 MiB is sized for the Visualizer's
+    // geometry budget, and the tests' scenes are small
+    inline visualizer::rendering::render_settings test_render_settings()
+    {
+        visualizer::rendering::render_settings settings;
+        settings.geometry.arena_mib = 16;
+        return settings;
+    }
+
     struct renderer_fixture_options
     {
         render_graph_fixture_options graph{ .gpu_based_validation = true };
-        visualizer::rendering::render_settings settings;
+        visualizer::rendering::render_settings settings = test_render_settings();
         graphics::texture_extent output_size{ 128, 72 };
+        std::size_t staging_ring_size = 0; // 0 = the test default (graphics_fixture.h)
     };
 
     // Members are destroyed in reverse order: the scene and its assets, the renderer, the shader library, the queues
