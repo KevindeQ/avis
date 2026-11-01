@@ -9,6 +9,7 @@
 #include "avis/graphics/transient_resource_pool.h"
 #include "avis/rhi/render_hardware_interface.h"
 #include "avis/scene/assets/asset_cache.h"
+#include "avis/scene/assets/gltf.h"
 #include "avis/scene/scene.h"
 
 #include <QObject>
@@ -16,6 +17,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 
 using namespace std::literals::chrono_literals;
 
@@ -27,6 +29,7 @@ class visualizer_driver : public QObject
 
 public:
     explicit visualizer_driver(QObject* parent = nullptr);
+    ~visualizer_driver() override; // releases the vehicle proxy before the scene and the cache go
 
     Q_INVOKABLE void tick();
 
@@ -34,16 +37,22 @@ private:
     void on_update(std::chrono::milliseconds delta_time);
     void on_render();
 
+    // Loads data/assets/vehicle_proxy.glb when it exists (08 §5.1); the representation task adds the file
+    void load_vehicle_proxy();
+
     // Wall-clock time tracking
     std::chrono::steady_clock::time_point current_time_ = std::chrono::steady_clock::now();
     std::chrono::milliseconds frame_time_ = 16ms;
     std::chrono::milliseconds max_frame_time = 100ms;
     std::chrono::milliseconds accumulator_ = 0ms;
 
-    // Declared before the scene, which releases its assets on destruction. Without an IO context for now, so it
-    // can't load glTF yet; task 10.13 passes the runtime's.
+    // Declared before the scene, which releases its assets on destruction. glTF loads read through the runtime's IO
+    // context: main() creates the runtime before the QML engine that creates this singleton, and destroys it after.
     avis::scene::asset_cache assets_;
     avis::scene::scene current_scene_{ assets_ };
+
+    // One reference to each asset of the proxy model, when it was loaded
+    std::optional<avis::scene::gltf_asset_set> vehicle_proxy_;
 
     // Simulation time tracking
     avis::virtual_clock_state clock_state_;

@@ -7,12 +7,45 @@
 #include "avis/rhi/resources.h"
 #include "avis/rhi/synchronization.h"
 #include "avis/rhi/transient.h"
+#include "avis/runtime.h"
+#include "avis/threading/parallel_helpers.h"
 
+#include <QCoreApplication>
+
+#include <filesystem>
 #include <format>
+#include <system_error>
 #include <utility>
 
-visualizer_driver::visualizer_driver(QObject* parent) : QObject(parent)
+namespace
 {
+    // The proxy model of 08 §5.1, relative to the data directory
+    const std::filesystem::path vehicle_proxy_path = std::filesystem::path{ "data" } / "assets" / "vehicle_proxy.glb";
+
+    // The first existing data file: under the working directory (a run from the source tree), then next to the
+    // executable. Empty when neither exists.
+    std::filesystem::path find_data_file(const std::filesystem::path& relative)
+    {
+        const std::filesystem::path candidates[] = {
+            relative,
+            std::filesystem::path{ QCoreApplication::applicationDirPath().toStdWString() } / relative,
+        };
+        for (const std::filesystem::path& candidate : candidates)
+        {
+            std::error_code error;
+            if (std::filesystem::is_regular_file(candidate, error))
+            {
+                return candidate;
+            }
+        }
+        return {};
+    }
+} // namespace
+
+visualizer_driver::visualizer_driver(QObject* parent) : QObject(parent), assets_{ avis::runtime::io_context() }
+{
+    load_vehicle_proxy();
+
     avis::rhi::render_hardware_interface_configuration configuration;
     configuration.debug.debug_layer = true;
 
@@ -42,6 +75,41 @@ visualizer_driver::visualizer_driver(QObject* parent) : QObject(parent)
         avis::rhi::queue<avis::rhi::queue_type::copy>{ *rhi_ },
         *transient_pool_,
         *frames_);
+}
+
+visualizer_driver::~visualizer_driver()
+{
+    if (vehicle_proxy_)
+    {
+        assets_.release_all(*vehicle_proxy_);
+    }
+}
+
+void visualizer_driver::load_vehicle_proxy()
+{
+    const std::filesystem::path path = find_data_file(vehicle_proxy_path);
+    if (path.empty())
+    {
+        avis::log::get("scene")->info(
+            "no vehicle proxy model ({}): vehicles are drawn as boxes", vehicle_proxy_path.string());
+        return;
+    }
+
+    // At startup, on the GUI thread, where waiting is allowed; the model is small
+    avis::result<avis::scene::gltf_asset_set> loaded = avis::threading::sync_wait_result(assets_.load_gltf(path));
+    if (!loaded)
+    {
+        avis::log::get("scene")->error(
+            "the vehicle proxy model {} could not be loaded: {}", path.string(), std::format("{}", loaded.error()));
+        return;
+    }
+    avis::log::get("scene")->info(
+        "loaded the vehicle proxy model {}: {} meshes, {} materials, {} textures",
+        path.string(),
+        loaded->meshes.size(),
+        loaded->materials.size(),
+        loaded->textures.size());
+    vehicle_proxy_ = std::move(*loaded);
 }
 
 void visualizer_driver::tick()

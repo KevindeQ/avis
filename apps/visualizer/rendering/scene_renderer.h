@@ -17,6 +17,8 @@ namespace rendering
 
         // Builds and compiles the frame's graph for one view of `view_size`. Executing it needs the frame chain of 12.
         // Nothing writes an import yet, so every pass is culled.
+        // TODO(11): take a snapshot_reference from the scene's snapshot_buffer instead of the scene: the renderer
+        // reads snapshots on its own thread (08 §6), never the scene.
         void render(
             avis::graphics::render_graph& graph,
             avis::scene::scene& current_scene,

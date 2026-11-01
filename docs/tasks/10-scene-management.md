@@ -404,15 +404,15 @@ flowchart LR
   - the timings are non-zero after a tick
 
 ## 10.13 Visualizer port and prototype removal
-- [ ] `visualizer_driver` owns an `avis::scene::asset_cache` (constructed with the runtime's IO context) declared before the `scene`, which now takes it.
-- [ ] `scene_renderer`'s comment and its unused `current_scene` parameter switch from `view_entities<mesh, material>` to `registry().view<…>()`. The renderer still draws nothing (11); in the target design it reads snapshots, not the scene, so leave a `// TODO(11)` noting that `render` will take a `snapshot_reference`.
-- [ ] `lib/avis/CMakeLists.txt` lists the new sources; `tests/CMakeLists.txt` lists the new tests and copies `tests/data/gltf/` next to the test binary, or passes its path as a definition like `AVIS_TEST_BUILT_SHADER_DIRECTORY`.
-- [ ] `grep -rn "view_entities\|get_node\|mark_dirty\|to_matrix\|scene_node\b" apps include lib tests` returns nothing, apart from the Driver's sources (not built; see 10.3).
-- [ ] Optionally, load `data/assets/vehicle_proxy.glb` at Visualizer startup if the file exists. The asset itself comes with the representation task (see Open points).
+- [x] `visualizer_driver` owns an `avis::scene::asset_cache` (constructed with the runtime's IO context) declared before the `scene`, which now takes it.
+- [x] `scene_renderer`'s comment and its unused `current_scene` parameter switch from `view_entities<mesh, material>` to `registry().view<…>()`. The renderer still draws nothing (11); in the target design it reads snapshots, not the scene, so leave a `// TODO(11)` noting that `render` will take a `snapshot_reference`.
+- [x] `lib/avis/CMakeLists.txt` lists the new sources; `tests/CMakeLists.txt` lists the new tests and copies `tests/data/gltf/` next to the test binary, or passes its path as a definition like `AVIS_TEST_BUILT_SHADER_DIRECTORY`.
+- [x] `grep -rn "view_entities\|get_node\|mark_dirty\|to_matrix\|scene_node\b" apps include lib tests` returns nothing, apart from the Driver's sources (not built; see 10.3).
+- [x] Optionally, load `data/assets/vehicle_proxy.glb` at Visualizer startup if the file exists. The asset itself comes with the representation task (see Open points).
 
 **Tests:**
-- [ ] The Visualizer builds in Debug and Release, starts and exits cleanly. The cache's destructor check passes at shutdown.
-- [ ] The public-header check covers every header in `include/avis/scene/`.
+- [x] The Visualizer builds in Debug and Release, starts and exits cleanly. The cache's destructor check passes at shutdown.
+- [x] The public-header check covers every header in `include/avis/scene/`.
 
 ## 10.14 Docs and cleanup
 - [ ] Update [08](../design/08-scene-management.md) wherever the implementation differs:

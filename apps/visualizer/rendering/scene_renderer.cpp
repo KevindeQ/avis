@@ -60,7 +60,8 @@ namespace rendering
             graphics::texture lighting;
         };
 
-        // Depth prepass. Will draw the scene's meshes (view_entities<mesh, material>) once the pipelines exist.
+        // Depth prepass. Will draw the scene's meshes (registry().view<node_reference, mesh, material>(), and later
+        // the snapshot's instances) once the pipelines exist.
         const depth_renderpass& depth_pass = graph.add_graphics_pass<depth_renderpass>(
             "depth",
             [&](graphics::render_pass_builder& builder, depth_renderpass& data)

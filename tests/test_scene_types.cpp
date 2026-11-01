@@ -71,7 +71,7 @@ TEST_CASE("to_affine composes Translation · Rotation · Scaling", "[scene][unit
     const Eigen::Vector3f by_steps = trs.position + trs.rotation * trs.scale.cwiseProduct(point);
     CHECK((trs.to_affine() * point).isApprox(by_steps, 1e-6f));
 
-    // The prototype's transform::to_matrix (08 §4.1) applied scale, rotate, translate to an Affine3f, which gives
+    // The prototype's matrix conversion (08 §4.1) applied scale, rotate, translate to an Affine3f, which gives
     // S · R · T: the translation ends up scaled and rotated
     Eigen::Affine3f prototype = Eigen::Affine3f::Identity();
     prototype.scale(trs.scale);
