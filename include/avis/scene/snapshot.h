@@ -26,7 +26,7 @@ namespace avis::scene
     // One primitive of one entity's mesh (08 §6.1, 11 §3.1)
     struct render_instance
     {
-        object_id id = 0; // identity::id: stable, opaque to the renderer
+        scene::object_id object_id = 0; // identity::id: stable, opaque to the renderer
         mesh_handle mesh;
         std::uint32_t submesh = 0; // the primitive's index in the mesh's current version
         material_handle material; // invalid: the renderer's default material

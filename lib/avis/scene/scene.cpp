@@ -920,7 +920,7 @@ namespace avis::scene
                                                      materials[std::min<std::size_t>(index, materials.size() - 1)];
                 target.instances.push_back(
                     {
-                        .id = id,
+                        .object_id = id,
                         .mesh = mesh.asset,
                         .submesh = mesh.primitive_first + index,
                         .material = material,

@@ -31,7 +31,7 @@ plus integrating the newly vendored external libraries (spdlog, yaml-cpp, fastgl
 | 7 | [07-graphics-frames-and-transfers.md](07-graphics-frames-and-transfers.md) | `avis::graphics`: error domain, `frame_scheduler` and `frame_token`, `gpu_profiler`, `upload_queue`, `readback_queue`, `gpu_completion_thread` | 2, 6 |
 | 8 | [08-graphics-shaders-and-pipelines.md](08-graphics-shaders-and-pipelines.md) | xxHash, `shader_library`, `load_shader_library`, `binding_layout`, `root_signature_registry`, `pipeline_cache`, `avis_add_shaders` | 5, 6, 7.1 |
 | 9 | [09-render-graph.md](09-render-graph.md) | `linear_arena`, `render_graph` (build, compile, execute), `resource_bag`, pass contexts, `transient_resource_pool`; replaces the render pass prototype and brings `scene_renderer` back | 6, 7 (8 for the GPU tests' helpers) |
-| 10 | [10-scene-management.md](10-scene-management.md) | `avis::simulation` time types, `avis::scene`: types and bounds, `scene_graph`, mesh data and `mesh_builder`, `asset_cache`, glTF import, components, reflection, `scene`, snapshots and `snapshot_buffer`, label formatting, trails, world bounds, statistics; replaces the scene prototype | 1, 3, 5, 8.1 |
+| 10 | [10-scene-management.md](10-scene-management.md) | `avis::simulation` time types, `avis::scene`: types and bounds, `scene_graph`, mesh data and `mesh_builder`, `asset_cache`, glTF import, components, reflection, `scene`, snapshots and `snapshot_buffer`, label formatting, trails, world bounds, statistics; replaces the scene prototype, and the Visualizer uses it with an IO-backed asset cache | 1, 3, 5, 8.1 |
 | 11 | [11-renderer.md](11-renderer.md) | `AVIS_VISUALIZER_RENDERING`: render settings, the shader manifest parser (format 2), residency, extraction, sort keys, draw lists, pipeline variants, every pass of 11 §2.3, picking, debug blit, screenshots; tested headless | 6, 7, 8, 9, 10 |
 | 12 | [12-visualizer.md](12-visualizer.md) | Part A: configuration, device setup and completions, the shared frame ring and Qt blit, the frame loop, the simulation thread's presentation path with a demo scene, the scene representation (shapes, geometry, lidar, budget, labels, trails, staleness), camera, picking, panels, screenshots, errors. Part B: scene stream, discovery, lockstep, tick loop, scenario editing, Driver panel | A: 6, 7, 9, 10, 11. B: 13, 14, 15 |
 | 13 | [13-network.md](13-network.md) | zenoh-c / zenoh-cpp vendored, `avis::network` (sessions, pub/sub, liveliness, queryables, the query and scout senders), the serializer and framing, key expressions, the full message catalogue, a fake Driver for tests | 1, 3, 4, 5, 10.1 |
@@ -123,16 +123,19 @@ Each task document has an **Open points** section. They are collected here so th
 | 09 | *(Resolved: the Visualizer task)* Executing frames in the Visualizer: this task or the Visualizer task |
 | 09 | The executor clearing textures written with `write_flags::needs_clear` before their pass |
 | 09 | *(Resolved: `begin_view(name, view_size)` and `set_view_size`)* The view size `view_relative` textures resolve against |
-| 10 | Simulation time types: task 10 adds only `simulation/time.h`; the clock stays with the simulation core task |
-| 10 | How an entity created this tick marks its `world_previous` invalid: `world_previous = world_current` or an `instance_flags::history_invalid` bit (recommended) |
-| 10 | Where `scene` gets `environment_settings`: `scene::set_environment` (proposed) or a component |
-| 10 | Owner checks for `trail::samples`: a sample-count check, or a separate scene-owned `trail_samples` component |
-| 10 | Releasing previous asset handles on `replace`: a shadow copy (proposed) or forbidding `replace` on `mesh` and `material` |
-| 10 | Helpers in tree changes: an `entity_description::represents` field (recommended) or a follow-up change; one `removed` change per destroyed root |
-| 10 | WIC on parallel workers: a `thread_local` COM guard (recommended) |
+| 10 | *(Resolved: `simulation/time.h` holds the types only)* Simulation time types: task 10 adds only `simulation/time.h`; the clock stays with the simulation core task |
+| 10 | *(Resolved: both: `history_invalid`, with `world_previous = world_current`; 11 §3.1 says so)* How an entity created this tick marks its `world_previous` invalid: `world_previous = world_current` or an `instance_flags::history_invalid` bit (recommended) |
+| 10 | *(Resolved: `scene::set_environment`)* Where `scene` gets `environment_settings`: `scene::set_environment` (proposed) or a component |
+| 10 | *(Resolved: a sample-count check in `update_trails`)* Owner checks for `trail::samples`: a sample-count check, or a separate scene-owned `trail_samples` component |
+| 10 | *(Resolved: a shadow copy)* Releasing previous asset handles on `replace`: a shadow copy (proposed) or forbidding `replace` on `mesh` and `material` |
+| 10 | *(Resolved for now: a pending `added` change is marked hidden, else a follow-up `renamed` change; one `removed` per destroyed root)* Helpers in tree changes: an `entity_description::represents` field (recommended) or a follow-up change; one `removed` change per destroyed root |
+| 10 | *(Resolved: a `thread_local` COM guard)* WIC on parallel workers: a `thread_local` COM guard (recommended) |
 | 10 | DDS/KTX2 BCn images and `KHR_texture_transform` beyond baking into uvs |
-| 10 | Checking the Khronos sample models into `tests/data/gltf/` or downloading them |
-| 10 | `data/assets/vehicle_proxy.glb` and its licence (the representation task) |
+| 10 | *(Resolved: checked in, with their licence files)* Checking the Khronos sample models into `tests/data/gltf/` or downloading them |
+| 10 | `data/assets/vehicle_proxy.glb` and its licence (the representation task); the Visualizer already loads it when it exists |
+| 10 | An `entity_description::represents` field, so a helper is hidden from its `added` change on, without the in-place patch or the follow-up `renamed` change |
+| 10 | 11's residency (§3.6) resolving a material's textures through the snapshot's flat `textures` table, which replaced the textures inside each material entry |
+| 10 | The snapshot buffer's 5 s stress test runs with every `[scene]` run; move it behind a `[stress]` tag if the suite gets slow |
 | 11 | A static library `AVIS_VISUALIZER_RENDERING` so the tests can link the renderer |
 | 11 | 12a Q1 (unknown keys) and Q2 (`xxh3` required) before the parser is written |
 | 11 | The renderer interface without a frame chain: `render(frame_token&, snapshot, views)` or split prepare/record stages |

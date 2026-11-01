@@ -1,5 +1,7 @@
 # 08 — Scene Management
 
+> **Status:** implemented in [task 10](../tasks/10-scene-management.md) (2026-11-01), apart from the Visualizer's parts (the scene stream, the representation, the UI models; [12](12-visualizer.md)). The sections below describe the code, with **As implemented** notes where it departs from the first draft.
+
 ## Code placement
 
 | Feature | Namespace | CMake target | Location |
@@ -8,7 +10,8 @@
 | Components (mesh, material, vehicle, sensor, …) and reflection | `avis::scene::components`, `avis::scene` | `AVIS_LIB` | `include/avis/scene/components/`, `reflection.h` |
 | Asset cache, glTF import | `avis::scene` | `AVIS_LIB` | `include/avis/scene/assets/`, `lib/avis/scene/assets/` |
 | Snapshots (`snapshot`, `snapshot_buffer`) | `avis::scene` | `AVIS_LIB` | `include/avis/scene/snapshot.h` |
-| Viewing aids: `aabb`, world bounds, label formatting, trail sampling, update stamps, statistics (§8) | `avis::scene` | `AVIS_LIB` | `include/avis/scene/bounds.h`, `statistics.h`, components in `include/avis/scene/components/` |
+| Viewing aids: `aabb`, world bounds, label formatting, trail sampling, update stamps, statistics (§8) | `avis::scene` | `AVIS_LIB` | `include/avis/scene/bounds.h`, `statistics.h`, components in `include/avis/scene/components/`; `lib/avis/scene/labels.cpp`, `trails.cpp` |
+| Simulation time types the scene uses (`simulation_duration`, `step_index`, `time_anchor`) | `avis::simulation` | `AVIS_LIB` | `include/avis/simulation/time.h`: the types only; the clock's state machine belongs to the simulation core ([03 §2](03-simulation-core.md)) |
 | Label and trail meshes, staleness (§8.1, §8.2, §8.4) | `avis::visualizer::representation` | `AVIS_VISUALIZER` | `apps/visualizer/representation/` |
 | UI models for tree and inspector | `avis::visualizer` | `AVIS_VISUALIZER` | `apps/visualizer/ui/` |
 
@@ -90,7 +93,7 @@ All components are plain aggregates in `include/avis/scene/components/`. The **r
 | `trail` | `trail_settings settings` (duration, spacing, colour, width), ring of `trail_sample` | The entity's recent path in world space (§8.2) |
 | `update_stamp` | `simulation_duration created`, `pose`, `properties`, `geometry`, each with its `step_index` | When the Driver last created or changed the entity, per kind of change (§8.4). Written by the Visualizer's `scene_stream`. |
 
-Component reflection: every component registers its fields once with a small reflection table (`avis::scene::reflect<T>()`: field name, type, getter, unit). The inspector UI is generated from it, so a new component needs no extra UI code. The `properties` component is shown as its own rows, grouped by the dotted keys.
+Component reflection: every component the inspector shows declares its fields once, in a `reflection<T>` specialisation with a `constexpr` table of field names, units and readers (§9.7). The inspector UI is generated from it, so a new component needs no extra UI code. The `properties` component is shown as its own rows, grouped by the dotted keys.
 
 ### 3.1 Driver entities
 The Visualizer's `scene_stream` applies committed messages ([02 §6.3](02-communication.md#63-scene-stream-sequencing-and-commit)) through a `driver_entity_index` (`entity_id → entt::entity`):
@@ -173,12 +176,19 @@ public:
 };
 ```
 - Assets are deduplicated by canonical path plus a content hash.
-- Loading pipeline: **IO layer** read → **fastgltf** parse (parallel worker) → image decode via **WIC** (parallel workers, one operation per image), or direct use of DDS/KTX2 BCn if present. The decoded CPU data stays in the cache. GPU upload and mip generation (compute downsample for PNG/JPEG) are done by the renderer's residency cache when the asset first appears in a snapshot ([11 §3.6](11-renderer.md#36-gpu-residency)).
+- Loading pipeline: **IO layer** read → **fastgltf** parse (parallel worker) → image decode via **WIC** (parallel workers, one operation per image). Direct use of DDS/KTX2 BCn images is planned, not implemented (below). The decoded CPU data stays in the cache. GPU upload and mip generation (compute downsample for PNG/JPEG) are done by the renderer's residency cache when the asset first appears in a snapshot ([11 §3.6](11-renderer.md#36-gpu-residency)).
 - **Bounds.** `create_mesh`, `update_mesh` and the glTF import compute each version's local axis-aligned bounding box (`aabb`, §8.3) once, on the CPU, and store it in `mesh_data` (per primitive and for the whole mesh). The renderer's residency cache takes it from there for culling, sort depth and progressive point counts ([11 §3.2](11-renderer.md#32-geometry)), so the renderer never scans vertices itself. An empty mesh has empty bounds and is culled.
 - `mesh_asset` holds the geometry already converted to the Avis vertex format ([11 §3.2](11-renderer.md#32-geometry)) and the axis convention (glTF Y-up → Avis Z-up, [00 §4.1](00-overview.md#41-coordinate-systems-and-units)).
-- `material_asset` = glTF `pbrMetallicRoughness` + `normalTexture` + `occlusionTexture` + `emissiveTexture` + `alphaMode`/`alphaCutoff`/`doubleSided`. The `KHR_materials_emissive_strength` and `KHR_texture_transform` extensions are supported, and other extensions are ignored with a warning.
+- `material_asset` = glTF `pbrMetallicRoughness` + `normalTexture` + `occlusionTexture` + `emissiveTexture` + `alphaMode`/`alphaCutoff`/`doubleSided`. The `KHR_materials_emissive_strength`, `KHR_materials_unlit` and `KHR_texture_transform` extensions are supported (the last one partly, below), and other extensions are ignored with a warning.
 - Supported glTF features: `.gltf` + `.bin` and `.glb`, node hierarchy (imported as child scene-graph nodes), multiple primitives. **Not** supported in iteration 1: skinning, morph targets, animations, cameras, punctual lights (`KHR_lights_punctual` could be added later).
 - A default proxy vehicle mesh (`data/assets/vehicle_proxy.glb`) is used for the `vehicle` display shape, scaled to the entity's extent. `box` shapes use a built-in unit cube.
+
+**As implemented** (task 10.6):
+- **Extensions.** `KHR_materials_emissive_strength`, `KHR_materials_unlit` (→ `shading_model::unlit`), `KHR_mesh_quantization` and `KHR_texture_transform`. A texture transform works on the base colour texture only, for offset and scale (rotation is ignored with a warning), and is baked into the primitive's uvs; when a primitive's textures use different transforms, it's ignored with a warning. Other extensions in use are ignored with a warning; a *required* extension outside this set fails with `gltf_unsupported`.
+- **Images.** PNG and JPEG only, decoded by WIC into `rgba8_srgb` (colour) or `rgba8_unorm` (data), with `generate_mips`. COM is initialised once per worker thread by a `thread_local` guard. DDS (`MSFT_texture_dds`) and KTX2 (`KHR_texture_basisu`) images are ignored with a warning, or fail with `gltf_unsupported` when the extension is required.
+- **Geometry.** Strips, fans and line loops become lists. Flat normals are generated for a primitive without normals, and tangents for a normal-mapped primitive without tangents. Indices are relative to the primitive's `vertex_first`.
+- **Deduplication** is by canonical path plus the XXH3-64 hash of the file's bytes: a second load of an unchanged file retains every handle and completes with a copy of the set, without parsing.
+- A cache constructed without an IO context (procedural assets, unit tests) fails `load_gltf` with a generic `logic_error`. The Visualizer's cache uses the runtime's IO context, and loads `vehicle_proxy.glb` at startup when the file exists (it comes with the representation, 12).
 
 ### 5.2 CPU ownership and versions
 - The asset cache owns **CPU data only**. Meshes, materials and textures are immutable once stored: `update_mesh` doesn't modify the stored data, it stores a new `std::shared_ptr<const mesh_data>` and increments the mesh's `version`.
@@ -197,7 +207,7 @@ public:
 // generic render data only: meshes, materials, transforms (11 §3.1)
 struct render_instance
 {
-    std::uint64_t object_id;              // stable id derived from identity; opaque to the renderer
+    std::uint64_t object_id;              // identity::id: stable, opaque to the renderer
     mesh_handle mesh;
     std::uint32_t submesh;
     material_handle material;
@@ -205,7 +215,7 @@ struct render_instance
     Eigen::Matrix4f world_current;        // at t_k
     draw_layer layer = draw_layer::world; // world | overlay | overlay_on_top
     std::uint8_t layer_priority = 0;
-    avis::flags<instance_flags> flags;     // visible, casts_shadows, selected, pickable, screen_aligned (§8.1)
+    avis::flags<instance_flags> flags;     // visible, casts_shadows, selected, pickable, screen_aligned (§8.1), history_invalid (§6.3)
     float maximum_view_distance = 0.0f;   // metres from the camera; 0 = unlimited (§8.1)
 };
 
@@ -223,9 +233,11 @@ struct snapshot
 
     // every mesh and material referenced by `instances`, once each, with its immutable CPU data (§5.2)
     std::vector<versioned_mesh_entry> meshes;          // { mesh_handle, version, std::shared_ptr<const mesh_data> }
-    std::vector<versioned_material_entry> materials;   // { material_handle, version, std::shared_ptr<const material_asset> } (textures included)
+    std::vector<versioned_material_entry> materials;   // { material_handle, versioned_material }
+    std::vector<versioned_texture_entry> textures;     // { texture_handle, versioned_texture }: every material's textures, once each
 };
 ```
+**As implemented** (task 10.11): the textures aren't inside each material entry, as first drafted, but in their own `textures` table, sorted by handle, once each however many materials share them; the renderer resolves a material's texture handles against it. A vector inside each material entry would be freed and reallocated on every `begin_write`, so a steady-state build couldn't avoid allocating. The step fields and the anchor are set by whoever calls `make_snapshot`, `publish_sequence` by `snapshot_buffer::publish`. Instances are sorted by `object_id`, then submesh, and lights by id.
 Only generic render data goes into a snapshot: meshes, materials, transforms, lights and the environment. **No semantic data** (display shapes, belief geometry, lidar sweeps, vehicles) reaches the renderer; the Visualizer's scene representation turns those into mesh and material components first ([12 §9](12-visualizer.md#9-scene-representation)). That keeps the scene renderer agnostic to what's in the scene ([11 §2.1](11-renderer.md#21-scene-agnostic-boundary)). UI-relevant data (component values for the inspector) goes through a separate, lower-frequency path (§7).
 
 ### 6.2 Double buffering
@@ -248,7 +260,9 @@ public:
 - Publishes happen on step commits and on presentation-only republishes ([03 §4.4](03-simulation-core.md#44-presentation-only-republish)). A republish carries the same step fields as the snapshot it replaces and a higher `publish_sequence`.
 
 ### 6.3 Building the snapshot
-`scene::make_snapshot(snapshot&)` iterates **only** the generic EnTT views `view<node_reference, mesh, material>` (plus `render_options` for layer and flags) and `view<node_reference, light>`, in **stable entity order** (sorted by `identity` once per structural change) and fills `instances`. `world_previous` comes from the `previous_world` component written at the end of each tick: the previous tick's world transform, or the current one for a node that jumped (§4.1). An entity created during the tick has no `previous_world` yet, so its `world_previous` is marked invalid and it pops in ([03 §5](03-simulation-core.md#5-render-interpolation)). While filling `instances` it collects the distinct mesh and material handles and writes their `asset_cache::current(...)` entries into `meshes` and `materials`, sorted by handle. That's a reference-count increment per entry, no geometry copy.
+`scene::make_snapshot(snapshot&)` iterates **only** the generic EnTT views `view<node_reference, mesh, material>` (plus `render_options` for layer and flags) and `view<node_reference, light>`, in **stable entity order** (sorted by `identity` once per structural change) and fills `instances`. `world_previous` comes from the `previous_world` component written at the end of each tick: the previous tick's world transform, or the current one for a node that jumped (§4.1). An entity created during the tick has no `previous_world` yet, so it pops in ([03 §5](03-simulation-core.md#5-render-interpolation)): its instances get `world_previous = world_current` and `instance_flags::history_invalid`, which also tells TAA to drop the instance's history ([11 §3.1](11-renderer.md#31-render-snapshot)). It collects the distinct mesh, material and texture handles and writes their `asset_cache::current(...)` entries into `meshes`, `materials` and `textures`, sorted by handle. That's a reference-count increment per entry, no geometry copy.
+
+**As implemented** (task 10.11): the sorted entity order is cached and rebuilt only when `scene_version` changed or an entity gained or lost `mesh` or `material` (EnTT signals set a flag). Each entity gives one instance per primitive of its range, clamped to the current version's primitives, with the matching material, the last one repeating when there are fewer. `visibility.visible == false` clears `instance_flags::visible`. Once the snapshot's vectors have grown, a build allocates nothing: the scratch handle lists are `scene` members, and the `shared_ptr` copies only change reference counts.
 
 ## 7. UI synchronisation
 - After each structural change (entity created, destroyed or reparented), the simulation thread posts a **tree diff** (added/removed/moved nodes with names and ids) to the GUI thread through a queued Qt signal.
@@ -282,6 +296,7 @@ struct label
 ```
 
 - **Templates.** `{name}` and `{id}` come from `identity`; `{property:<key>[:<format>]}` from the `properties` component, formatted with `std::format` and the optional format spec, with the property's unit appended when it has one. A missing key gives `–`. `scene::format_label(entity)` evaluates the template; it's generic, because it only reads `identity` and `properties`.
+  **As implemented** (task 10.12): `{{` and `}}` are escapes. Strings and booleans ignore the format spec, a vector is `(x, y, z)` with the spec per element, and an integer whose spec suits only floating point (`.1f`) is formatted as a double. A bad spec or an unknown field also gives `–`, and logs a warning once per template. Parsed templates are cached by the template's hash. `format_label(text_template, entity)` formats another template for the entity.
 - **Who adds them.** The representation adds a `label` per category from its configuration. The default anchor is the top of the display shape (`extent.z / 2` plus 0.3 m), so labels clear the box they belong to.
   ```yaml
   representation:
@@ -330,6 +345,7 @@ struct trail
 ```
 
 - **Sampling** is generic and part of `scene`: at the end of each tick, after `update_transforms`, `scene::update_trails(time)` visits `view<node_reference, trail>`, appends the node's world origin when it moved at least `minimum_spacing` from the last sample (or is the first one), and drops samples older than `duration_seconds`. A node that jumped this tick (§4.1) appends a sample with `starts_segment`, so a re-synchronised shadow vehicle doesn't draw a line across the jump. No tick, no sample: a paused scene keeps its trails.
+  **As implemented** (task 10.12): `update_world_transforms` records the entities that jumped, and `end_tick` clears the set. Debug builds assert a second `update_trails` in one tick and one before the transforms are propagated. EnTT's signals fire per component, not per field, so they can't guard `trail::samples`: `update_trails` keeps each trail's sample count and checks that nothing else changed it since its last call (§9.2). The sample count in the statistics follows what's there.
 - **Rendering.** The trail is in world space, so its mesh must not move with the entity. The representation gives each trailed entity a helper entity at the world root, under `helpers` (named `<name> trail`, hidden from the scene tree), with line meshes in world coordinates in the `overlay` layer.
 - **Chunked meshes.** Rewriting the whole line every tick would create a new version of a large mesh each step. Instead, samples go into blocks of 128: completed blocks are immutable meshes, only the newest block is rewritten with `update_mesh` each tick, and consecutive blocks share their boundary sample so the line has no gaps. The oldest block is rewritten when samples expire from it and dropped when it's empty. That bounds the per-tick work to two small mesh updates per trail, whatever its length. Trail meshes count against the representation's geometry budget ([12 §9.1](12-visualizer.md#91-geometry-budget-and-eviction)), with the same priority as belief geometry.
 - **Defaults.** Configured per category in `representation.trails` (`vehicle: 30 s`, `object: off`), switched per category in the *View* menu and per entity from the scene tree's context menu. Trails are cleared with their entities at the start of a run.
@@ -381,10 +397,10 @@ struct update_stamp
 ```cpp
 struct scene_statistics
 {
-    step_index step;
+    step_index step;                               // of the last snapshot, as its caller set it before make_snapshot
     std::uint32_t entities = 0;
     std::uint32_t nodes = 0;
-    std::array<std::uint32_t, entity_category_count + 1> entities_per_category{};   // last entry: Visualizer helpers
+    std::array<std::uint32_t, entity_category_count> entities_per_category{};   // by entity_category; helper is the last
     std::uint32_t instances = 0;                   // in the last snapshot
     std::uint32_t lights = 0;
     std::uint32_t meshes = 0;
@@ -393,8 +409,9 @@ struct scene_statistics
     std::uint64_t current_geometry_bytes = 0;      // current versions held by the asset cache
     std::uint64_t retained_geometry_bytes = 0;     // older versions still held by snapshot slots or uploads (§5.2)
     std::uint32_t labels = 0;
+    std::uint32_t trails = 0;
     std::uint32_t trail_samples = 0;
-    double transform_update_milliseconds = 0.0;    // last tick
+    double transform_update_milliseconds = 0.0;    // last tick: update_world_transforms and end_tick
     double snapshot_build_milliseconds = 0.0;      // last make_snapshot
 };
 
@@ -478,6 +495,8 @@ namespace avis::scene
 }
 ```
 
+The simulation time types (`simulation_duration`, `step_index`, `time_anchor`) come from `avis/simulation/time.h`, which holds only the types of [03 §2](03-simulation-core.md) and [03 §5.2](03-simulation-core.md) that the scene needs.
+
 `bounds.h` holds `aabb` (§8.3). `error.h`:
 
 ```cpp
@@ -534,7 +553,8 @@ namespace avis::scene
         casts_shadows = 1 << 1,
         selected = 1 << 2,
         pickable = 1 << 3,
-        screen_aligned = 1 << 4       // §8.1
+        screen_aligned = 1 << 4,      // §8.1
+        history_invalid = 1 << 5      // set by make_snapshot only: no previous_world yet (§6.3)
     };
     enum class draw_layer : std::uint8_t { world, overlay, overlay_on_top };
     enum class driver_entity_flags : std::uint16_t { primary = 1 << 0, pickable = 1 << 1, hidden_by_default = 1 << 2 };
@@ -543,7 +563,9 @@ ALLOW_FLAGS_FOR_ENUM(avis::scene::instance_flags)
 ALLOW_FLAGS_FOR_ENUM(avis::scene::driver_entity_flags)
 ```
 
-**Components `scene` owns.** `identity`, `node_reference`, `previous_world` and `trail::samples` are written only by `scene`. Clients get them through `scene` calls, and debug builds check this: `scene` connects `on_construct`/`on_update`/`on_destroy` for these components and asserts unless it is writing them itself.
+**As implemented** (task 10.7): these enums, with `light_kind` and `render_layer_mask` (the visibility toggles' bits), are in `scene/flags.h`. `trail::samples` is a `std::deque`, whose move constructor isn't `noexcept` on MSVC, so `trail` is the one component that isn't nothrow-move-constructible.
+
+**Components `scene` owns.** `identity`, `node_reference`, `previous_world` and `trail::samples` are written only by `scene`. Clients get them through `scene` calls, and debug builds check this: `scene` connects `on_construct`/`on_update`/`on_destroy` for these components and asserts unless it is writing them itself. **As implemented:** the signals guard `identity`, `node_reference` and `previous_world`; destroying entities through `scene` (`destroy_entity`, `clear`, the destructor) is allowed. A field can't be guarded by signals, so `trail::samples` is checked by its count in `update_trails` (§8.2).
 
 ### 9.3 `scene/scene_graph.h`
 
@@ -834,7 +856,7 @@ namespace avis::scene
         const entt::registry& registry() const noexcept;
 
         // ---- hierarchy and transforms ----
-        result<void> set_parent(entity entity, entity parent, bool keep_world);   // cycle, invalid_parent
+        result<void> set_parent(entity child, entity parent, bool keep_world);    // cycle, invalid_parent
         void set_local(entity entity, const transform& local, bool discontinuity = false);
         const transform& local(entity entity) const;
         const Eigen::Affine3f& world(entity entity) const;
@@ -847,11 +869,16 @@ namespace avis::scene
         void make_snapshot(snapshot& target);
         void end_tick();
 
+        // ---- environment ----
+        void set_environment(const environment_settings& environment);           // copied into every snapshot
+        const environment_settings& environment() const noexcept;
+
         // ---- viewing aids, UI ----
         std::string format_label(entity entity) const;                            // §8.1
+        std::string format_label(std::string_view text_template, entity entity) const;
         std::vector<tree_change> take_tree_changes();                             // since the last call (§7)
         reflected_entity reflect(entity entity) const;                            // §9.7
-        scene_statistics statistics() const noexcept;                             // §8.5
+        scene_statistics statistics() const;                                      // §8.5, O(1)
         std::uint64_t scene_version() const noexcept;    // increments on structural change
 
         asset_cache& assets() noexcept;
@@ -863,6 +890,14 @@ namespace avis::scene
 - **Unit scale.** `set_local` on an entity with `driver_entity` asserts in debug builds when the scale isn't 1 (§4.3).
 - **`clear`** destroys every entity, including helpers; the Visualizer recreates its helpers after it. Trails and update stamps go with their entities.
 - **`find`** and the id index cover every entity with an `identity`. `destroy_entity` and `clear` remove the ids, and the returned `destroyed_entity` list carries them, so the Visualizer's `driver_entity_index` can drop them without looking them up first.
+
+**As implemented** (tasks 10.9–10.12):
+- **Shadow copies.** EnTT's `on_update` runs after the new value is stored, so it can't hand over the previous handles. `scene` keeps the handles each entity's `mesh` and `material` retained in two private storages, and releases those on replace, patch, remove or destroy. `replace` and `patch` stay allowed.
+- **Tree changes.** `create_entity` records `added`, `set_parent` `moved`, and `destroy_entity` one `removed` for the root of the destroyed subtree, since the GUI drops the rows below it. `clear` records one `removed` per graph root and per non-spatial entity. `hidden` is read when the change is recorded, and the representation emplaces `represents` after `create_entity`: while that entity's `added` change hasn't been taken yet, it's marked hidden in place; after that, emplacing `represents` records a `renamed` change with `hidden` set, and removing it a `renamed` change with `hidden` cleared. `scene` destroying an entity records nothing extra for its `represents`.
+- **Environment.** `set_environment` stores the `environment_settings` that every snapshot copies. The Visualizer calls it from the scenario's `visualization.environment` (a presentation command, D-42); there's no environment component.
+- **Tick order.** `make_snapshot` and `update_trails` assert when a `create_entity`, `set_local` or `set_parent` came after the last `update_world_transforms`. So does `end_tick`, which then propagates the change itself (release builds log it), so `previous_world` gets current worlds; it also asserts when called twice with no change or update in between.
+- **`set_parent`'s** first parameter is `child`: a parameter named `entity` would hide the type for the parameter after it.
+- **`statistics()`** isn't `noexcept`, and **`world_bounds`** returns `nullopt` for a non-spatial entity.
 
 ### 9.6 Tick sequence
 The simulation thread calls `scene` in this order within one tick ([03 §4.3](03-simulation-core.md#43-apply_resultk)):
@@ -940,8 +975,9 @@ namespace avis::scene
 {
     // render_instance, light_instance, environment_settings and snapshot as in §6.1, with
     //   versioned_mesh_entry     { mesh_handle handle; versioned_mesh mesh; }
-    //   versioned_material_entry { material_handle handle; versioned_material material;
-    //                              std::vector<std::pair<texture_handle, versioned_texture>> textures; }
+    //   versioned_material_entry { material_handle handle; versioned_material material; }
+    //   versioned_texture_entry  { texture_handle handle; versioned_texture texture; }
+    // and snapshot::clear(), which empties the vectors and keeps their capacity
 
     struct light_instance
     {
@@ -967,6 +1003,7 @@ namespace avis::scene
     class snapshot_reference                             // RAII read access to one slot; move-only
     {
     public:
+        snapshot_reference() noexcept = default;         // empty
         snapshot_reference(snapshot_reference&&) noexcept;
         snapshot_reference& operator=(snapshot_reference&&) noexcept;
         ~snapshot_reference();                           // releases the slot
@@ -995,7 +1032,8 @@ namespace avis::scene
 ```
 
 - **The wait in `begin_write`** is the one blocking call in the scene layer. It's bounded by the reader's extraction time (§6.2), which is why the reader must hold its reference only while extracting. Debug builds log a warning when the wait exceeds 2 ms.
-- **One reader.** The renderer is the only reader; a second concurrent `acquire` asserts. The buffer protects one slot per reader, and the Visualizer has one renderer.
+- **One reader.** The renderer is the only reader; a second concurrent `acquire` asserts, and gives an empty reference. The buffer protects one slot per reader, and the Visualizer has one renderer.
+- **As implemented** (task 10.11): a `std::atomic_flag` spinlock guards the front index and the reader's hold bits. `begin_write` pauses, then yields, while the reader holds the back slot. `publish` without a `begin_write`, and `begin_write` twice, are debug checks.
 - Snapshots hold only values and `shared_ptr<const …>`, so a `snapshot_reference` is safe to read on any thread while it lives.
 
 ### 9.9 Threading summary
@@ -1013,14 +1051,14 @@ namespace avis::scene
 - Scene graph: create/destroy subtree, reparent with keep-world (exact with uniform scale, closest TRS with a warning otherwise), cycle rejection, dirty propagation correctness (comparison against brute-force recomputation), generation checks on stale handles.
 - Transforms: `T · R · S` composition against a hand-computed matrix (the order fix of §4.1). A discontinuity on a parent gives `world_previous == world_current` for it and its whole subtree in the next snapshot, and normal interpolation the tick after.
 - Scene: `destroy_entity` returns the whole subtree; `find(id)` works for Driver entities and helpers and fails after destruction; destroying an entity releases its mesh and material handles (asset refcounts); debug builds assert on a non-unit scale on a Driver entity's node.
-- Driver mapping (§3.1), on a scripted message sequence: create, transform, vehicle state, properties, geometry and lidar messages produce the expected components; deleting a vehicle removes it, its sensors and their index entries.
-- Snapshot building: instances come out in stable `identity` order across structural changes; each mesh and material appears once in `meshes`/`materials`; `world_previous` is the previous tick's transform, and invalid for an entity created this tick.
+- Driver mapping (§3.1, tested with the Visualizer, 12), on a scripted message sequence: create, transform, vehicle state, properties, geometry and lidar messages produce the expected components; deleting a vehicle removes it, its sensors and their index entries.
+- Snapshot building: instances come out in stable `identity` order across structural changes; each mesh and material appears once in `meshes`/`materials`; `world_previous` is the previous tick's transform, and an entity created this tick has `history_invalid`.
 - Interface: every public scene header compiles on its own and pulls in no `<windows.h>`, fastgltf or WIC header; the components are default-constructible and nothrow-movable (`static_assert`s); writing a scene-owned component (§9.2) from outside `scene` asserts; the tick order of §9.6 is asserted (`make_snapshot` after a change without a transform update, `end_tick` twice); a second concurrent `acquire` on the snapshot buffer asserts.
-- Snapshot buffer: a concurrency stress test with a writer at 1 kHz and a reader at 240 Hz under TSAN-like checking (Visual Studio's `/fsanitize=address`, plus a custom invariant checker), with no torn reads.
+- Snapshot buffer: a concurrency stress test with a writer at 1 kHz and a reader at 240 Hz under TSAN-like checking (Visual Studio's `/fsanitize=address`, plus a custom invariant checker), with no torn reads. As implemented, the invariant checker is the test itself: every instance carries its snapshot's `publish_sequence`, and the reader checks that they match and never go backwards, in every build.
 - Asset versions: `update_mesh` bumps the version and leaves earlier `shared_ptr`s valid; a version is freed once the cache and both snapshot slots drop it. Each version's bounds match a brute-force scan of its vertices.
 - glTF import: axis conversion, materials, multiple primitives. Fixtures use Khronos sample models (Box, BoxTextured, DamagedHelmet).
-- Labels: `format_label` with names, ids, properties with and without format specs and units, and missing keys; a label mesh is rebuilt only when its text changes, and at most every 250 ms.
-- Trails: samples respect spacing and duration; a discontinuity starts a new segment; nothing is sampled without a tick; only the newest and oldest blocks get new versions per tick; trails disappear with their entity.
+- Labels: `format_label` with names, ids, properties with and without format specs and units, and missing keys; a label mesh is rebuilt only when its text changes, and at most every 250 ms (the representation, 12).
+- Trails: samples respect spacing and duration; a discontinuity starts a new segment; nothing is sampled without a tick; only the newest and oldest blocks get new versions per tick (the representation, 12); trails disappear with their entity.
 - World bounds: `aabb::transformed` against a brute-force transform of the eight corners; `world_bounds` of a vehicle includes its proxy mesh and sensors' shapes and skips labels; an entity with nothing drawn returns `nullopt`.
-- Update stamps: each message kind sets its field and `latest()`; staleness switches to the dimmed material after `after_seconds` and back on the next update.
+- Update stamps: each message kind sets its field and `latest()`; staleness switches to the dimmed material after `after_seconds` and back on the next update (the representation, 12).
 - Statistics: counts match a full registry scan after random creates and destroys; geometry bytes go back to their starting value once every mesh is released and both snapshot slots are reused.

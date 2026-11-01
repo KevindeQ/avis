@@ -182,11 +182,11 @@ TEST_CASE("instances come out sorted by id and list each asset once", "[scene][u
     const auto check_snapshot = [&]
     {
         tick(world, built);
-        CHECK(std::ranges::is_sorted(built.instances, {}, &scene::render_instance::id));
+        CHECK(std::ranges::is_sorted(built.instances, {}, &scene::render_instance::object_id));
         std::set<scene::object_id> found;
         for (const scene::render_instance& instance : built.instances)
         {
-            found.insert(instance.id);
+            found.insert(instance.object_id);
         }
         CHECK(found == expected);
         check_tables(built);
@@ -251,7 +251,7 @@ TEST_CASE("a mesh with more primitives than materials repeats the last material"
     REQUIRE(built.instances.size() == 3);
     for (std::uint32_t index = 0; index < 3; ++index)
     {
-        CHECK(built.instances[index].id == 7);
+        CHECK(built.instances[index].object_id == 7);
         CHECK(built.instances[index].mesh == mesh);
         CHECK(built.instances[index].submesh == index);
     }
@@ -327,14 +327,14 @@ TEST_CASE("snapshot instances carry render options, visibility and both worlds",
     REQUIRE(built.instances.size() == 2);
     {
         const scene::render_instance& instance = built.instances[0];
-        CHECK(instance.id == 1);
+        CHECK(instance.object_id == 1);
         CHECK(instance.world_previous.block<3, 1>(0, 3).isApprox(Eigen::Vector3f{ 1.0f, 0.0f, 0.0f }));
         CHECK(instance.world_current.block<3, 1>(0, 3).isApprox(Eigen::Vector3f{ 2.0f, 0.0f, 0.0f }));
         CHECK(instance.flags == (scene::instance_flags::casts_shadows | scene::instance_flags::pickable));
     }
     {
         const scene::render_instance& instance = built.instances[1];
-        CHECK(scene::is_helper(instance.id));
+        CHECK(scene::is_helper(instance.object_id));
         CHECK(instance.layer == scene::draw_layer::overlay_on_top);
         CHECK(instance.layer_priority == 4);
         CHECK(instance.maximum_view_distance == 150.0f);

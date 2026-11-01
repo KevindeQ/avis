@@ -148,7 +148,7 @@ namespace avis::scene
         Eigen::Matrix4f world_current;           // at t_k
         draw_layer layer = draw_layer::world;    // §3.4
         std::uint8_t layer_priority = 0;         // ordering within overlay layers
-        enum_flags<instance_flags> flags;        // visible, casts_shadows, selected, pickable, screen_aligned
+        enum_flags<instance_flags> flags;        // visible, casts_shadows, selected, pickable, screen_aligned, history_invalid
         float maximum_view_distance = 0.0f;      // metres from the camera; 0 = unlimited
     };
 
@@ -159,7 +159,8 @@ namespace avis::scene
 
 - `screen_aligned` and `maximum_view_distance` are generic instance options (used by labels, [08 §8.1](08-scene-management.md#81-labels), but not specific to them): a `screen_aligned` mesh is in pixels and faces the camera (§10.5), and an instance farther than `maximum_view_distance` from the camera is culled (§4.5).
 - `object_id` is an opaque 64-bit key. The renderer uses it only to look up previous-frame matrices (motion vectors) and to report picking results; it never interprets it.
-- `mesh_handle` and `material_handle` refer to entries in the asset cache ([08 §5](08-scene-management.md#5-assets-gltf)), which owns only the **CPU** data. The snapshot's `meshes` and `materials` tables carry the current version of each referenced asset. The **renderer owns every GPU copy** through its residency cache (§3.6).
+- `history_invalid` marks an instance whose entity was created this tick ([08 §6.3](08-scene-management.md#63-building-the-snapshot)): its `world_previous` is a copy of `world_current`, so it pops in without motion, and the renderer drops any history it keeps for that `object_id` (previous-frame matrix, TAA).
+- `mesh_handle` and `material_handle` refer to entries in the asset cache ([08 §5](08-scene-management.md#5-assets-gltf)), which owns only the **CPU** data. The snapshot's `meshes`, `materials` and `textures` tables carry the current version of each referenced asset, each once; a material's texture handles resolve against `textures`. The **renderer owns every GPU copy** through its residency cache (§3.6).
 
 ### 3.2 Geometry
 - **Vertex pulling** from bindless `ByteAddressBuffer`s, with no input layouts.

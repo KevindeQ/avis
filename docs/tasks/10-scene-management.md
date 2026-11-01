@@ -11,6 +11,8 @@
 | Tests | `tests/test_scene_types.cpp`, `test_scene_bounds.cpp`, `test_scene_error.cpp`, `test_scene_public_headers.cpp`, `test_scene_graph.cpp`, `test_scene_mesh_data.cpp`, `test_scene_asset_cache.cpp`, `test_scene_gltf.cpp`, `test_scene_components.cpp`, `test_scene_reflection.cpp`, `test_scene.cpp`, `test_scene_transforms.cpp`, `test_scene_snapshot.cpp`, `test_scene_snapshot_buffer.cpp`, `test_scene_viewing_aids.cpp`, `test_scene_statistics.cpp`; fixtures under `tests/data/gltf/` |
 | Prerequisites | [Task 1](01-foundations.md) (`avis::error`, `avis::result<T>`, `avis::log`, the recording assertion handler), [Task 3](03-parallel-scheduler.md) (`stdexec::get_parallel_scheduler()` for image decoding), [Task 5](05-io-layer.md) (`read_file`, `avis::sender_of`, `sync_wait_result`), [Task 0](00-external-dependencies.md) (fastgltf, simdjson), [Task 8.1](08-graphics-shaders-and-pipelines.md) (xxHash for the content hash). No GPU: nothing in this task touches the RHI. |
 
+> **Status (2026-11-01): done.** All 93 `[scene]` test cases pass in Debug, Release and an AddressSanitizer build, including 20 random-order runs each in Debug and ASan; the 144 `[unit]` test cases pass in Debug. The Visualizer builds in all three configurations and starts and exits cleanly in Debug and Release, also with a proxy model in place. Decisions made while implementing are under *As implemented*.
+
 The scene library holds the Visualizer's world: an EnTT registry with the components of 08 §3, a scene graph that owns transforms, a CPU-only asset cache with versioned, immutable meshes, materials and textures, glTF import, and the double-buffered snapshot the renderer reads. It also provides the generic parts of the viewing aids (label formatting, trail sampling, world bounds, update stamps, statistics). It replaces the prototype in `include/avis/scene/`.
 
 **Not in this task.** Everything in the Visualizer that uses the library (12):
@@ -415,7 +417,7 @@ flowchart LR
 - [x] The public-header check covers every header in `include/avis/scene/`.
 
 ## 10.14 Docs and cleanup
-- [ ] Update [08](../design/08-scene-management.md) wherever the implementation differs:
+- [x] Update [08](../design/08-scene-management.md) wherever the implementation differs:
   - the time-type header
   - the owner checks for `trail::samples`
   - the `on_update` shadow copies
@@ -423,10 +425,78 @@ flowchart LR
   - the environment's source
   - the tree-change rules for helpers
   - the glTF features left out (DDS, KTX2, `KHR_texture_transform` on more than one texture)
-- [ ] Update 99's "existing code diverges" note: `transform::to_matrix` is gone, and the scene follows 08.
-- [ ] Add rows to the [README](README.md) and its open-points table.
-- [ ] Add an **As implemented** section here.
-- [ ] Run the `[scene]` tests 20 times in random order, in Debug and ASan.
+- [x] Update 99's "existing code diverges" note: `transform::to_matrix` is gone, and the scene follows 08.
+- [x] Add rows to the [README](README.md) and its open-points table.
+- [x] Add an **As implemented** section here.
+- [x] Run the `[scene]` tests 20 times in random order, in Debug and ASan.
+
+## As implemented
+Per step, the differences from the plan and from [08](../design/08-scene-management.md) as first drafted. 08, 11 §3.1, 99 and the README were updated to match in 10.14, so these notes are the history; 08 is the reference.
+
+### 10.1
+- **`simulation_clock`** is the existing `basic_virtual_clock` bound through `tls_state_policy`; `time.h` holds nothing else from 03 than the types the scene uses.
+
+### 10.2
+- **Eigen alignment:** the default static alignment, relying on C++17's aligned `new`, with `static_assert`s in `types.h` that the build doesn't turn it off.
+- The prototype scene graph moved to the new `transform` and `node_handle` here, so `transform::to_matrix` went in 10.2, before the rewrite of 10.3.
+
+### 10.3
+- **Pending roots.** `set_local` marks the node's ancestors as having something dirty below and queues its root, so `update_transforms` walks only those subtrees. 10,000 nodes with 10% dirty update in 0.16 ms in Release.
+
+### 10.4
+- **Indices are relative to the primitive's `vertex_first`** (the draw's base vertex), so glTF primitives keep their own indices.
+- `mesh_builder::build()` returns `result<mesh_data>`; the builder has `tangent()` too. f16 uvs round to nearest even.
+
+### 10.5
+- **A default constructor** gives a cache without IO, for procedural assets and unit tests; its `load_gltf` fails with a generic `logic_error`.
+- The byte counters live in a shared block, so a `shared_ptr` deleter that runs after the cache is gone still works.
+- `gltf_node` and `gltf_asset_set` came with 10.5, for `release_all`; the sender with 10.6.
+
+### 10.6
+- **Extensions:** `KHR_materials_unlit` (→ `shading_model::unlit`) and `KHR_mesh_quantization` are supported too. `KHR_texture_transform` works on the base colour only, for offset and scale, baked into the uvs; rotations and differing transforms per primitive are ignored with a warning.
+- **Tangents** are generated for a normal-mapped primitive without them, as well as flat normals for one without normals.
+- DDS and KTX2 images are ignored with a warning, or `gltf_unsupported` when the extension is required (Open points).
+
+### 10.7
+- **`scene/flags.h`** holds `instance_flags`, `draw_layer`, `driver_entity_flags`, `light_kind` and `render_layer_mask`.
+- `belief_geometry` keeps its chunks sorted by id; `lidar_points` keeps the last `retention` sweeps.
+- **`trail`** isn't nothrow-move-constructible on MSVC, because `std::deque`'s move constructor isn't `noexcept` there; the `static_assert`s exempt it.
+
+### 10.8
+- **`driver_entity`** is reflected too. `update_stamp` shows `created` and `latest` only. `label`'s pixel offset is two fields, `pixel_offset_x` and `pixel_offset_y`.
+- **The `geometry` pseudo-component** summarises `belief_geometry` and `lidar_points` with chunk, vertex, sweep, point and byte counts.
+
+### 10.9
+- **Tree changes for helpers:** emplacing `represents` marks a pending `added` change hidden in place; once the change was taken, it records a `renamed` change with `hidden` set, and removing `represents` one with `hidden` cleared. `entity_description::represents` wasn't added (Open points).
+- **One `removed` per destroyed root**, and `clear` records one per graph root and per non-spatial entity.
+- **Shadow copies** of the retained handles, in two private `entt::storage`s.
+- Helper ids start at `(0xFF << 56) + 1`, and `allocate_helper_id` skips ids in use.
+
+### 10.10
+- **`set_parent`'s** first parameter is `child`: one named `entity` hides the type for `parent`.
+- **`end_tick` after an unpropagated change** asserts, logs in release builds, and propagates it itself, so `previous_world` gets current worlds.
+- `end_tick` over 10,000 entities takes 0.062 ms in Release (a `[!benchmark]` test).
+- The `make_snapshot` part of the tick-order test came with 10.11.
+
+### 10.11
+- **`instance_flags::history_invalid`** with `world_previous = world_current` marks an entity created this tick (Open points: both options).
+- **Textures** are in a flat `snapshot::textures` table, not inside each material entry, so each is listed once and a steady-state build doesn't allocate.
+- **`scene::set_environment`** and `environment()` (Open points).
+- `snapshot::clear()`, a default (empty) `snapshot_reference`, and `begin_write` pausing, then yielding, while the reader holds the slot. A second concurrent `acquire` gives an empty reference after the debug check.
+- The stress test's invariant checker is the test itself, in every build.
+
+### 10.12
+- **`format_label(text_template, entity)`** formats a template other than the entity's label. An integer with a floating-point spec (`.1f`) is formatted as a double; an unknown field or unclosed brace gives `–` and logs once, like a bad spec. The template cache holds up to 256 templates, then starts over.
+- **Trails:** the jumped set is an `entt::sparse_set`; a trail's sample count is kept for the owner check and the statistics.
+- **`scene_statistics`:** `entities_per_category` has `entity_category_count` entries, since `helper` is a category; a `trails` count was added; `step` is the last snapshot's, as its caller set it before `make_snapshot`. `statistics()` isn't `noexcept`.
+- `world_bounds` returns `nullopt` for a non-spatial entity.
+
+### 10.13
+- The vehicle proxy is looked for under the working directory, then next to the executable, and loaded synchronously at startup on the GUI thread; the driver's destructor releases it. The Visualizer logs only to the debugger output, so the load was checked by a clean exit with a test model in place, not by its log line.
+- A test comment named the prototype's `to_matrix`; it was reworded so the grep comes back empty.
+
+### 10.14
+- **`render_instance::id`** was renamed `object_id`, as 08 and 11 call it.
 
 ## Acceptance criteria
 - The scene headers compile without `<windows.h>`, WIC or fastgltf, and the prototype API is gone.

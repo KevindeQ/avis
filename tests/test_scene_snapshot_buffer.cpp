@@ -21,7 +21,7 @@ namespace
     void write(scene::snapshot_buffer& buffer, const scene::object_id id)
     {
         scene::snapshot& target = buffer.begin_write();
-        target.instances.push_back({ .id = id });
+        target.instances.push_back({ .object_id = id });
         buffer.publish();
     }
 } // namespace
@@ -50,7 +50,7 @@ TEST_CASE("snapshot_buffer: acquire, publish and reuse", "[scene]")
             REQUIRE(front);
             CHECK(front->publish_sequence == 1);
             REQUIRE(front->instances.size() == 1);
-            CHECK(front->instances[0].id == 1);
+            CHECK(front->instances[0].object_id == 1);
             first = &*front;
         }
         {
@@ -63,7 +63,7 @@ TEST_CASE("snapshot_buffer: acquire, publish and reuse", "[scene]")
         const scene::snapshot_reference next = buffer.acquire();
         CHECK(&*next != first);
         CHECK(next->publish_sequence == 2);
-        CHECK(next->instances[0].id == 2);
+        CHECK(next->instances[0].object_id == 2);
     }
 
     SECTION("begin_write clears the slot and keeps its capacity")
@@ -88,7 +88,7 @@ TEST_CASE("snapshot_buffer: acquire, publish and reuse", "[scene]")
         scene::snapshot_reference moved = std::move(first);
         CHECK_FALSE(first);
         REQUIRE(moved);
-        CHECK(moved->instances[0].id == 1);
+        CHECK(moved->instances[0].object_id == 1);
 
         moved = scene::snapshot_reference{};
         CHECK_FALSE(moved);
@@ -110,7 +110,7 @@ TEST_CASE("snapshot_buffer: the reader's hold blocks only the second begin_write
 
         // Across one publish: the writer fills the other slot without waiting
         write(buffer, 2);
-        CHECK(held->instances[0].id == 1);
+        CHECK(held->instances[0].object_id == 1);
 
         // Across two: the next begin_write needs the held slot and waits
         writer = std::thread{ [&]
@@ -125,13 +125,13 @@ TEST_CASE("snapshot_buffer: the reader's hold blocks only the second begin_write
         }
         std::this_thread::sleep_for(50ms);
         CHECK_FALSE(second_write_done);
-        CHECK(held->instances[0].id == 1); // untouched while held
+        CHECK(held->instances[0].object_id == 1); // untouched while held
         CHECK(held->publish_sequence == 1);
     }
     writer.join();
     CHECK(second_write_done);
     CHECK(buffer.publish_sequence() == 3);
-    CHECK(buffer.acquire()->instances[0].id == 3);
+    CHECK(buffer.acquire()->instances[0].object_id == 3);
 }
 
 TEST_CASE("snapshot_buffer: misuse is checked", "[scene]")
@@ -208,7 +208,7 @@ TEST_CASE("snapshot_buffer: no torn reads under a 1 kHz writer and a 240 Hz read
                                         }
                                         for (const scene::render_instance& instance : front->instances)
                                         {
-                                            if (instance.id != sequence)
+                                            if (instance.object_id != sequence)
                                             {
                                                 ++torn;
                                                 break;
@@ -232,7 +232,7 @@ TEST_CASE("snapshot_buffer: no torn reads under a 1 kHz writer and a 240 Hz read
         target.instances.resize(instances_per_snapshot + sequence % 8); // the size changes too
         for (scene::render_instance& instance : target.instances)
         {
-            instance.id = sequence;
+            instance.object_id = sequence;
         }
         buffer.publish();
         ++writes;
