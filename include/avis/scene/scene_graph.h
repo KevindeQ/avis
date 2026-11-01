@@ -1,6 +1,8 @@
 ﻿#ifndef AVIS_SCENE_SCENE_GRAPH_H
 #define AVIS_SCENE_SCENE_GRAPH_H
 
+#include "avis/scene/types.h"
+
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
@@ -10,35 +12,6 @@
 
 namespace avis::scene
 {
-    struct transform
-    {
-    public:
-        inline Eigen::Matrix4f to_matrix() const
-        {
-            Eigen::Affine3f transform = Eigen::Affine3f::Identity();
-            transform.scale(scale);
-            transform.rotate(rotation);
-            transform.translate(position);
-
-            return transform.matrix();
-        }
-
-        Eigen::Vector3f position = Eigen::Vector3f::Zero();
-        Eigen::Quaternionf rotation = Eigen::Quaternionf::Identity();
-        Eigen::Vector3f scale = Eigen::Vector3f::Ones();
-    };
-
-    struct node_handle
-    {
-    public:
-        auto operator<=>(const node_handle&) const = default;
-
-        bool valid() const;
-
-        std::uint32_t index = std::numeric_limits<std::uint32_t>::max();
-        std::uint32_t generation = 0;
-    };
-
     struct scene_node
     {
         node_handle parent;

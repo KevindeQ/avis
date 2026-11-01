@@ -2,11 +2,6 @@
 
 namespace avis::scene
 {
-    bool node_handle::valid() const
-    {
-        return index != std::numeric_limits<std::uint32_t>::max();
-    }
-
     void scene_graph::mark_dirty(node_handle handle) {}
 
     void scene_graph::update_transforms()
@@ -29,7 +24,7 @@ namespace avis::scene
 
                 if (node->dirty)
                 {
-                    Eigen::Matrix4f local = node->local.to_matrix();
+                    Eigen::Matrix4f local = node->local.to_affine().matrix();
 
                     if (node->parent.valid())
                     {

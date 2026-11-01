@@ -100,8 +100,10 @@ target_sources(AVIS_TESTS
 		test_rhi_types.cpp
 		test_runtime.cpp
 		test_runtime_configuration.cpp
+		test_scene_bounds.cpp
 		test_scene_error.cpp
 		test_scene_public_headers.cpp
+		test_scene_types.cpp
 		test_sender_of.cpp
 		test_thread_pool.cpp
 		test_transient_resource_pool.cpp)

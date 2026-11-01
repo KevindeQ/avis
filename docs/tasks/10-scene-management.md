@@ -80,21 +80,21 @@ flowchart LR
 ## 10.2 `types.h`, `bounds.h`
 08 §9.1, §8.3, §4.1.
 
-- [ ] `types.h`:
+- [x] `types.h`:
   - `entity`, `object_id`, `helper_source`, `is_helper`
   - `entity_category` and `entity_category_count`
   - `color` with `from_srgb8`, using the exact sRGB transfer function, not a 2.2 gamma
   - `transform` with `to_affine` (`Translation · Rotation · Scaling`) and `from_affine` (polar decomposition; rotation normalised, positive scale)
   - `node_handle` with `valid` and `<=>`
-- [ ] `bounds.h`: `aabb` with `empty`, `extend` (also an overload for a point) and `transformed`. `transformed` uses Arvo's method: the centre is transformed, and the extent is the absolute linear part times the half-size. An empty box stays empty.
-- [ ] Decide the Eigen alignment rule (Conventions) and write it in a comment in `types.h`.
+- [x] `bounds.h`: `aabb` with `empty`, `extend` (also an overload for a point) and `transformed`. `transformed` uses Arvo's method: the centre is transformed, and the extent is the absolute linear part times the half-size. An empty box stays empty.
+- [x] Decide the Eigen alignment rule (Conventions) and write it in a comment in `types.h`.
 
 **Tests** (`test_scene_types.cpp`, `test_scene_bounds.cpp`, `[scene][unit]`):
-- [ ] `to_affine` matches a hand-computed `T · R · S` matrix for a non-uniform scale and a 30° rotation, and differs from the prototype's order (the 08 §4.1 fix).
-- [ ] `from_affine(to_affine(t))` round-trips within 1e-5 for random TRS. For a sheared matrix it returns the closest TRS, with no NaN.
-- [ ] `from_srgb8({ 0, 128, 255, 255 })` matches the reference values. Alpha is linear.
-- [ ] `aabb::transformed` equals the box of the eight transformed corners, for 1,000 random boxes and transforms. Empty boxes stay empty, and `extend` with an empty box changes nothing.
-- [ ] `is_helper` holds for `0xFF << 56` and fails for a Driver id with source 1.
+- [x] `to_affine` matches a hand-computed `T · R · S` matrix for a non-uniform scale and a 30° rotation, and differs from the prototype's order (the 08 §4.1 fix).
+- [x] `from_affine(to_affine(t))` round-trips within 1e-5 for random TRS. For a sheared matrix it returns the closest TRS, with no NaN.
+- [x] `from_srgb8({ 0, 128, 255, 255 })` matches the reference values. Alpha is linear.
+- [x] `aabb::transformed` equals the box of the eight transformed corners, for 1,000 random boxes and transforms. Empty boxes stay empty, and `extend` with an empty box changes nothing.
+- [x] `is_helper` holds for `0xFF << 56` and fails for a Driver id with source 1.
 
 ## 10.3 Scene graph
 08 §4, §4.1, §9.3.
