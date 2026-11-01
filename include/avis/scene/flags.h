@@ -17,7 +17,11 @@ namespace avis::scene
         casts_shadows = 1 << 1,
         selected = 1 << 2,
         pickable = 1 << 3,
-        screen_aligned = 1 << 4 // the mesh is in pixels, facing the camera (08 §8.1)
+        screen_aligned = 1 << 4, // the mesh is in pixels, facing the camera (08 §8.1)
+
+        // Snapshot only, set by make_snapshot: the entity has no previous_world yet (created this tick), so
+        // world_previous is a copy of world_current. It pops in, and TAA drops its history (08 §6.3).
+        history_invalid = 1 << 5
     };
 
     enum class draw_layer : std::uint8_t

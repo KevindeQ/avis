@@ -1,5 +1,5 @@
 // scene: hierarchy, transforms, discontinuities, previous_world and the tick order
-// (docs/tasks/10-scene-management.md §10.10)
+// (docs/tasks/10-scene-management.md §10.10, and §10.11 for make_snapshot's tick-order check)
 
 #include "helpers/log_capture.h"
 #include "helpers/recorded_assertions.h"
@@ -10,6 +10,7 @@
 #include "avis/scene/components/spatial.h"
 #include "avis/scene/error.h"
 #include "avis/scene/scene.h"
+#include "avis/scene/snapshot.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -261,6 +262,7 @@ TEST_CASE("the tick order is checked in debug builds", "[scene][unit]")
     const entity car = create(world, 1, entity_category::object);
     const entity helper = create(world, 0, entity_category::helper, car);
 
+    scene::snapshot_buffer buffer;
     tests::recorded_assertions assertions;
     tests::log_capture errors{ "scene" };
 
@@ -272,17 +274,49 @@ TEST_CASE("the tick order is checked in debug builds", "[scene][unit]")
             world.update_world_transforms(); // 2.
             world.set_local(helper, pose({ 0.0f, 0.0f, static_cast<float>(tick) }, 0.0f)); // 4. representation
             world.update_world_transforms(); // 5.
+            world.make_snapshot(buffer.begin_write()); // 6.
+            buffer.publish();
             world.end_tick(); // 7.
 
             // A presentation-only republish: steps 4–6, no end_tick
             world.set_local(helper, pose({ 0.0f, 1.0f, 0.0f }, 0.0f));
             world.update_world_transforms();
+            world.make_snapshot(buffer.begin_write());
+            buffer.publish();
         }
 
         // A tick with nothing but the transform update
         world.update_world_transforms();
         world.end_tick();
         CHECK(assertions.count() == 0);
+    }
+
+    SECTION("make_snapshot after an unpropagated set_local")
+    {
+        world.update_world_transforms();
+        world.set_local(helper, pose({ 0.0f, 2.0f, 0.0f }, 0.0f));
+        scene::snapshot target;
+        world.make_snapshot(target);
+#ifndef NDEBUG
+        CHECK(assertions.count() == 1);
+        CHECK(assertions.contains("make_snapshot: a transform changed after the last update_world_transforms"));
+#endif
+    }
+
+    SECTION("make_snapshot after create_entity or set_parent without an update")
+    {
+        world.update_world_transforms();
+        scene::snapshot target;
+
+        create(world, 2, entity_category::object);
+        world.make_snapshot(target);
+        world.update_world_transforms();
+
+        REQUIRE(world.set_parent(helper, entt::null, true));
+        world.make_snapshot(target);
+#ifndef NDEBUG
+        CHECK(assertions.count() == 2);
+#endif
     }
 
     SECTION("end_tick twice")

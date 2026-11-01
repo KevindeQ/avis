@@ -6,8 +6,8 @@
 // previous_world, ties the lifetime of mesh and material handles to their components, and records tree changes for
 // the GUI. Only the simulation thread uses it: the thread that constructed it, checked in debug builds.
 //
-// Tasks 10.9 and 10.10 add the entity, hierarchy, transform and tick members; snapshots, viewing aids and statistics
-// follow in tasks 10.11 and 10.12.
+// Tasks 10.9–10.11 add the entity, hierarchy, transform, tick and snapshot members; viewing aids and statistics follow
+// in task 10.12.
 
 #include "avis/error.h"
 #include "avis/scene/assets/asset_cache.h"
@@ -16,6 +16,7 @@
 #include "avis/scene/components/rendering.h"
 #include "avis/scene/components/spatial.h"
 #include "avis/scene/scene_graph.h"
+#include "avis/scene/snapshot.h"
 #include "avis/scene/types.h"
 
 #include <Eigen/Geometry>
@@ -135,6 +136,13 @@ namespace avis::scene
         // previous_world = world, emplaced when missing, so it doesn't interpolate across the jump.
         void update_world_transforms();
 
+        // Fills `target` with the instances and lights in stable id order, the environment, the scene version and the
+        // current version of every referenced asset (§6.3). Leaves the step fields and publish_sequence to the
+        // caller and the buffer. An entity without previous_world (created this tick) gets world_previous =
+        // world_current and instance_flags::history_invalid. A steady state allocates nothing once `target` has
+        // grown. Debug builds assert that every transform change was propagated (§9.6).
+        void make_snapshot(snapshot& target);
+
         // previous_world = world for every entity with a node, emplaced when missing: an entity created this tick
         // interpolates from its second snapshot onwards. Records the tick's timings.
         //
@@ -142,6 +150,12 @@ namespace avis::scene
         // after a transform change that update_world_transforms hasn't propagated. A republish (make_snapshot
         // without end_tick) is allowed.
         void end_tick();
+
+        // ---- environment ----
+
+        // Copied into every snapshot. A presentation setting: the Visualizer sets it from the scenario (D-42).
+        void set_environment(const environment_settings& environment);
+        const environment_settings& environment() const noexcept;
 
         // ---- UI ----
 
@@ -185,8 +199,16 @@ namespace avis::scene
         // Something that can change world transforms: create_entity, set_parent, set_local
         void note_transform_change() noexcept;
 
-        // For make_snapshot (10.11): a debug check that every transform change was propagated
+        // For make_snapshot: a debug check that every transform change was propagated
         void check_snapshot_order(const char* operation) const noexcept;
+
+        // ---- snapshots ----
+
+        // draw_order_ sorted by identity::id, rebuilt after a structural change or a mesh or material add or remove
+        void update_draw_order();
+        void collect_assets(snapshot& target);
+        void add_instances(snapshot& target);
+        void add_lights(snapshot& target);
 
         // ---- signal handlers ----
         template<typename Component>
@@ -195,6 +217,7 @@ namespace avis::scene
         void on_identity_destroy(entt::registry& registry, entity entity);
         void on_represents_construct(entt::registry& registry, entity entity);
         void on_represents_destroy(entt::registry& registry, entity entity);
+        void on_draw_set_change(entt::registry& registry, entity entity); // mesh or material added or removed
         void on_mesh_construct(entt::registry& registry, entity entity);
         void on_mesh_update(entt::registry& registry, entity entity);
         void on_mesh_destroy(entt::registry& registry, entity entity);
@@ -228,6 +251,18 @@ namespace avis::scene
         bool tick_active_ = true; // a change or an update since the last end_tick
         std::chrono::nanoseconds tick_transform_time_{ 0 }; // update_world_transforms and end_tick, this tick
         std::chrono::nanoseconds last_transform_time_{ 0 }; // the same, for the last finished tick
+
+        // Snapshots: the order cache, scratch handle lists kept for their capacity, and what the last one held
+        environment_settings environment_;
+        std::vector<entity> draw_order_; // view<node_reference, mesh, material>, sorted by id
+        std::uint64_t draw_order_version_ = 0; // scene_version_ when draw_order_ was built
+        bool draw_order_dirty_ = true;
+        std::vector<mesh_handle> mesh_scratch_;
+        std::vector<material_handle> material_scratch_;
+        std::vector<texture_handle> texture_scratch_;
+        std::chrono::nanoseconds last_snapshot_time_{ 0 };
+        std::size_t last_snapshot_instances_ = 0;
+        std::size_t last_snapshot_lights_ = 0;
 
         int owner_writes_ = 0; // > 0 while scene writes the components it owns
         bool destroying_ = false; // while scene destroys entities: no `renamed` change for a lost `represents`

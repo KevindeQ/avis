@@ -149,6 +149,7 @@ target_sources(AVIS_LIB
 		scene/reflection.cpp
 		scene/scene.cpp
 		scene/scene_graph.cpp
+		scene/snapshot.cpp
 		scene/types.cpp
 
 		threading/parallel_backend.cpp

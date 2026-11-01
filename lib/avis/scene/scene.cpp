@@ -5,6 +5,7 @@
 #include "avis/scene/components/viewing.h"
 #include "avis/scene/error.h"
 
+#include <algorithm>
 #include <chrono>
 #include <format>
 #include <string_view>
@@ -79,6 +80,23 @@ namespace avis::scene
             }
         }
 
+        // Sorts and removes duplicates, in place
+        template<typename Handle>
+        void sort_unique(std::vector<Handle>& handles) noexcept
+        {
+            std::ranges::sort(handles);
+            const auto duplicates = std::ranges::unique(handles);
+            handles.erase(duplicates.begin(), duplicates.end());
+        }
+
+        // The entry for `handle` in a table sorted by handle; nullptr when it isn't there
+        template<typename Entry, typename Handle>
+        const Entry* find_entry(const std::vector<Entry>& table, const Handle handle) noexcept
+        {
+            const auto found = std::ranges::lower_bound(table, handle, {}, &Entry::handle);
+            return found != table.end() && found->handle == handle ? &*found : nullptr;
+        }
+
         void release_valid(asset_cache& assets, const std::vector<material_handle>& materials) noexcept
         {
             for (const material_handle material : materials)
@@ -129,6 +147,10 @@ namespace avis::scene
         registry_.on_destroy<identity>().connect<&scene::on_identity_destroy>(*this);
         registry_.on_construct<represents>().connect<&scene::on_represents_construct>(*this);
         registry_.on_destroy<represents>().connect<&scene::on_represents_destroy>(*this);
+        registry_.on_construct<mesh>().connect<&scene::on_draw_set_change>(*this);
+        registry_.on_destroy<mesh>().connect<&scene::on_draw_set_change>(*this);
+        registry_.on_construct<material>().connect<&scene::on_draw_set_change>(*this);
+        registry_.on_destroy<material>().connect<&scene::on_draw_set_change>(*this);
         registry_.on_construct<mesh>().connect<&scene::on_mesh_construct>(*this);
         registry_.on_update<mesh>().connect<&scene::on_mesh_update>(*this);
         registry_.on_destroy<mesh>().connect<&scene::on_mesh_destroy>(*this);
@@ -457,6 +479,25 @@ namespace avis::scene
         tick_transform_time_ += std::chrono::steady_clock::now() - start;
     }
 
+    void scene::make_snapshot(snapshot& target)
+    {
+        check_thread("make_snapshot");
+        check_snapshot_order("make_snapshot");
+        const auto start = std::chrono::steady_clock::now();
+
+        target.clear();
+        update_draw_order();
+        collect_assets(target);
+        add_instances(target);
+        add_lights(target);
+        target.environment = environment_;
+        target.scene_version = scene_version_;
+
+        last_snapshot_instances_ = target.instances.size();
+        last_snapshot_lights_ = target.lights.size();
+        last_snapshot_time_ = std::chrono::steady_clock::now() - start;
+    }
+
     void scene::end_tick()
     {
         check_thread("end_tick");
@@ -486,6 +527,20 @@ namespace avis::scene
 
         last_transform_time_ = std::exchange(tick_transform_time_, std::chrono::nanoseconds{ 0 });
         tick_active_ = false;
+    }
+
+    // ---- environment ----
+
+    void scene::set_environment(const environment_settings& environment)
+    {
+        check_thread("set_environment");
+        environment_ = environment;
+    }
+
+    const environment_settings& scene::environment() const noexcept
+    {
+        check_thread("environment");
+        return environment_;
     }
 
     // ---- UI ----
@@ -602,6 +657,179 @@ namespace avis::scene
 #endif
     }
 
+    // ---- snapshots ----
+
+    void scene::update_draw_order()
+    {
+        if (!draw_order_dirty_ && draw_order_version_ == scene_version_)
+        {
+            return;
+        }
+
+        const auto drawn = registry_.view<components::node_reference, components::mesh, components::material>();
+        draw_order_.assign(drawn.begin(), drawn.end());
+        std::ranges::sort(
+            draw_order_,
+            {},
+            [this](const avis::scene::entity entity) { return registry_.get<components::identity>(entity).id; });
+
+        draw_order_version_ = scene_version_;
+        draw_order_dirty_ = false;
+    }
+
+    void scene::collect_assets(snapshot& target)
+    {
+        mesh_scratch_.clear();
+        material_scratch_.clear();
+        texture_scratch_.clear();
+        for (const avis::scene::entity entity : draw_order_)
+        {
+            if (const mesh_handle mesh = registry_.get<components::mesh>(entity).asset; mesh.valid())
+            {
+                mesh_scratch_.push_back(mesh);
+            }
+            for (const material_handle material : registry_.get<components::material>(entity).materials)
+            {
+                if (material.valid())
+                {
+                    material_scratch_.push_back(material);
+                }
+            }
+        }
+        sort_unique(mesh_scratch_);
+        sort_unique(material_scratch_);
+
+        // The components retain their handles, so each one is alive and has a current version
+        for (const mesh_handle mesh : mesh_scratch_)
+        {
+            if (versioned_mesh current = assets_.current(mesh); current.data)
+            {
+                target.meshes.push_back({ .handle = mesh, .mesh = std::move(current) });
+            }
+        }
+        for (const material_handle material : material_scratch_)
+        {
+            versioned_material current = assets_.current(material);
+            if (!current.data)
+            {
+                continue;
+            }
+            const material_description& description = *current.data;
+            for (const texture_handle texture : { description.base_color_texture,
+                                                  description.metallic_roughness_texture,
+                                                  description.normal_texture,
+                                                  description.occlusion_texture,
+                                                  description.emissive_texture })
+            {
+                if (texture.valid())
+                {
+                    texture_scratch_.push_back(texture);
+                }
+            }
+            target.materials.push_back({ .handle = material, .material = std::move(current) });
+        }
+        sort_unique(texture_scratch_);
+        for (const texture_handle texture : texture_scratch_)
+        {
+            if (versioned_texture current = assets_.current(texture); current.data)
+            {
+                target.textures.push_back({ .handle = texture, .texture = std::move(current) });
+            }
+        }
+    }
+
+    void scene::add_instances(snapshot& target)
+    {
+        static const components::render_options default_options{};
+
+        for (const avis::scene::entity entity : draw_order_)
+        {
+            const auto& mesh = registry_.get<components::mesh>(entity);
+            const versioned_mesh_entry* entry = mesh.asset.valid() ? find_entry(target.meshes, mesh.asset) : nullptr;
+            if (entry == nullptr)
+            {
+                continue; // no mesh to draw
+            }
+
+            // The range, clamped to the current version's primitives
+            const auto primitives = static_cast<std::uint32_t>(entry->mesh.data->primitives.size());
+            if (mesh.primitive_first >= primitives)
+            {
+                continue;
+            }
+            const std::uint32_t count = std::min(mesh.primitive_count, primitives - mesh.primitive_first);
+
+            const std::vector<material_handle>& materials = registry_.get<components::material>(entity).materials;
+            const auto* options = registry_.try_get<components::render_options>(entity);
+            if (options == nullptr)
+            {
+                options = &default_options;
+            }
+
+            avis::flags<instance_flags> flags = options->flags;
+            if (const auto* shown = registry_.try_get<components::visibility>(entity);
+                shown != nullptr && !shown->visible)
+            {
+                flags.erase(instance_flags::visible);
+            }
+
+            const Eigen::Matrix4f world_current =
+                graph_.world(registry_.get<components::node_reference>(entity).node).matrix();
+            Eigen::Matrix4f world_previous = world_current;
+            if (const auto* previous = registry_.try_get<components::previous_world>(entity))
+            {
+                world_previous = previous->world.matrix();
+            }
+            else
+            {
+                flags |= instance_flags::history_invalid; // created this tick: it pops in (§6.3)
+            }
+
+            const object_id id = registry_.get<components::identity>(entity).id;
+            for (std::uint32_t index = 0; index < count; ++index)
+            {
+                // The last material repeats when there are fewer than primitives
+                const material_handle material = materials.empty() ?
+                                                     material_handle{} :
+                                                     materials[std::min<std::size_t>(index, materials.size() - 1)];
+                target.instances.push_back(
+                    {
+                        .id = id,
+                        .mesh = mesh.asset,
+                        .submesh = mesh.primitive_first + index,
+                        .material = material,
+                        .world_previous = world_previous,
+                        .world_current = world_current,
+                        .layer = options->layer,
+                        .layer_priority = options->layer_priority,
+                        .flags = flags,
+                        .maximum_view_distance = options->maximum_view_distance,
+                    });
+            }
+        }
+    }
+
+    void scene::add_lights(snapshot& target)
+    {
+        for (const auto [entity, reference, light] :
+             registry_.view<components::node_reference, components::light>().each())
+        {
+            target.lights.push_back(
+                {
+                    .id = id_of(entity),
+                    .kind = light.kind,
+                    .light_color = light.light_color,
+                    .intensity = light.intensity,
+                    .range = light.range,
+                    .inner_cone_angle = light.inner_cone_angle,
+                    .outer_cone_angle = light.outer_cone_angle,
+                    .world = graph_.world(reference.node).matrix(),
+                    .casts_shadows = light.casts_shadows,
+                });
+        }
+        std::ranges::sort(target.lights, {}, &light_instance::id); // the pool's order changes on destroy
+    }
+
     // ---- signal handlers ----
 
     template<typename Component>
@@ -659,6 +887,11 @@ namespace avis::scene
         }
         record_change(tree_change_kind::renamed, entity);
         tree_changes_.back().hidden = false; // the component is still there while on_destroy runs
+    }
+
+    void scene::on_draw_set_change(entt::registry&, entity)
+    {
+        draw_order_dirty_ = true;
     }
 
     void scene::on_mesh_construct(entt::registry& registry, const entity entity)

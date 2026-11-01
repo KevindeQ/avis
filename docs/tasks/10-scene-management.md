@@ -326,40 +326,40 @@ flowchart LR
 - [x] `previous_world` after `end_tick` equals the world of that tick. An entity created this tick has none until `end_tick`.
 - [x] `relative_transform(vehicle, sensor)` equals the sensor's local transform.
 - [x] `set_local` with scale 2 on a Driver entity asserts; on a helper it doesn't.
-- [ ] Tick order: `make_snapshot` after an unpropagated `set_local` asserts, and so does `end_tick` twice. The republish sequence of 08 §9.6 doesn't.
+- [x] Tick order: `make_snapshot` after an unpropagated `set_local` asserts, and so does `end_tick` twice. The republish sequence of 08 §9.6 doesn't.
 
 ## 10.11 Snapshots
 08 §6, §9.8, A-15, D-42.
 
-- [ ] `snapshot.h`:
+- [x] `snapshot.h`:
   - `render_instance`, with `object_id`, the mesh, submesh and material, both matrices, `layer`, `layer_priority`, `flags` and `maximum_view_distance`
   - `light_kind` if it isn't in the components, `light_instance` and `environment_settings`
   - `versioned_mesh_entry` and `versioned_material_entry`, with the material's textures
   - `snapshot`, with the step fields, the `time_anchor` from 10.1, `scene_version` and `publish_sequence`
   - `snapshot_reference` and `snapshot_buffer`
-- [ ] `snapshot_buffer`:
+- [x] `snapshot_buffer`:
   - two slots, a front index and a reader-holds bitmask, guarded by a short spinlock (an `std::atomic_flag` with a pause loop)
   - `begin_write` waits while the reader holds the back slot, logging a debug warning past 2 ms, then clears the slot's vectors without freeing their capacity
   - `publish` swaps the slots and increments `publish_sequence`, and asserts there was exactly one `begin_write`
   - `acquire` marks the front slot as held; a second concurrent `acquire` asserts, and before the first publish it returns an empty reference
   - the destructor asserts that no reference is alive
-- [ ] `scene::make_snapshot(snapshot&)`:
+- [x] `scene::make_snapshot(snapshot&)`:
   - **Order.** Keeps a `std::vector<entity>` of `view<node_reference, mesh, material>`'s entities sorted by `identity::id`, rebuilt when `scene_version` changed since the last build or an entity gained or lost `mesh` or `material`. Track the latter with the 10.9 signals, which set a "sort dirty" flag.
   - **Instances.** One instance per primitive in `mesh.primitive_first … + primitive_count`, with the matching material index (the last material repeats if there are fewer). `object_id` is `identity::id`, and `world_current` is `world(entity).matrix()`. `world_previous` is `previous_world`, or the invalid marker when the entity has none (see Open points). Layer, priority, flags and distance come from `render_options` or its defaults. `visibility.visible == false` clears `instance_flags::visible`.
   - **Lights.** One light per `view<node_reference, light>`, with the world matrix.
   - **Asset tables.** Distinct mesh and material handles go into small sorted vectors, filled with `assets().current(…)`. Each material's textures are added too.
   - **Timing.** The call is timed for the statistics.
   - **Allocation.** It reuses the snapshot's capacity; a steady state allocates nothing, apart from the `shared_ptr` copies, which only change reference counts.
-- [ ] `environment_settings` comes from a non-spatial entity with an `environment` component, or from a `scene::set_environment` setter (see Open points); `make_snapshot` copies it.
+- [x] `environment_settings` comes from a non-spatial entity with an `environment` component, or from a `scene::set_environment` setter (see Open points); `make_snapshot` copies it.
 
 **Tests** (`test_scene_snapshot.cpp` `[scene][unit]`, `test_scene_snapshot_buffer.cpp` `[scene]`):
-- [ ] Instances come out sorted by `identity::id`, also after creating and destroying entities in random order. Each mesh and material appears once in the tables, even when 100 instances share them, and every referenced handle is in its table.
-- [ ] A mesh with three primitives and two materials gives three instances, and the third uses the second material.
-- [ ] `world_previous` is the previous tick's world, and invalid for an entity created this tick.
-- [ ] A snapshot holding an old mesh version keeps it alive after `update_mesh`; reusing that slot twice frees it (retained bytes back to the start).
-- [ ] Steady state: building the same scene 100 times allocates nothing after the first build (allocation-failure helper of task 1, ignoring `shared_ptr` reference counts).
-- [ ] Buffer semantics: `acquire` before the first publish is empty. Between publishes it returns the same snapshot. Holding a reference across one publish doesn't block `begin_write`; holding it across two blocks until it's released. A second concurrent `acquire` asserts.
-- [ ] Stress (08 §10): a writer at 1 kHz for 5 s writes a snapshot whose instances all carry its `publish_sequence`. A reader at 240 Hz checks that every instance in what it reads has the same sequence (no torn reads) and that sequences never go backwards. Run it under ASan, and in Release with the invariant checker enabled.
+- [x] Instances come out sorted by `identity::id`, also after creating and destroying entities in random order. Each mesh and material appears once in the tables, even when 100 instances share them, and every referenced handle is in its table.
+- [x] A mesh with three primitives and two materials gives three instances, and the third uses the second material.
+- [x] `world_previous` is the previous tick's world, and invalid for an entity created this tick.
+- [x] A snapshot holding an old mesh version keeps it alive after `update_mesh`; reusing that slot twice frees it (retained bytes back to the start).
+- [x] Steady state: building the same scene 100 times allocates nothing after the first build (allocation-failure helper of task 1, ignoring `shared_ptr` reference counts).
+- [x] Buffer semantics: `acquire` before the first publish is empty. Between publishes it returns the same snapshot. Holding a reference across one publish doesn't block `begin_write`; holding it across two blocks until it's released. A second concurrent `acquire` asserts.
+- [x] Stress (08 §10): a writer at 1 kHz for 5 s writes a snapshot whose instances all carry its `publish_sequence`. A reader at 240 Hz checks that every instance in what it reads has the same sequence (no torn reads) and that sequences never go backwards. Run it under ASan, and in Release with the invariant checker enabled.
 
 ## 10.12 Viewing aids and statistics
 08 §8.1–§8.5, §9.5.
