@@ -148,7 +148,8 @@ namespace avis::scene
         Eigen::Matrix4f world_current;           // at t_k
         draw_layer layer = draw_layer::world;    // §3.4
         std::uint8_t layer_priority = 0;         // ordering within overlay layers
-        enum_flags<instance_flags> flags;        // visible, casts_shadows, selected, pickable
+        enum_flags<instance_flags> flags;        // visible, casts_shadows, selected, pickable, screen_aligned
+        float maximum_view_distance = 0.0f;      // metres from the camera; 0 = unlimited
     };
 
     struct light_instance { /* kind, colour, intensity, range, cone angles, world transform, casts_shadows */ };
@@ -156,6 +157,7 @@ namespace avis::scene
 }
 ```
 
+- `screen_aligned` and `maximum_view_distance` are generic instance options (used by labels, [08 §8.1](08-scene-management.md#81-labels), but not specific to them): a `screen_aligned` mesh is in pixels and faces the camera (§10.5), and an instance farther than `maximum_view_distance` from the camera is culled (§4.5).
 - `object_id` is an opaque 64-bit key. The renderer uses it only to look up previous-frame matrices (motion vectors) and to report picking results; it never interprets it.
 - `mesh_handle` and `material_handle` refer to entries in the asset cache ([08 §5](08-scene-management.md#5-assets-gltf)), which owns only the **CPU** data. The snapshot's `meshes` and `materials` tables carry the current version of each referenced asset. The **renderer owns every GPU copy** through its residency cache (§3.6).
 
@@ -202,6 +204,8 @@ struct material_data
 | `world` | depth prepass + G-buffer (opaque/mask) or forward transparent (blend); shadow passes if `casts_shadows` | Test + write (opaque) / test only (blend) | Material `shading_model` | Yes |
 | `overlay` | `overlay` pass, after tonemapping | Test against scene depth with a small bias, no write | Unlit (material colour only) | No (stays crisp) |
 | `overlay_on_top` | `overlay` pass, after `overlay` | No test | Unlit | No |
+
+`screen_aligned` instances are only valid in the overlay layers, where nothing is lit and TAA doesn't apply; debug builds assert on one in `world`.
 
 Each draw layer maps to the *viewport layer* field of the sort key (§4.2). `layer_priority` orders instances within the overlay layers (higher on top) through the top bits of the depth field (§4.3). Selection highlighting is the generic `selected` flag: the renderer draws an outline for selected instances.
 
@@ -364,7 +368,7 @@ struct draw_record                     // one per visible instance per frame
 - An instance drawn in several viewports (camera plus shadow cascades) has one record and several items.
 
 ### 4.5 Building and sorting
-1. **Cull per viewport:** the camera frustum for `camera`, and each cascade's frustum for `shadow_cascade[c]` (only `casts_shadows` instances).
+1. **Cull per viewport:** the camera frustum for `camera`, and each cascade's frustum for `shadow_cascade[c]` (only `casts_shadows` instances). In the `camera` viewport, an instance with a non-zero `maximum_view_distance` is also culled when its bounds centre is farther from the camera. A `screen_aligned` instance is tested by its anchor (the origin of its interpolated world matrix) against the frustum widened by the mesh's pixel bounds converted at the anchor's depth.
 2. **Generate items** into one array in the frame's `linear_arena`, sized from the cull counts. The renderer appends its command items to the same array.
 3. **Sort the array** once with `std::ranges::sort`.
 4. **Index the groups:** a binary search per group start gives `draw_list::range(prefix)`, an empty span when no item has that prefix.
@@ -539,6 +543,7 @@ Generic geometry features. The renderer doesn't know what the points or lines re
 ### 10.5 Overlay pass
 - Walks the `overlay` and then the `overlay_on_top` groups of the draw list into `ldr_color`, after tonemapping, so overlays stay crisp and unaffected by TAA.
 - `overlay` instances are depth-tested against the scene depth with a small bias. The scene depth is jittered, but the sub-pixel error is acceptable for overlays. `overlay_on_top` ignores depth.
+- **Screen-aligned instances** use a vertex shader variant: it projects the origin of the instance's interpolated world matrix to clip space, then adds each vertex's position as an offset in pixels (scaled by the output's device pixel ratio and converted to clip units). The mesh keeps a constant size on screen and faces the camera, whatever the instance's rotation. The depth of an `overlay` instance is the anchor's depth. The variant is a pipeline variant of the overlay pipeline set, selected by the flag (§4.4).
 - Draws the outline for `selected` instances (a screen-space edge detect on a stencil-like mask written by the selected instances).
 - What appears in the overlays (box edges, trajectories, grid, frusta, …) is decided entirely by the scene representation ([12 §9](12-visualizer.md#9-scene-representation)).
 

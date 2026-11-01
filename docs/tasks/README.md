@@ -1,4 +1,4 @@
-# Implementation tasks: library runtime, thread pool, parallel scheduler, IO layer, RHI, graphics layer, render graph, scene management and scene renderer
+# Implementation tasks: library runtime, thread pool, parallel scheduler, IO layer, RHI, graphics layer, render graph, scene management, scene renderer, the Visualizer, networking, the simulation core and scenarios
 
 These documents break the designs in [`docs/design`](../design) into ordered, reviewable implementation steps. They cover:
 
@@ -12,6 +12,10 @@ These documents break the designs in [`docs/design`](../design) into ordered, re
 - [10 — Render Graph](../design/10-render-graph.md)
 - [08 — Scene Management](../design/08-scene-management.md)
 - [11 — Scene Renderer](../design/11-renderer.md), with the shader manifest parser of [12a](../design/12a-visualizer-shader-manifest.md)
+- [12 — Visualizer Application](../design/12-visualizer.md)
+- [02 — Communication & Lockstep](../design/02-communication.md) (§1–§5: the network layer and message catalogue)
+- [03 — Simulation Core](../design/03-simulation-core.md)
+- [04 — Scenarios & KITTI-360 Data](../design/04-scenario-and-dataset.md) (§1–§3: the scenario model)
 
 plus integrating the newly vendored external libraries (spdlog, yaml-cpp, fastgltf, simdjson) and the parts of [01 §6](../design/01-system-architecture.md#6-error-handling-policy) and [13](../design/13-build-and-quality.md) these depend on.
 
@@ -29,6 +33,10 @@ plus integrating the newly vendored external libraries (spdlog, yaml-cpp, fastgl
 | 9 | [09-render-graph.md](09-render-graph.md) | `linear_arena`, `render_graph` (build, compile, execute), `resource_bag`, pass contexts, `transient_resource_pool`; replaces the render pass prototype and brings `scene_renderer` back | 6, 7 (8 for the GPU tests' helpers) |
 | 10 | [10-scene-management.md](10-scene-management.md) | `avis::simulation` time types, `avis::scene`: types and bounds, `scene_graph`, mesh data and `mesh_builder`, `asset_cache`, glTF import, components, reflection, `scene`, snapshots and `snapshot_buffer`, label formatting, trails, world bounds, statistics; replaces the scene prototype | 1, 3, 5, 8.1 |
 | 11 | [11-renderer.md](11-renderer.md) | `AVIS_VISUALIZER_RENDERING`: render settings, the shader manifest parser (format 2), residency, extraction, sort keys, draw lists, pipeline variants, every pass of 11 §2.3, picking, debug blit, screenshots; tested headless | 6, 7, 8, 9, 10 |
+| 12 | [12-visualizer.md](12-visualizer.md) | Part A: configuration, device setup and completions, the shared frame ring and Qt blit, the frame loop, the simulation thread's presentation path with a demo scene, the scene representation (shapes, geometry, lidar, budget, labels, trails, staleness), camera, picking, panels, screenshots, errors. Part B: scene stream, discovery, lockstep, tick loop, scenario editing, Driver panel | A: 6, 7, 9, 10, 11. B: 13, 14, 15 |
+| 13 | [13-network.md](13-network.md) | zenoh-c / zenoh-cpp vendored, `avis::network` (sessions, pub/sub, liveliness, queryables, the query and scout senders), the serializer and framing, key expressions, the full message catalogue, a fake Driver for tests | 1, 3, 4, 5, 10.1 |
+| 14 | [14-simulation-core.md](14-simulation-core.md) | The clock state machine, step pacer with silent slowdown, effective speed, time anchors and `render_time`, `tick_controller`, the committed-tick clock facade, seeded random streams | 1, 10.1 |
+| 15 | [15-scenario.md](15-scenario.md) | Scenario structs, YAML load and canonical save with diagnostics, local, catalogue and parameter-schema validation, `scenario_document`, the protocol mapping | 0, 1, 5, 14.1 (13 for 15.8) |
 
 ```mermaid
 flowchart LR
@@ -53,13 +61,21 @@ flowchart LR
     rg --> rr[11. Scene renderer<br/>residency, draw lists,<br/>passes, picking, screenshots]
     sh --> rr
     sc --> rr
+    rr --> vz[12. Visualizer<br/>A: local, B: Driver]
+    iol --> net[13. Network<br/>Zenoh, framing, protocol]
+    f --> simc[14. Simulation core<br/>clock, pacing, anchors]
+    iol --> scn[15. Scenario<br/>YAML, validation, schema]
+    net -.-> scn
+    net --> vz
+    simc --> vz
+    scn --> vz
 ```
 
 Task 6 needs task 5 only for `avis::sender_of` and the sender helpers it moves to `avis/detail/`. The RHI doesn't use the IO layer.
 
 **Parked for the render graph task: done.** Task 6 took the render pass prototype (`include/avis/graphics/`, `lib/avis/graphics/`) and the Visualizer's `rendering/scene_renderer` out of the build, because they used the old RHI's command contexts. Task 9 (design [10](../design/10-render-graph.md)) replaced the prototype with `render_graph` and put `scene_renderer` back in the build on it (9.12), where the Visualizer builds and compiles a graph every frame. Executing frames in the Visualizer needs its frame chain and completion driver (design 12), which come after task 9.
 
-Tasks 7 and 8 are independent apart from 8 needing 7.1 (the graphics error domain and header check). Task 9 needs task 7 (frame scheduler, profiler) and uses task 8 only in its GPU tests. Task 10 needs no GPU and is independent of tasks 6–9, apart from xxHash (8.1) for glTF deduplication. Task 11 needs tasks 6–10; it renders headless, and the Visualizer's frame chain and Qt ring (design 12) come after it.
+Tasks 7 and 8 are independent apart from 8 needing 7.1 (the graphics error domain and header check). Task 9 needs task 7 (frame scheduler, profiler) and uses task 8 only in its GPU tests. Task 10 needs no GPU and is independent of tasks 6–9, apart from xxHash (8.1) for glTF deduplication. Task 11 needs tasks 6–10; it renders headless, and the Visualizer's frame chain and Qt ring (design 12) come after it. Task 12's Part A needs only tasks 6–11; Part B needs tasks 13–15. Tasks 13, 14 and 15 need no GPU and are independent of each other, apart from 15.8 using task 13's protocol types.
 
 Tasks 2 and 3 are independent: the parallel workers belong to `exec::static_thread_pool`, not to the thread pool. Task 3 replaces an earlier task 3 that built a custom task system (design decision D-60); that version is in the git history.
 
@@ -128,3 +144,24 @@ Each task document has an **Open points** section. They are collected here so th
 | 11 | How pick and pixel-inspector results reach 12: a poll (recommended) or a sender per request |
 | 11 | Vendoring the Hosek–Wilkie coefficient tables (licence check) or using Preetham |
 | 11 | A blue-noise texture: generated offline or vendored (CC0) |
+| 12 | Non-Qt static libraries for `representation/` and `simulation/` so Catch2 tests link them |
+| 12 | UI testing: Qt Test for the models and manual checklists for QML (recommended), or Qt Quick Test |
+| 12 | The outcome of the `afterFrameEnd` interop spike (12.2), which picks rule 4 or its fallback |
+| 12 | A built-in demo scene for Part A, not yet in design 12 |
+| 12 | The follow camera computed by the frame loop from the interpolated instance (proposed) |
+| 12 | The label font (08 §8.6) and the vehicle proxy (procedural first, recommended) |
+| 12 | Representation change tracking with EnTT observers (recommended) or a full pass per tick |
+| 12 | A fake Driver for the lockstep tests, written with the network task (recommended) |
+| 13 | The Zenoh version to vendor (latest 1.x) |
+| 13 | Senders complete with values and errors on `set_error`, instead of 02 §1's `sender_of<result<T>>` |
+| 13 | Strict rejection of unknown status values (recommended) or an "unknown" mapping |
+| 13 | Scouting tests need multicast on loopback; skipped where it's blocked |
+| 14 | `tick_controller` in `AVIS_LIB` (proposed) or in the Visualizer's simulation library |
+| 14 | Rational time scales from the fixed list of 12 §6 (recommended) or per-mille scales |
+| 14 | Removing `virtual_clock_state`'s wall-clock mode, which the Driver prototype uses |
+| 14 | PCG32 for plug-in streams, `mt19937_64` where a standard engine is required |
+| 15 | `scenario_load_result` (proposed) or a general result type with diagnostics |
+| 15 | Keeping unknown keys on save (proposed) |
+| 15 | Bare-number angles: radians with a warning (proposed) or a required suffix |
+| 15 | The parameter schema in `avis::simulation`, shared by Driver and Visualizer |
+| 15 | `visualization` edits allowed in every clock state (proposed) or only in `stopped` |

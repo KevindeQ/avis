@@ -193,7 +193,7 @@ Q-01 to Q-04 and Q-06 are answered (D-05 to D-09). Q-05 is answered by D-36 and 
 | ID | Question | Current assumption | Impact if different |
 |---|---|---|---|
 | Q-07 | Is a **"cheat" example plug-in** that uses the recorded future path acceptable as the demo model? | Yes (A-24) | Otherwise a perception-only planner example is needed |
-| Q-08 | Should the vehicle model's planned trajectory be **compared visually with the recorded ego path**? It's close to evaluation, which is postponed. | Not in iteration 1. If wanted, the Driver publishes the recorded path as geometry, with no Visualizer change. | Adds a host-published geometry entity and a scenario switch |
+| Q-08 | Should the vehicle model's planned trajectory be **compared visually with the recorded ego path**? It's close to evaluation, which is postponed. | Not as evaluation in iteration 1. Visually it's covered by trails ([08 §8.2](08-scene-management.md#82-trails)): the ego and shadow vehicles' trails show the recorded path and the shadow vehicle's drift with no Driver change. Comparing against the recorded *future* path would still need the Driver to publish it as geometry. | Adds a host-published geometry entity and a scenario switch |
 | Q-09 | Target **GPU class and resolution** for performance budgets | RTX 3060 / 1080p (A-25) | Changes point budgets and AO/shadow defaults |
 | Q-10 | Zenoh network **security** (TLS, access control) needed in iteration 1? | No, trusted LAN | Needs configuration and certificate management |
 

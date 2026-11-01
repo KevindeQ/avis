@@ -242,6 +242,9 @@ One message per step that creates or deletes entities. It holds an ordered list 
 | Field | Type | Notes |
 |---|---|---|
 | `transforms[]` | `{entity, local_pose, extent optional<f32x3>}` | Only entities whose pose or size changed this step. `extent` updates a `box` display, for example when the estimated size of an object changes. |
+| `discontinuous[]` | `entity_id[]` | Entities in `transforms[]` whose new pose is a jump, not motion since the previous step. Usually empty. Each id must also appear in `transforms[]`; an id that doesn't is a `protocol_error` (§7). |
+
+**Discontinuities.** The Visualizer interpolates every entity between its previous and current pose and derives motion vectors from the pair ([03 §5](03-simulation-core.md#5-render-interpolation)). A pose that jumps (a re-synchronised shadow vehicle, [05 §3.3](05-driver.md#33-shadow-vehicle); a reset; a large correction of an estimate) would slide across the gap and smear. A discontinuity tells the Visualizer to show the new pose without interpolating, for the entity and its whole subtree ([08 §4.1](08-scene-management.md#41-transform-propagation)). The Driver sets it whenever a pose is replaced rather than integrated. A child's pose is local, so a jump of its parent needs no entry for the child.
 
 #### 5.8.3 `vehicle_state`
 One message per vehicle entity per step (it replaces the old `ego_estimate` and `shadow_state` reply fields).
@@ -254,8 +257,9 @@ One message per vehicle entity per step (it replaces the old `ego_estimate` and 
 | `linear_velocity`, `angular_velocity`, `acceleration` | f32x3 each | Vehicle frame |
 | `speed` | f32 | m/s, signed |
 | `steering_angle` | f32 | rad, road-wheel angle |
+| `discontinuity` | u8 | `1` when `pose` is a jump, not motion since the previous step (§5.8.2), for example the shadow vehicle's re-synchronisation to the recorded pose |
 
-Vehicles are always root entities (§5.8.1), so the Visualizer applies this world pose as the entity's local pose (after subtracting the run origin, [04 §4.4](04-scenario-and-dataset.md#44-coordinate-frames-and-precision)), like a `transform_update`. It keeps the rest for the inspector and the follow camera.
+Vehicles are always root entities (§5.8.1), so the Visualizer applies this world pose as the entity's local pose (after subtracting the run origin, [04 §4.4](04-scenario-and-dataset.md#44-coordinate-frames-and-precision)), like a `transform_update`, with the discontinuity when it's set. It keeps the rest for the inspector and the follow camera.
 
 #### 5.8.4 `entity_properties`
 Generic key/value properties for the inspector. The Visualizer shows them without knowing what they mean.

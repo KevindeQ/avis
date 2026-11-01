@@ -138,7 +138,7 @@ There are no per-application switches: the Visualizer, Driver, stepper and examp
 |---|---|---|
 | `kitti360-pack` | `tools/kitti360-pack` | Raw KITTI-360 → sequence pack ([04 §5](04-scenario-and-dataset.md#5-packer-tool-toolskitti360-pack)) |
 | `avis-pack-inspect` | `tools/kitti360-pack` (second entry point) | Print the manifest, verify hashes, dump records, export a frame to PNG/PLY for checking |
-| `data-trace` | `tools/data-trace` (existing) | Data tracing utility; `dt shader-manifest` writes the shader manifest during the build (§3) |
+| `data-trace` | `tools/data-trace` (existing) | Data tracing utility; `dt shader-manifest` writes the shader manifest during the build (§3); `dt font-atlas` bakes the label font into `data/assets/fonts/labels*.png` plus glyph metrics at 1× and 2× ([08 §8.1](08-scene-management.md#81-labels)), run by hand when the font or glyph set changes, with the output checked in |
 | `avis-hashdiff` | `tools/avis-hashdiff` | Compare two `--record-hashes` outputs and report the first diverging step (determinism checks) |
 
 Tools follow the existing `data-trace` layout (`pyproject.toml`, `src/<package>`, `tests/`, `uv_build` backend) and use `pytest`. They're not embedded in the applications (idea.md: no scripting role).

@@ -124,7 +124,7 @@ flowchart TB
 | Qt GUI thread | Qt | QML, input events, UI models. It never blocks on simulation or GPU work. |
 | Qt render thread | Qt | Renders the Qt Quick scene with Qt's own D3D12 device. The `QQuickRhiItem` renderer displays the latest Avis frame. |
 | Simulation thread (pool) | Visualizer | Owns the EnTT registry, scenario state and virtual clock. Runs the tick loop, talks to the Driver through the lockstep coordinator, and applies committed scene stream steps. |
-| Avis frame chain (no thread of its own) | Visualizer | A sender chain, re-armed every frame, that runs its stages on parallel workers and resumes on IO completions ([09 §4.2](09-rhi.md#42-frame-contexts-sender-based-non-blocking)). It uses the Avis D3D12 device (`render_hardware_interface`), extracts the latest snapshot, interpolates, builds and executes the render graph, and writes into the shared texture ring. Nothing ever blocks waiting for the GPU. |
+| Avis frame chain (no thread of its own) | Visualizer | A sender chain, re-armed every frame, that runs its stages on parallel workers and resumes on GPU completions, which the Visualizer delivers by calling the RHI's `rhi::completion_driver::poll_completions()` from Qt's event loop ([09 §5.2](09-rhi.md#52-driving-completions), frame pacing in [17](17-graphics-frames-and-transfers.md)). It uses the Avis D3D12 device (`render_hardware_interface`), extracts the latest snapshot, interpolates, builds and executes the render graph, and writes into the shared texture ring. Nothing ever blocks waiting for the GPU. |
 | Parallel workers (`exec::static_thread_pool`, owned by the runtime) | Avis library | Short parallel work: command recording, PSO creation, asset decode ([15](15-parallel-scheduler.md), [10 §7](10-render-graph.md#7-execution-phase)) |
 | IO threads (pool) | Avis library | `io_context::run()`: async IO completions ([07](07-io-layer.md)) |
 | Zenoh threads | zenoh-c | Network IO. Callbacks only enqueue into lock-free queues that the simulation thread drains. |
@@ -184,13 +184,14 @@ The idea document asks for robustness: the Visualizer must **never crash** becau
 3. In **sender/receiver** pipelines, errors travel on the `set_error` channel ([07 §5](07-io-layer.md#5-error-propagation)). At the boundary where a sender is consumed, the error becomes a `std::expected` or an exception, following rules 1 and 2.
 4. **Plug-in boundaries** are exception- and SEH-firewalled in the Driver ([05 §6](05-driver.md#6-fault-isolation)).
 5. **Process boundary**: a Driver crash shows up as lost liveliness or as silence (no heartbeat, stream message or reply for `communication_timeout`). A slow Driver is never a failure: it slows the clock down silently. The Visualizer pauses the simulation ([02 §7](02-communication.md#7-failure-handling)).
+6. **Programming errors** (a caller breaking a documented precondition, such as a stale handle passed to a recording call) are checked with `AVIS_CHECK(logger, condition, message)` from the private header `lib/avis/detail/check.h`. It yields the condition, so the caller can skip the call. Debug builds log at `critical` and call the assertion handler, which breaks into the debugger or aborts. Release builds log at `error` and carry on where the design allows it. Tests install a recording handler with `avis::detail::set_assertion_handler` to check an assertion without a death test. Layers may wrap it with their logger name, for example `AVIS_RHI_CHECK` ([09 §19.5](09-rhi.md#195-testing-hooks)).
 
 ### 6.2 Error type
 
 ```cpp
 namespace avis
 {
-    enum class error_domain : std::uint16_t { generic, io, parse, network, rhi, scene, plugin, protocol };
+    enum class error_domain : std::uint16_t { generic, io, parse, network, rhi, graphics, scene, plugin, protocol };
 
     struct error
     {

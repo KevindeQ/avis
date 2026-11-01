@@ -42,6 +42,9 @@ apps/visualizer/
     shape_representation.{h,cpp}   # box, vehicle, axes, frustum display shapes
     geometry_representation.{h,cpp}  # belief geometry chunks
     lidar_representation.{h,cpp}   # lidar sweeps → point meshes
+    label_representation.{h,cpp}   # labels → glyph-quad meshes on the font atlas (08 §8.1)
+    trail_representation.{h,cpp}   # trails → chunked world-space line meshes (08 §8.2)
+    stale_representation.{h,cpp}   # dimmed material variants for stale entities (08 §8.4)
     helper_geometry.{h,cpp}        # grid, axes gizmo
   rendering/                       # scene-agnostic renderer (11)
     frame_loop.{h,cpp}             # sender-based frame chain (17 §4), RHI, render graph
@@ -160,7 +163,7 @@ See [01 §4.1](01-system-architecture.md#41-visualizer). Communication paths:
 |---|---|
 | GUI → simulation | `command_queue<simulation_command>` (MPSC) + condition-variable wake. Carries both simulation and presentation commands (§4.1). |
 | Zenoh → simulation | Lock-free queues of replies and scene stream messages, drained by `scene_stream` and the coordinator |
-| Simulation → GUI | Queued Qt signals (`QMetaObject::invokeMethod(..., Qt::QueuedConnection)`) carrying value types |
+| Simulation → GUI | Queued Qt signals (`QMetaObject::invokeMethod(..., Qt::QueuedConnection)`) carrying value types: tree diffs, the selected entity's values with its update stamp and world bounds at up to 20 Hz, the follow target's bounds, and scene statistics at 2 Hz ([08 §7](08-scene-management.md#7-ui-synchronisation)) |
 | Simulation → renderer | `snapshot_buffer` ([08 §6](08-scene-management.md#6-simulation--render-synchronisation-snapshots)) |
 | GUI → renderer | Latest-value atomics: camera state, viewport size, debug selection, render settings, screenshot requests |
 | Renderer → GUI | Render-graph debug info and GPU timings, about 4 Hz via queued signal |
@@ -177,6 +180,9 @@ UI commands sent to the simulation thread are of two kinds:
 | Entity visibility, category visibility (*View* menu) | Updates `visibility` and therefore the `visible` instance flag |
 | Helper toggles (grid, axes gizmo) | Adds or removes the helper instances |
 | Representation settings (lidar colour mode, point size, box edge width) | Re-runs the affected representations, which produces new mesh or material versions |
+| Labels on or off, per category (*View* menu) | Adds or removes `label` components and their helper entities ([08 §8.1](08-scene-management.md#81-labels)) |
+| Trail on or off, per category (*View* menu) or per entity (scene tree context menu) | Adds or removes `trail` components and their helper entities; a new trail starts empty ([08 §8.2](08-scene-management.md#82-trails)) |
+| Staleness on or off (*View* menu) | Switches stale entities to or from their dimmed materials ([08 §8.4](08-scene-management.md#84-update-stamps-and-staleness)) |
 | `visualization` edits while `stopped` (sun, sky) | Updates the light and `environment` |
 | *Reset* | Destroys all Driver entities, so the republished snapshot has only the helpers |
 
@@ -191,6 +197,8 @@ The camera is a **presentation concept**: it isn't part of the simulation state 
 | **Follow** (default while running) | Chase camera on a vehicle: the `primary` vehicle (the vehicle of the vehicle model) by default, or the selected vehicle entity. Offset and lag are configurable (`visualization.camera.follow`), and LMB drag orbits around the vehicle; the orbit offset is kept while following. |
 
 - Following uses the interpolated vehicle pose at render rate, so the chase stays smooth between ticks. Lag is a critically damped spring on the camera position.
+- **Follow distance from the target's size.** The configured offset is for a reference radius of 2.5 m (a car). It's scaled by the target's bounding radius ([08 §8.3](08-scene-management.md#83-world-bounds)) divided by that, clamped to 0.5–4×, so a truck and a cyclist are both framed well. The simulation thread posts the target's bounds when the target changes and when its extent changes.
+- **Frame selection** (`F`, or double-click in the scene tree) switches to free fly and moves the camera along its current view direction until the bounding sphere of the selection's world bounds fills the view with a 1.2 margin, in 0.3 s with an ease-out. An entity with nothing drawn is framed as a 2 m sphere around its position.
 - Switching from follow to free fly keeps the current viewpoint. When the followed entity is deleted, the camera switches to free fly at its last viewpoint.
 - **Picking:** clicking the viewport makes the renderer write a 64-bit `picking_id` target (`R32G32_UINT`) in the G-buffer, forward-transparent and overlay passes on that frame, and read back a small window around the cursor ([11 §5.1](11-renderer.md#51-picking)). Opaque geometry, translucent boxes and overlay lines are all pickable. The returned `object_id` maps back to the entity (through `identity`), which is then selected in the tree and inspector.
 
@@ -216,9 +224,9 @@ The camera is a **presentation concept**: it isn't part of the simulation state 
 
 | Panel | Content |
 |---|---|
-| **Menus** | File: New, Open, Save, Save As, Recent, Screenshot ▸ (viewport, custom resolution…, window with UI), Exit. Edit: Undo, Redo, Scenario Settings. Simulation: Connect Driver, Start, Pause, Step, Stop, Reset, Speed ▸. View: panels, camera mode (free fly, follow), helpers (grid, axes), visibility per entity category. Render: debug view, AO/TAA/shadows toggles, tonemapper, exposure, statistics overlay. Help: About, Open logs folder. |
-| **Scene tree** | `scene_tree_model` (QAbstractItemModel) over all entities, with hierarchy, name, category icon and a visibility toggle. Has a search filter, and large groups are lazily populated. Entities appear and disappear as the Driver creates and deletes them. |
-| **Inspector** | Read-only view of the selected entity: reflected component values ([08 §3](08-scene-management.md#3-components)) and the Driver's properties grouped by their dotted keys, with units (for example the classification the vehicle model gave the entity, or its estimated dimensions). Values refresh at 20 Hz while running. |
+| **Menus** | File: New, Open, Save, Save As, Recent, Screenshot ▸ (viewport, custom resolution…, window with UI), Exit. Edit: Undo, Redo, Scenario Settings. Simulation: Connect Driver, Start, Pause, Step, Stop, Reset, Speed ▸. View: panels, camera mode (free fly, follow), frame selection, helpers (grid, axes), visibility, labels and trails per entity category, stale entities. Render: debug view, AO/TAA/shadows toggles, tonemapper, exposure, statistics overlay (scene statistics, [08 §8.5](08-scene-management.md#85-scene-statistics), next to the representation's reduction level and the GPU timings). Help: About, Open logs folder. |
+| **Scene tree** | `scene_tree_model` (QAbstractItemModel) over all entities, with hierarchy, name, category icon and a visibility toggle. Stale entities get a marker when staleness is on. Its context menu has *Frame selection* and *Show trail*. Has a search filter, and large groups are lazily populated. Visualizer helpers for labels and trails are hidden from it. Entities appear and disappear as the Driver creates and deletes them. |
+| **Inspector** | Read-only view of the selected entity: reflected component values ([08 §3](08-scene-management.md#3-components)) and the Driver's properties grouped by their dotted keys, with units (for example the classification the vehicle model gave the entity, or its estimated dimensions), and when the Driver last created or changed it (*"pose: 1.2 s ago (step 1234)"*, [08 §8.4](08-scene-management.md#84-update-stamps-and-staleness)). Values refresh at 20 Hz while running. |
 | **Simulation bar** | Start/Pause/Step/Stop, speed (0.1×, 0.25×, 0.5×, 1×, 2×, 4×, 10×, max), simulation time, step index / `step_count`, effective speed (`s_effective`, [03 §5.1](03-simulation-core.md#51-effective-speed-s_effective)), driver status light (connected, *busy* with the phase and duration from `driver_status` after `long_step_notice` ([02 §6.2](02-communication.md#62-rules)), unresponsive, faulted, disconnected, plus *waiting (debug mode)* and *suspended?* for a Driver in debug mode, [02 §7.1](02-communication.md#71-with-a-driver-in-debug-mode)) with a tooltip |
 | **Scenario settings** | A form over the scenario `simulation`, `dataset`, `driver` and `visualization` sections. The data source, frame range and sensors are picked from the connected Driver's catalogue ([02 §5.2](02-communication.md#52-describe)); without a connected Driver the values can still be edited as text but aren't checked. The **frame range** fields show the approximate time next to each frame (from the catalogue's `duration_ns` and frame count) and also accept input in seconds, which is converted to the nearest frame; the file always stores frames ([04 §2.3](04-scenario-and-dataset.md#23-validation)). The exact end time comes back with `step_count` after `load`. **Plug-in parameters** get a form generated from the module's `parameters_schema` (§6.1). Opening the editor sends `rescan`, so the module list and schemas are current. |
 | **Render debug** | The render graph's passes (queue colour, GPU ms, culled) and resources (qualified name, format, size, aliased). Selecting a resource adds the debug blit with mode, channel, range, mip/slice and fullscreen/PiP options ([11 §11](11-renderer.md#11-debug-blit-pass)). Also: memory statistics (aliased vs non-aliased). |
@@ -278,6 +286,9 @@ The **scene representation** (`avis::visualizer::representation`, `apps/visualiz
 | `display_shape` `frustum` | Line mesh built from the horizontal and vertical field of view and range | `overlay` |
 | `belief_geometry` chunk | One mesh per chunk, created or rewritten through `asset_cache::create_mesh` / `update_mesh` with the chunk's topology, vertex colours and normals; material from the chunk `style` (colour, opacity, lit or unlit, line width, point size). `points` chunks are progressive point meshes. | `world` or `overlay` from the style |
 | `lidar_points` sweep | One progressive point mesh per kept sweep, placed at the sweep's sensor pose; colour by intensity, height, ring or uniform (`visualization.lidar.color_mode`); lit point material with `point_size` | `world` |
+| `label` | A child helper entity at the label's anchor with a glyph-quad mesh on the font atlas, plus a background quad; rebuilt only when the text changes, at most every 250 ms. `screen_aligned`, with the style's `maximum_view_distance`, not pickable ([08 §8.1](08-scene-management.md#81-labels)) | `overlay_on_top` |
+| `trail` | A helper entity under `helpers` with world-space line meshes in blocks of 128 samples; only the newest and oldest blocks change per tick ([08 §8.2](08-scene-management.md#82-trails)) | `overlay` |
+| Stale entity (when enabled) | The entity's instances switch to dimmed variants of their materials (opacity × 0.4, desaturated), created once per material ([08 §8.4](08-scene-management.md#84-update-stamps-and-staleness)) | unchanged |
 | World grid and axes gizmo | Visualizer helpers: static line meshes | `overlay` (grid), `overlay_on_top` (axes gizmo) |
 | Selection | The `selected` instance flag on the selected entity's instances | — |
 
@@ -288,13 +299,26 @@ The **scene representation** (`avis::visualizer::representation`, `apps/visualiz
   representation:
     boxes: { edge_width: 2.0 }
     lidar: { maximum_points_per_sweep: 200000 }
-    geometry: { budget_mib: 512 }       # CPU-side budget for dynamic meshes (belief geometry, lidar sweeps), §9.1
+    geometry: { budget_mib: 512 }       # CPU-side budget for dynamic meshes (belief geometry, lidar sweeps, trails), §9.1
+    labels:
+      enabled: true
+      maximum_count: 200                # nearest to the primary vehicle first
+      font: data/assets/fonts/labels    # atlas and metrics, 1x and 2x (08 §8.6)
+      style: { pixel_height: 14.0, maximum_view_distance: 80.0 }
+      templates:                        # per entity category; "" = no label
+        vehicle: "{name}"
+        object: "{name} · {property:perception.speed:.1f}"
+        sensor: ""
+    trails:                             # per entity category; 0 = off
+      vehicle: { duration_seconds: 30.0, minimum_spacing: 0.25 }
+      object: { duration_seconds: 0.0 }
+    stale: { enabled: false, after_seconds: 2.0, categories: [object] }
   ```
 
 ### 9.1 Geometry budget and eviction
 The representation creates all dynamic geometry, so it is the place that knows what matters and enforces the budget. The renderer stays agnostic ([11 §3.6](11-renderer.md#36-gpu-residency)): it only uploads what it receives, and sizes its GPU arena at about 1.5 × this budget, so superseded versions fit while they retire.
 
-- The budget counts the vertex and index bytes of the **current** version of every dynamic mesh the representation owns. The shared static meshes (unit cube, edges, axes, vehicle proxy) are excluded.
+- The budget counts the vertex and index bytes of the **current** version of every dynamic mesh the representation owns, trails included; trails are thinned with belief geometry, in step 3. Label meshes are small and capped by `labels.maximum_count` instead. The shared static meshes (unit cube, edges, axes, vehicle proxy) are excluded.
 - Before a `create_mesh` / `update_mesh` that would exceed `representation.geometry.budget_mib`, the representation frees space in this order:
   1. **Drop the oldest lidar sweeps first.** Each lidar sensor's kept sweeps are lowered below their `retention` count, oldest first, down to a minimum of the newest sweep per sensor. The `lidar_points` component keeps its configured retention, and the reduction is undone as soon as there's room again.
   2. **Shrink progressive point meshes.** Progressive meshes (lidar sweeps, belief point chunks) are stored in random order, so their vertex lists are truncated to a prefix, largest mesh first, down to 25% of their points. That's still a uniform subsample, so the picture thins out evenly instead of losing regions.

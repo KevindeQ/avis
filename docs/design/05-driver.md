@@ -109,7 +109,7 @@ Jolt is used in **both** modes:
 
 A 1 km run covers about 0.1 km², about 2.5M samples (about 10 MB), and loads in milliseconds. **Without `semantics`** (test sequences), there's no ground: `jolt_wheeled` can't be selected, and `kinematic_bicycle` takes its height from the recorded ego pose nearest in time, with a load-time warning.
 
-**Re-synchronization:** when `resync_interval > 0`, the shadow state is reset to the recorded ego state every interval. That shows short-horizon behaviour without unbounded drift in open loop.
+**Re-synchronization:** when `resync_interval > 0`, the shadow state is reset to the recorded ego state every interval. That shows short-horizon behaviour without unbounded drift in open loop. The `vehicle_state` of a reset step has `discontinuity = 1` ([02 §5.8.3](02-communication.md#583-vehicle_state)), so the Visualizer shows the jump instead of sliding the shadow vehicle across it.
 
 Jolt is configured for determinism: `JPH_CROSS_PLATFORM_DETERMINISTIC`, a single-threaded job system inside the step executor, and bodies created in sorted order.
 

@@ -363,7 +363,7 @@ namespace avis::io
 - There are no free `read_at` / `write_at` functions; use the `async_file` members.
 
 ### 4.6 `use_sender` and `scheduler`
-`use_sender` stays public for asio operations outside files: timers ([12](12-visualizer.md)) and `object_handle::async_wait` for fences ([09](09-rhi.md)). Its sender follows the same rules as the file senders:
+`use_sender` stays public for asio operations outside files, such as timers ([12](12-visualizer.md)). The RHI doesn't use it: GPU waits complete through the RHI's own `rhi::completion_driver::poll_completions()` ([09 §5.2](09-rhi.md#52-driving-completions)), and a driver may wait on its completion event however it likes. Its sender follows the same rules as the file senders:
 
 | Before | Now |
 |---|---|
@@ -392,6 +392,39 @@ auto load_scenario_async(std::filesystem::path path)
 // a caller thread that isn't an IO thread or a parallel worker:
 avis::result<scenario> loaded = avis::threading::sync_wait_result(load_scenario_async("scenario.yaml"));
 ```
+
+### 4.8 Shared sender helpers (`avis/detail/`)
+
+Two small helpers for writing senders are shared by the IO layer and the RHI ([09 §16](09-rhi.md#16-sender-implementation-pattern)). They live one level above both, in `include/avis/detail/` and `lib/avis/detail/`, namespace `avis::detail`: the per-component `detail/` convention one level up, saying "implementation helper, not API" (D-80). They include neither the IO layer nor the RHI.
+
+| Helper | Where | Used by |
+|---|---|---|
+| `receiver_stop_callback<Receiver, Callback>` | `include/avis/detail/receiver_stop_callback.h` (public, because sender templates use it) | IO: `file_operation_state`, the `read_file` / `write_file` operation states. RHI: every sender operation state |
+| `safe_error(error_domain, code, message)`, `current_exception_error()` | `lib/avis/detail/safe_error.h` (private) | IO and RHI completion paths |
+
+```cpp
+// include/avis/detail/receiver_stop_callback.h
+namespace avis::detail
+{
+    template<class Receiver, class Callback>
+    class receiver_stop_callback;   // stop_requested(), install(), reset(); empty for unstoppable tokens
+}
+
+// lib/avis/detail/safe_error.h (private): noexcept error factories for code that completes operations
+namespace avis::detail
+{
+    // make_error with a message, or an error without one if formatting throws; a null message gives an empty one
+    avis::error safe_error(error_domain domain, std::int32_t code, const char* message) noexcept;
+
+    // The exception being handled, as avis::error; generic_error_kind::unhandled_exception if that fails too
+    avis::error current_exception_error() noexcept;
+}
+```
+
+- `io::detail::safe_error` keeps its two IO overloads (`error_kind` + message, `std::error_code` + operation + path) in `lib/avis/io/detail/safe_error.h`, written on top of `avis::detail::safe_error`. The `std::error_code` overload keeps its own `try`, because formatting is the step that can throw.
+- The RHI adds its overloads for `rhi::error_kind` and `HRESULT` in `lib/avis/rhi/d3d12/check.h` ([09 §20.2.2](09-rhi.md#2022-d3d12checkh)), on the same base.
+- Inside `avis::io::detail` an unqualified `detail::` means the IO namespace, so IO code names the helper `avis::detail::receiver_stop_callback`.
+- `io_context`, its operation registry, `io::scheduler` and `io::use_sender` stay in the IO layer. Only the IO layer uses them: the RHI tracks its own GPU waits ([09 §23.3](09-rhi.md#233-completion-processing-who-checks-the-fences)), and nothing in it registers for `io_context::request_stop()`. How the layering is checked is in [13 §9.3](13-build-and-quality.md#93-layering-between-io-the-rhi-and-the-shared-helpers).
 
 ## 5. Error propagation
 

@@ -144,7 +144,7 @@ namespace avis::threading
 - **Priority:** `SetThreadPriority` from `thread_priority`. Defaults: simulation `normal`, IO `normal`. Parallel workers aren't pool threads and run at the OS default priority (D-62).
 - **Affinity:** optional mask through `SetThreadAffinityMask`. Unset by default.
 - **Exit callback:** `on_exit` runs on the exiting thread after the body returns. Owners use it to post a notification, never to block.
-- **Thread index:** each running pool thread gets a small dense index (`thread_pool::current_index()`, `std::nullopt` on non-pool threads). Indices are reused after a thread exits. The index covers pool threads only; parallel workers have none ([15 §6](15-parallel-scheduler.md#6-determinism-and-priorities)), so components that need per-thread state there, such as the RHI's command allocator pools, use their own per-thread slots ([09 §4.3](09-rhi.md#43-command-lists-and-multi-threaded-recording)).
+- **Thread index:** each running pool thread gets a small dense index (`thread_pool::current_index()`, `std::nullopt` on non-pool threads). Indices are reused after a thread exits. The index covers pool threads only; parallel workers have none ([15 §6](15-parallel-scheduler.md#6-determinism-and-priorities)), so components that need per-thread state there, such as the RHI's command allocator pools, use their own per-thread slots ([09 §7](09-rhi.md#7-command-lists-and-recorders-rhicommand_listh)).
 
 ## 4. Lifecycle
 
