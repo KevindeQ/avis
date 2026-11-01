@@ -528,6 +528,8 @@ Per step, the differences from the plan and from [08](../design/08-scene-managem
   - a once-per-thread `thread_local` guard
 
   Recommended: the `thread_local` guard.
+
+  Revised: the `thread_local` guard crashed at thread exit. Its destructor runs from the exe's TLS callback, after combase's thread cleanup and under the loader lock. The decoder now keeps the MTA alive with `CoIncrementMTAUsage` and shares one free-threaded WIC factory for the whole process.
 - **DDS, KTX2 and BCn.** 08 §5.1 mentions direct use of DDS and KTX2 BCn images. This task decodes only PNG and JPEG. DDS through `MSFT_texture_dds` is small to add (a header parse, no decode); KTX2 with Basis needs a transcoder library. Proposed: DDS when the first asset needs it, KTX2 later (99 open question).
 - **`KHR_texture_transform`.** The material description has no uv transform, so a transform can only be baked into the uvs, and only when every texture of the primitive uses the same one. Either add a `texture_transform` to `material_description` and the renderer's material constants (11 §3.3), or keep the bake-or-warn of 10.6.
 - **Fixtures.** The Khronos sample models are under CC-BY 4.0 (DamagedHelmet) and CC0 or CC-BY (Box, BoxTextured). Check the licence files, and whether checking them into `tests/data/` is acceptable or a download step is preferred. DamagedHelmet is about 3.7 MB.

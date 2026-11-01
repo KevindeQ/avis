@@ -28,38 +28,41 @@ namespace avis::scene::detail
         // the image fits in a 32-bit WIC buffer size
         constexpr std::uint32_t maximum_dimension = 16384;
 
-        // COM and the WIC factory for the calling thread. The parallel scheduler's workers don't initialise COM, so the
-        // first decode on a thread does, and the thread_local's destructor undoes it when the thread ends.
-        class thread_wic
+        // The WIC factory, shared by every decoding thread, and the multithreaded apartment it lives in.
+        //
+        // The parallel scheduler's workers don't initialise COM. Instead of each thread initialising it, the MTA is
+        // kept alive for the process with CoIncrementMTAUsage, so the workers belong to the implicit MTA and can use
+        // the factory, which is free-threaded. A thread_local guard can't be used: its destructor runs from the
+        // exe's TLS callback at thread exit, after combase's own thread cleanup and under the loader lock, where
+        // releasing the factory or calling CoUninitialize is not allowed and crashes.
+        //
+        // The destructor runs during static destruction, after every pool has been joined.
+        class process_wic
         {
         public:
-            thread_wic() noexcept
+            process_wic() noexcept
             {
-                const HRESULT initialised = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-                // S_FALSE: already initialised in this apartment, which still needs the matching CoUninitialize.
-                // RPC_E_CHANGED_MODE: the thread is in a single-threaded apartment, where WIC works too; don't
-                // uninitialise what isn't ours.
-                uninitialise_ = SUCCEEDED(initialised);
-                if (FAILED(initialised) && initialised != RPC_E_CHANGED_MODE)
+                status_ = CoIncrementMTAUsage(&mta_usage_);
+                if (FAILED(status_))
                 {
-                    status_ = initialised;
+                    mta_usage_ = nullptr;
                     return;
                 }
                 status_ = CoCreateInstance(
                     CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory_.GetAddressOf()));
             }
 
-            ~thread_wic()
+            ~process_wic()
             {
-                factory_.Reset(); // before COM goes
-                if (uninitialise_)
+                factory_.Reset(); // before the MTA goes
+                if (mta_usage_ != nullptr)
                 {
-                    CoUninitialize();
+                    CoDecrementMTAUsage(mta_usage_);
                 }
             }
 
-            thread_wic(const thread_wic&) = delete;
-            thread_wic& operator=(const thread_wic&) = delete;
+            process_wic(const process_wic&) = delete;
+            process_wic& operator=(const process_wic&) = delete;
 
             HRESULT status() const noexcept
             {
@@ -73,13 +76,13 @@ namespace avis::scene::detail
 
         private:
             ComPtr<IWICImagingFactory> factory_;
+            CO_MTA_USAGE_COOKIE mta_usage_ = nullptr;
             HRESULT status_ = E_FAIL;
-            bool uninitialise_ = false;
         };
 
-        thread_wic& wic_for_this_thread() noexcept
+        const process_wic& shared_wic() noexcept
         {
-            thread_local thread_wic wic;
+            static const process_wic wic;
             return wic;
         }
 
@@ -105,7 +108,7 @@ namespace avis::scene::detail
                 make_error(error_kind::image_decode_failed, std::format("{}: larger than 4 GiB", description)));
         }
 
-        const thread_wic& wic = wic_for_this_thread();
+        const process_wic& wic = shared_wic();
         if (FAILED(wic.status()))
         {
             return std::unexpected(decode_failure(description, "creating the WIC factory", wic.status()));
