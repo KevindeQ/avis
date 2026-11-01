@@ -99,35 +99,35 @@ flowchart LR
 ## 10.3 Scene graph
 08 §4, §4.1, §9.3.
 
-- [ ] Rewrite `scene_graph.h` and `.cpp` as in 08 §9.3. The private node data is:
+- [x] Rewrite `scene_graph.h` and `.cpp` as in 08 §9.3. The private node data is:
   - parent, first child, next sibling and previous sibling (so unlinking is O(1))
   - the local `transform` and the world `Eigen::Affine3f`
   - the payload `entity`
   - `dirty` and `jumped` bits
 
   Slots are generational, with a free list, and `roots_` is an intrusive list or vector. `scene_node`, `get_node` and `mark_dirty` go.
-- [ ] `create_node` links the node as the first child of `parent`, or as a root. `destroy_node` destroys the subtree children first, appends payloads to `destroyed`, bumps each generation and returns the slots to the free list.
-- [ ] `reparent`:
+- [x] `create_node` links the node as the first child of `parent`, or as a root. `destroy_node` destroys the subtree children first, appends payloads to `destroyed`, bumps each generation and returns the slots to the free list.
+- [x] `reparent`:
   - rejects a dead parent (`invalid_parent`) and a parent inside the node's own subtree (`cycle`)
   - accepts a null parent, which makes the node a root
   - with `keep_world`, sets the local transform to `from_affine(world(parent)⁻¹ · world(node))`. When the parent's world scale isn't uniform, it logs a debug warning once per call.
   - marks the node dirty
-- [ ] `set_local` stores the TRS and sets `dirty`, and also `jumped` when `discontinuity`.
-- [ ] `update_transforms(jumped)` walks from the roots depth-first with an explicit stack of `{ node, parent world, ancestor dirty, ancestor jumped }`:
+- [x] `set_local` stores the TRS and sets `dirty`, and also `jumped` when `discontinuity`.
+- [x] `update_transforms(jumped)` walks from the roots depth-first with an explicit stack of `{ node, parent world, ancestor dirty, ancestor jumped }`:
   - It skips clean subtrees, recomputes `world` for dirty nodes and their descendants, and calls `jumped(node)` for every node that jumped itself or through an ancestor.
   - It clears both bits and touches every node at most once.
   - The stack is a member, so a steady state doesn't allocate.
   - The overload without a callback ignores jumps but still clears the bits.
-- [ ] `for_each_in_subtree`, `alive`, `payload`, `parent`, `roots`, `local`, `world`, `size`, `clear`. `world` on a dirty node is a debug check.
-- [ ] `apps/driver/simulator_driver.h` holds a `scene_graph` member. The Driver has no build target (task 5 Open points), so leave it. Note in its header that it uses the old API only if it calls `get_node` or `mark_dirty` (check with grep).
+- [x] `for_each_in_subtree`, `alive`, `payload`, `parent`, `roots`, `local`, `world`, `size`, `clear`. `world` on a dirty node is a debug check.
+- [x] `apps/driver/simulator_driver.h` holds a `scene_graph` member. The Driver has no build target (task 5 Open points), so leave it. Note in its header that it uses the old API only if it calls `get_node` or `mark_dirty` (check with grep).
 
 **Tests** (`test_scene_graph.cpp`, `[scene][unit]`):
-- [ ] Create and destroy a subtree: the payloads come back children first; stale handles fail `alive`, and slots are reused with a higher generation.
-- [ ] Reparent with `keep_world`: exact (1e-5) under a parent with uniform scale. Under a parent with non-uniform scale, the closest TRS is kept and a warning is logged. A cycle and a dead parent are rejected, and the tree is unchanged.
-- [ ] Dirty propagation: after random `set_local` calls on a 10,000-node random tree, every `world` equals a brute-force recomputation from the roots, and an update with nothing dirty visits no node (counted through a test hook or timing).
-- [ ] A discontinuity on a parent reports it and every descendant through `jumped` exactly once. The next update reports none.
-- [ ] Debug checks: `set_local` on a stale handle, and `world` on a dirty node.
-- [ ] 10,000 nodes with 10% dirty update in under 0.2 ms in Release (a `[!benchmark]` test, not run by default).
+- [x] Create and destroy a subtree: the payloads come back children first; stale handles fail `alive`, and slots are reused with a higher generation.
+- [x] Reparent with `keep_world`: exact (1e-5) under a parent with uniform scale. Under a parent with non-uniform scale, the closest TRS is kept and a warning is logged. A cycle and a dead parent are rejected, and the tree is unchanged.
+- [x] Dirty propagation: after random `set_local` calls on a 10,000-node random tree, every `world` equals a brute-force recomputation from the roots, and an update with nothing dirty visits no node (counted through a test hook or timing).
+- [x] A discontinuity on a parent reports it and every descendant through `jumped` exactly once. The next update reports none.
+- [x] Debug checks: `set_local` on a stale handle, and `world` on a dirty node.
+- [x] 10,000 nodes with 10% dirty update in under 0.2 ms in Release (a `[!benchmark]` test, not run by default).
 
 ## 10.4 Mesh data, materials, textures
 08 §5.1, §9.4, [11 §3.2, §3.3](../design/11-renderer.md#32-geometry).
