@@ -118,6 +118,9 @@ namespace avis::tests
 
         rgba8_image read_output(rhi::texture_handle texture);
 
+        // One subresource of any texture, after the GPU work submitted so far
+        graphics::readback_image read_subresource(rhi::texture_handle texture, rhi::subresource subresource = {});
+
         // Destroys the renderer (frames must have completed); create_renderer makes a new one
         void destroy_renderer();
         void create_renderer();

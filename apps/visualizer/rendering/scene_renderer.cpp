@@ -1,18 +1,23 @@
 #include "rendering/scene_renderer.h"
 
+#include "rendering/renderer_shaders.h"
+
 #include "avis/graphics/binding_layout.h"
 #include "avis/graphics/buffer.h"
 #include "avis/graphics/error.h"
 #include "avis/graphics/pass_context.h"
+#include "avis/graphics/pipeline_cache.h"
 #include "avis/graphics/render_pass_builder.h"
 #include "avis/graphics/resource.h"
 #include "avis/graphics/resource_bag.h"
 #include "avis/graphics/root_signature_registry.h"
+#include "avis/graphics/shader_library.h"
 #include "avis/graphics/texture.h"
 #include "avis/graphics/upload_queue.h"
 #include "avis/graphics/view_scope.h"
 #include "avis/rhi/formats.h"
 
+#include <algorithm>
 #include <format>
 #include <set>
 #include <string>
@@ -69,6 +74,49 @@ namespace avis::visualizer::rendering
             graphics::texture source;
             graphics::texture output;
         };
+
+        // The mip chain of one texture (11.4): mip 0 is copied into an RGBA8_UNORM scratch texture (sRGB formats
+        // can't have UAVs), each mip is downsampled from the one before, then mips 1 and up are copied back
+        struct mip_seed_data
+        {
+            graphics::texture source;
+            graphics::texture scratch;
+        };
+
+        struct mip_step_data
+        {
+            graphics::texture scratch;
+            std::uint32_t destination_mip = 1;
+        };
+
+        struct mip_store_data
+        {
+            graphics::texture scratch;
+            graphics::texture target;
+        };
+
+        // generate_mips.hlsl's draw constants
+        struct mip_constants
+        {
+            std::uint32_t source;
+            std::uint32_t destination;
+            std::uint32_t source_mip;
+            std::uint32_t srgb;
+            std::uint32_t source_width;
+            std::uint32_t source_height;
+            std::uint32_t destination_width;
+            std::uint32_t destination_height;
+        };
+
+        constexpr std::uint32_t mip_extent(const std::uint32_t extent, const std::uint32_t mip) noexcept
+        {
+            return std::max(extent >> mip, 1u);
+        }
+
+        constexpr graphics::subresource_range one_mip(const std::uint32_t mip) noexcept
+        {
+            return { .first_mip = static_cast<std::uint16_t>(mip), .mip_count = 1 };
+        }
     } // namespace
 
     result<std::unique_ptr<scene_renderer>> scene_renderer::create(
@@ -82,29 +130,64 @@ namespace avis::visualizer::rendering
             return std::unexpected{ std::move(standard).error() };
         }
 
+        persistent_state state{ .standard_signature = *standard };
+
+        auto generate_mips = dependencies.pipeline_cache.get_or_create(
+            shaders,
+            graphics::compute_pipeline_description{ .compute_shader =
+                                                        graphics::make_shader_id(shader_ids::generate_mips),
+                                                    .root_signature = *standard,
+                                                    .debug_name = "generate_mips" });
+        if (!generate_mips)
+        {
+            return std::unexpected{ std::move(generate_mips).error() };
+        }
+        state.generate_mips = *generate_mips;
+
         auto arena = geometry_arena::create(dependencies.resources, split_geometry_arena(settings.geometry.arena_mib));
         if (!arena)
         {
             return std::unexpected{ std::move(arena).error() };
         }
+        state.arena = std::move(*arena);
+
+        // The defaults' uploads are queued now and flushed with the first frame
+        auto textures =
+            texture_residency::create(dependencies.resources, dependencies.uploads, dependencies.synchronization);
+        if (!textures)
+        {
+            return std::unexpected{ std::move(textures).error() };
+        }
+        state.textures = std::move(*textures);
+
+        auto materials = material_table::create(
+            dependencies.resources, dependencies.uploads, dependencies.synchronization, *state.textures);
+        if (!materials)
+        {
+            return std::unexpected{ std::move(materials).error() };
+        }
+        state.materials = std::move(*materials);
+
         return std::unique_ptr<scene_renderer>{ new scene_renderer{
-            dependencies, settings, shaders, *standard, std::move(*arena) } };
+            dependencies, settings, shaders, std::move(state) } };
     }
 
     scene_renderer::scene_renderer(
         const renderer_dependencies& dependencies,
         const render_settings& settings,
         graphics::shader_library& shaders,
-        const rhi::root_signature_handle standard_signature,
-        std::unique_ptr<geometry_arena> arena) :
+        persistent_state state) :
         dependencies_{ dependencies },
         graph_{ dependencies.graph },
         settings_{ settings },
         shaders_{ shaders },
-        standard_signature_{ standard_signature },
+        standard_signature_{ state.standard_signature },
         histories_{ dependencies.resources },
-        arena_{ std::move(arena) },
-        residency_{ std::make_unique<residency_cache>(*arena_, dependencies.uploads, dependencies.synchronization) }
+        generate_mips_pipeline_{ state.generate_mips },
+        arena_{ std::move(state.arena) },
+        residency_{ std::make_unique<residency_cache>(*arena_, dependencies.uploads, dependencies.synchronization) },
+        textures_{ std::move(state.textures) },
+        materials_{ std::move(state.materials) }
     {}
 
     scene_renderer::~scene_renderer() = default;
@@ -116,6 +199,8 @@ namespace avis::visualizer::rendering
             completed_frame_index_ = completed_frame_index;
         }
         residency_->retire(completed_frame_index_);
+        materials_->retire(completed_frame_index_);
+        textures_->retire(completed_frame_index_);
     }
 
     renderer_debug_information scene_renderer::debug_information() const
@@ -129,6 +214,8 @@ namespace avis::visualizer::rendering
             .views = last_view_count_,
             .view_histories = histories_.size(),
             .residency = residency_->statistics(),
+            .textures = textures_->statistics(),
+            .materials = materials_->statistics(),
         };
     }
 
@@ -154,26 +241,41 @@ namespace avis::visualizer::rendering
             }
         }
 
-        // Residency (11 §3.6, D-103): queue the uploads of the snapshot's new mesh versions, flush them on the copy
-        // queue (the graph records none of them), then make the uploaded versions current. A failed flush keeps the
-        // copies queued for the next frame; this one submits nothing.
+        // Residency (11 §3.6, D-103): queue the uploads of the snapshot's new mesh, texture and material versions
+        // (materials after textures, which they resolve against), flush them on the copy queue (the graph records none
+        // of them), then make the uploaded versions current. A failed flush keeps the copies queued for the next
+        // frame; this one submits nothing.
         residency_->update(snapshot, frame.index());
+        textures_->update(snapshot, frame.index());
+        materials_->update(snapshot, frame.index());
         if (auto flushed = dependencies_.uploads.flush(); !flushed)
         {
             return std::move(flushed).error();
         }
         residency_->after_flush();
+        textures_->after_flush();
+        materials_->after_flush();
 
-        // Shared work, outside any view scope (10 §8). The arena waits on the newest copies this frame draws; the
-        // frame data upload (pass 0) comes with extraction (11.5).
+        // Shared work, outside any view scope (10 §8). The arena and the material table wait on the newest copies this
+        // frame draws; the frame data upload (pass 0) comes with extraction (11.5).
         const rhi::access_state common = rhi::access_states::common;
-        const rhi::synchronization_point ready_after = residency_->frame_ready_after();
-        const std::optional<rhi::synchronization_point> wait =
-            ready_after.value != 0 ? std::optional{ ready_after } : std::nullopt;
+        const auto wait_for = [](const rhi::synchronization_point point)
+        { return point.value != 0 ? std::optional{ point } : std::nullopt; };
+        const std::optional<rhi::synchronization_point> geometry_ready = wait_for(residency_->frame_ready_after());
         geometry_ = {
-            .vertices = graph_.import_buffer("geometry_vertices", arena_->vertex_buffer(), common, common, wait),
-            .indices = graph_.import_buffer("geometry_indices", arena_->index_buffer(), common, common, wait),
+            .vertices =
+                graph_.import_buffer("geometry_vertices", arena_->vertex_buffer(), common, common, geometry_ready),
+            .indices = graph_.import_buffer("geometry_indices", arena_->index_buffer(), common, common, geometry_ready),
         };
+        frame_materials_ = {
+            .table = graph_.import_buffer(
+                "materials",
+                materials_->buffer(),
+                common,
+                common,
+                wait_for(rhi::latest(materials_->frame_ready_after(), textures_->frame_ready_after()))),
+        };
+        add_mip_passes();
 
         for (const view_description& view : views)
         {
@@ -185,12 +287,113 @@ namespace avis::visualizer::rendering
 
         histories_.release_unused(frame.index());
         graph_.compile();
+        textures_->mips_recorded(); // the chains are in this frame: the textures are current from the next one
 
         ++frames_rendered_;
         last_frame_index_ = frame.index();
         last_publish_sequence_ = snapshot.publish_sequence;
         last_view_count_ = static_cast<std::uint32_t>(views.size());
         return std::nullopt;
+    }
+
+    void scene_renderer::add_mip_passes()
+    {
+        const rhi::access_state common = rhi::access_states::common;
+        const std::span<const mip_request> requests = textures_->mip_requests();
+        for (std::size_t index = 0; index < requests.size(); ++index)
+        {
+            const mip_request& request = requests[index];
+            const std::string prefix = std::format("generate_mips_{}", index);
+            const graphics::texture target = graph_.import_texture(
+                prefix + "_texture",
+                request.texture,
+                common,
+                common,
+                request.ready_after.value != 0 ? std::optional{ request.ready_after } : std::nullopt);
+
+            // The scratch's other mips are written by the steps before anything reads them
+            const mip_seed_data& seed = graph_.add_copy_pass<mip_seed_data>(
+                prefix + "_seed",
+                [&](graphics::render_pass_builder& builder, mip_seed_data& data)
+                {
+                    data.source = builder.read(target, graphics::texture_read::copy_source, one_mip(0));
+                    const graphics::texture scratch = builder.create_texture(
+                        prefix + "_scratch",
+                        { .size = graphics::absolute(request.width, request.height),
+                          .mip_levels = request.mip_levels,
+                          .format = rhi::format::rgba8_unorm });
+                    data.scratch = builder.write(scratch, graphics::texture_write::copy_destination);
+                },
+                [](const mip_seed_data& data,
+                   const graphics::resource_bag& resources,
+                   graphics::copy_pass_context& context)
+                {
+                    context.recorder().copy_texture(
+                        resources.texture_handle(data.scratch), {}, resources.texture_handle(data.source), {});
+                });
+
+            graphics::texture scratch = seed.scratch;
+            for (std::uint32_t mip = 1; mip < request.mip_levels; ++mip)
+            {
+                const mip_constants constants{ .source_mip = mip - 1,
+                                               .srgb = request.srgb ? 1u : 0u,
+                                               .source_width = mip_extent(request.width, mip - 1),
+                                               .source_height = mip_extent(request.height, mip - 1),
+                                               .destination_width = mip_extent(request.width, mip),
+                                               .destination_height = mip_extent(request.height, mip) };
+                scratch =
+                    graph_
+                        .add_compute_pass<mip_step_data>(
+                            std::format("{}_mip{}", prefix, mip),
+                            [&](graphics::render_pass_builder& builder, mip_step_data& data)
+                            {
+                                builder.read(scratch, graphics::texture_read::srv_compute, one_mip(mip - 1));
+                                data.scratch = builder.write(scratch, graphics::texture_write::uav, one_mip(mip));
+                                data.destination_mip = mip;
+                            },
+                            [pipeline = generate_mips_pipeline_, constants](
+                                const mip_step_data& data,
+                                const graphics::resource_bag& resources,
+                                graphics::compute_pass_context& context)
+                            {
+                                mip_constants bound = constants;
+                                bound.source = resources.srv(data.scratch).value;
+                                bound.destination = resources.uav(data.scratch, data.destination_mip).value;
+                                rhi::compute_recorder& recorder = context.recorder();
+                                recorder.set_pipeline(pipeline);
+                                graphics::binding_layout::push_draw_constants(recorder, bound);
+                                recorder.dispatch(
+                                    (constants.destination_width + 7) / 8, (constants.destination_height + 7) / 8, 1);
+                            })
+                        .scratch;
+            }
+
+            graph_.add_copy_pass<mip_store_data>(
+                prefix + "_store",
+                [&](graphics::render_pass_builder& builder, mip_store_data& data)
+                {
+                    const graphics::subresource_range chain{ .first_mip = 1,
+                                                             .mip_count =
+                                                                 static_cast<std::uint16_t>(request.mip_levels - 1) };
+                    data.scratch = builder.read(scratch, graphics::texture_read::copy_source, chain);
+                    data.target = builder.write(target, graphics::texture_write::copy_destination, chain);
+                },
+                [mips = request.mip_levels](
+                    const mip_store_data& data,
+                    const graphics::resource_bag& resources,
+                    graphics::copy_pass_context& context)
+                {
+                    for (std::uint32_t mip = 1; mip < mips; ++mip)
+                    {
+                        const rhi::subresource subresource{ .mip = static_cast<std::uint16_t>(mip) };
+                        context.recorder().copy_texture(
+                            resources.texture_handle(data.target),
+                            subresource,
+                            resources.texture_handle(data.scratch),
+                            subresource);
+                    }
+                });
+        }
     }
 
     std::optional<error> scene_renderer::check_view(const view_description& view) const

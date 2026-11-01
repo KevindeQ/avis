@@ -6,12 +6,15 @@
 //
 // So far (task 11.2) each view's frame is a placeholder tonemap pass that clears ldr_color to background_color, and
 // present_to_shared, which copies it into the view's output. The passes of 11 §2.3 replace the placeholder step by
-// step. Mesh residency (11.3) runs in every frame's prepare stage: the snapshot's meshes are uploaded into the
-// geometry arena, and the arena is imported into the graph.
+// step. Residency runs in every frame's prepare stage: the snapshot's meshes are uploaded into the geometry arena
+// (11.3), its textures into their own RHI textures and its materials into the material table (11.4). The arena and
+// the material table are imported into the graph, and the frame generates the mip chains of newly uploaded images.
 
 #include "rendering/geometry_arena.h"
+#include "rendering/material_table.h"
 #include "rendering/render_settings.h"
 #include "rendering/residency_cache.h"
+#include "rendering/texture_residency.h"
 #include "rendering/view.h"
 #include "rendering/view_history.h"
 
@@ -81,6 +84,8 @@ namespace avis::visualizer::rendering
         std::uint32_t views = 0; // in the last frame
         std::size_t view_histories = 0;
         residency_statistics residency; // meshes, pending uploads and arena use (11.3)
+        texture_residency_statistics textures; // 11.4
+        material_table_statistics materials; // 11.4
     };
 
     // The geometry arena in this frame's graph (11 §3.2), imported outside any view with the newest ready_after of the
@@ -89,6 +94,13 @@ namespace avis::visualizer::rendering
     {
         graphics::buffer vertices;
         graphics::buffer indices;
+    };
+
+    // The material table in this frame's graph (11 §3.3), imported outside any view with the newest ready_after of the
+    // slots the frame draws and of their textures. The textures themselves are read bindlessly, in `common`.
+    struct frame_materials
+    {
+        graphics::buffer table;
     };
 
     class scene_renderer
@@ -167,13 +179,36 @@ namespace avis::visualizer::rendering
             return *arena_;
         }
 
+        // For tests: texture residency and the material table (11.4)
+        const texture_residency& textures() const noexcept
+        {
+            return *textures_;
+        }
+
+        const material_table& materials() const noexcept
+        {
+            return *materials_;
+        }
+
     private:
+        // What create makes before the renderer exists
+        struct persistent_state
+        {
+            rhi::root_signature_handle standard_signature;
+            rhi::compute_pipeline_handle generate_mips;
+            std::unique_ptr<geometry_arena> arena;
+            std::unique_ptr<texture_residency> textures;
+            std::unique_ptr<material_table> materials;
+        };
+
         scene_renderer(
             const renderer_dependencies& dependencies,
             const render_settings& settings,
             graphics::shader_library& shaders,
-            rhi::root_signature_handle standard_signature,
-            std::unique_ptr<geometry_arena> arena);
+            persistent_state state);
+
+        // The passes that generate the mip chains of this frame's texture_residency::mip_requests(), outside any view
+        void add_mip_passes();
 
         // The graph of one frame, compiled; the first failure otherwise
         std::optional<error> build_frame(
@@ -191,9 +226,13 @@ namespace avis::visualizer::rendering
         graphics::shader_library& shaders_;
         rhi::root_signature_handle standard_signature_;
         view_history_store histories_;
+        rhi::compute_pipeline_handle generate_mips_pipeline_;
         std::unique_ptr<geometry_arena> arena_;
         std::unique_ptr<residency_cache> residency_; // refers to arena_ and the upload queue
+        std::unique_ptr<texture_residency> textures_;
+        std::unique_ptr<material_table> materials_; // refers to textures_
         frame_geometry geometry_; // of the frame being built
+        frame_materials frame_materials_; // of the frame being built
 
         std::optional<error> build_failure_; // of the last render; thrown by its sender
         std::uint64_t frames_rendered_ = 0;

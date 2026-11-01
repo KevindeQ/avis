@@ -34,7 +34,10 @@ namespace avis::visualizer::rendering
         // Declares every binding of bindless.hlsli, for the binding_layout check (11 §13)
         inline constexpr std::string_view binding_probe = "binding_probe.main.cs";
 
-        inline constexpr std::array all{ binding_probe };
+        // One mip of a decoded texture's chain, a 2 × 2 box in linear space (11.4)
+        inline constexpr std::string_view generate_mips = "generate_mips.main.cs";
+
+        inline constexpr std::array all{ binding_probe, generate_mips };
     } // namespace shader_ids
 
     // Where the build deploys the shaders, relative to the executable's directory

@@ -189,18 +189,43 @@ flowchart LR
 ## 11.4 Textures and materials
 11 §3.3, §3.6.
 
-- [ ] The texture residency follows the same path as meshes:
+- [x] The texture residency follows the same path as meshes:
   - Each new version gets an RHI texture with a bindless SRV, and its mips are uploaded with `upload_queue::upload_texture`.
   - Decoded PNG/JPEG data (`generate_mips = true`) uploads mip 0, then a compute downsample pass (`generate_mips.hlsl`) fills the chain on first use. It's added to the graph as a compute pass importing the texture with `ready_after`, and runs once.
   - sRGB textures downsample in linear space.
-- [ ] Defaults: 1 × 1 white, black, flat normal (0.5, 0.5, 1) and a 1 × 1 "missing" magenta, bound when a texture isn't resident yet. A material whose textures aren't resident draws with the defaults, not skipped.
-- [ ] Materials: a persistent `material_data[]` buffer (11 §3.3, from `shared_types.hlsli`) with up to 2¹⁷ slots, indexed by the material's residency slot. A new material version writes its slot through the upload queue with texture indices resolved against resident textures, and rewrites it again when a referenced texture becomes resident. Slots are freed by retirement like ranges.
-- [ ] Samplers: static samplers in the standard root signature (18 §9): linear-wrap with 16× anisotropy, linear-clamp, point-clamp, and the shadow comparison sampler (`s4`, 11 §7). `material_data::sampler_index` selects between the first two.
+
+  *As implemented* (`texture_residency.h/.cpp`):
+  - **Scratch copy.** The RHI refuses UAVs on sRGB formats, which have no typed UAV support. So the chain is generated in an RGBA8_UNORM scratch texture of the graph:
+    - a copy pass seeds mip 0;
+    - one `generate_mips` compute pass per mip runs a 2 × 2 box filter, decoding and re-encoding sRGB in the shader, with odd sizes clamped at the edge;
+    - a copy pass stores mips 1 and up into the texture (UNORM and UNORM_SRGB copy as one typeless family).
+  - **When it's current.** The passes run in the frame after the upload's flush: `mip_requests()`, then `mips_recorded()` once the graph is built. The version is current from the next frame on, so later frames' bindless reads come after the generation on the graphics queue. If the frame fails to build, the requests come again next frame.
+  - **Failures.** A full ring retries the upload next frame. A texture the RHI or the queue refuses (no texels, a bad size) is marked `failed` and not retried.
+  - **Retirement.** Superseded versions are destroyed like geometry ranges. A slot that draws marks the texture versions it references (`mark_used`), so a version stays alive while an in-flight slot points to it.
+- [x] Defaults: 1 × 1 white, black, flat normal (0.5, 0.5, 1) and a 1 × 1 "missing" magenta, bound when a texture isn't resident yet. A material whose textures aren't resident draws with the defaults, not skipped.
+
+  *As implemented:* the stand-ins are white for base colour, metallic-roughness and occlusion, the flat normal for normals, and black for emissive (no glow until the texture arrives). Magenta is for a texture that failed or isn't in the snapshot. A field without a texture stays 0 ("none"). The defaults are uploaded at `create` and flushed with the first frame.
+- [x] Materials: a persistent `material_data[]` buffer (11 §3.3, from `shared_types.hlsli`) with up to 2¹⁷ slots, indexed by the material's residency slot. A new material version writes its slot through the upload queue with texture indices resolved against resident textures, and rewrites it again when a referenced texture becomes resident. Slots are freed by retirement like ranges.
+
+  *As implemented* (`material_table.h/.cpp`):
+  - **Copy-on-write.** A rewrite goes into a **new slot**, never the old slot in place: frames still in flight read the old slot while the copy queue would write it. The old slot is freed by retirement. `statistics().rewrites` counts these writes.
+  - **Default slot.** Slot 0 is the default material (white, lit, opaque), used for an instance without a material or whose material has no current slot yet.
+  - **Imports.** The table is imported into each frame's graph as `materials`, outside the views (`frame_materials`). It waits on the newest point of the slots and textures the frame draws.
+- [x] Samplers: static samplers in the standard root signature (18 §9): linear-wrap with 16× anisotropy, linear-clamp, point-clamp, and the shadow comparison sampler (`s4`, 11 §7). `material_data::sampler_index` selects between the first two.
+
+  *As implemented:* the standard root signature of task 8 already has them (`binding_layout::static_sampler`, s0–s5, with the anisotropic sampler at s3, apart from linear-wrap). The material description has no sampler field, so every slot uses `anisotropic_wrap`, glTF's default wrapping.
 
 **Tests** (`[renderer]`):
-- [ ] A 256 × 256 checkerboard texture's mip chain reads back with the averaged values on mip 4, and sRGB averaging is correct (50% grey in linear, not in sRGB values).
-- [ ] A material referencing a texture that's still uploading draws with the default, then with the texture once it's resident, and its slot is rewritten once.
-- [ ] 1,000 material versions over 100 frames leave the slot count bounded by the live materials plus *F* frames of superseded ones.
+- [x] A 256 × 256 checkerboard texture's mip chain reads back with the averaged values on mip 4, and sRGB averaging is correct (50% grey in linear, not in sRGB values).
+- [x] A material referencing a texture that's still uploading draws with the default, then with the texture once it's resident, and its slot is rewritten once.
+- [x] 1,000 material versions over 100 frames leave the slot count bounded by the live materials plus *F* frames of superseded ones.
+
+*As implemented* (`test_renderer_materials.cpp`):
+- The checkerboard is a 1-texel one, for UNORM and sRGB: mips 4 and 8 read 128 and 188 (±1).
+- "Draws with" is the slot's data until 11.10 draws.
+- Further tests cover the default textures' texels and the default slot, a texture that can't be made resident drawing as missing, `full_mip_count` and the format mapping.
+
+`renderer_fixture::read_subresource` reads any texture's mip back.
 
 ## 11.5 Extraction, interpolation, pass 0
 11 §3.5, D-42, D-56, A-15.

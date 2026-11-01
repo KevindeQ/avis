@@ -418,14 +418,21 @@ namespace avis::tests
         return images;
     }
 
-    rgba8_image renderer_fixture::read_output(const rhi::texture_handle texture)
+    graphics::readback_image
+        renderer_fixture::read_subresource(const rhi::texture_handle texture, const rhi::subresource subresource)
     {
         std::optional<graphics::readback_image> image;
-        auto operation = stdexec::connect(readbacks->read_texture(texture), image_receiver{ &image });
+        auto operation = stdexec::connect(readbacks->read_texture(texture, subresource), image_receiver{ &image });
         stdexec::start(operation);
         graphics.hardware_interface.wait_for(
             rhi::queue<rhi::queue_type::graphics>{ *graphics.hardware_interface }.last_submitted());
         REQUIRE(image.has_value());
+        return std::move(*image);
+    }
+
+    rgba8_image renderer_fixture::read_output(const rhi::texture_handle texture)
+    {
+        const std::optional<graphics::readback_image> image = read_subresource(texture);
         REQUIRE(image->format() == rhi::format::rgba8_unorm);
 
         rgba8_image read{ .width = image->width(), .height = image->height() };

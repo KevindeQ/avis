@@ -4,10 +4,12 @@
 
 add_library(AVIS_VISUALIZER_RENDERING STATIC
 	geometry_arena.cpp
+	material_table.cpp
 	render_settings.cpp
 	renderer_shaders.cpp
 	residency_cache.cpp
 	scene_renderer.cpp
+	texture_residency.cpp
 	shader_manifest_parser.cpp
 	view.cpp
 	view_history.cpp

@@ -131,6 +131,7 @@ target_sources(AVIS_TESTS
 		visualizer/rendering/test_geometry_arena.cpp
 		visualizer/rendering/test_render_settings.cpp
 		visualizer/rendering/test_renderer_frames.cpp
+		visualizer/rendering/test_renderer_materials.cpp
 		visualizer/rendering/test_renderer_shaders.cpp
 		visualizer/rendering/test_residency_cache.cpp
 		visualizer/rendering/test_shader_manifest_parser.cpp
