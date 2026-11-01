@@ -8,6 +8,11 @@ FetchContent_MakeAvailable(Catch2)
 
 add_executable(AVIS_TESTS)
 
+# The Visualizer's rendering library is tested here (docs/tasks/11-renderer.md §11.1); it's defined with the apps
+if(NOT TARGET AVIS_VISUALIZER_RENDERING)
+	message(FATAL_ERROR "The tests need the Visualizer's rendering library: configure with AVIS_INCLUDE_APPS=ON")
+endif()
+
 target_compile_features(AVIS_TESTS
 	PUBLIC cxx_std_${AVIS_REQUIRED_CXX_STANDARD})
 
@@ -25,6 +30,7 @@ set_target_properties(AVIS_TESTS
 target_link_libraries(AVIS_TESTS
 	PRIVATE
 		AVIS_LIB
+		AVIS_VISUALIZER_RENDERING
 
 		# Private dependencies of AVIS_LIB, linked directly: D3D12MemoryAllocator for the RHI white-box tests (they
 		# include lib/avis/rhi/d3d12/ headers), the others for test_external_dependencies.cpp
@@ -35,10 +41,12 @@ target_link_libraries(AVIS_TESTS
 
 		Catch2::Catch2WithMain)
 
-# White-box tests include private library headers (lib/avis/...), e.g. the IO operation registry
+# White-box tests include private library headers (lib/avis/...), e.g. the IO operation registry. Tests in
+# subdirectories (visualizer/rendering/) include the helpers as "helpers/<file>.h" too.
 target_include_directories(AVIS_TESTS
 	PRIVATE
-		${CMAKE_SOURCE_DIR}/lib)
+		${CMAKE_SOURCE_DIR}/lib
+		${CMAKE_CURRENT_SOURCE_DIR})
 
 target_sources(AVIS_TESTS
 	PRIVATE
@@ -118,7 +126,10 @@ target_sources(AVIS_TESTS
 		test_scene_viewing_aids.cpp
 		test_sender_of.cpp
 		test_thread_pool.cpp
-		test_transient_resource_pool.cpp)
+		test_transient_resource_pool.cpp
+		visualizer/rendering/test_render_settings.cpp
+		visualizer/rendering/test_renderer_shaders.cpp
+		visualizer/rendering/test_shader_manifest_parser.cpp)
 
 # RHI test shaders (docs/tasks/06-rhi.md §6.8): compiled at build time into headers with the bytecode as byte arrays,
 # so the tests need no shader library. Generated, never checked in, rebuilt when the HLSL changes.
@@ -166,6 +177,12 @@ avis_add_shaders(
 target_compile_definitions(AVIS_TESTS
 	PRIVATE
 		AVIS_TEST_BUILT_SHADER_DIRECTORY="${AVIS_TEST_BUILT_SHADER_DIRECTORY}")
+
+# The renderer's shaders as the Visualizer build deploys them: the rendering tests parse their manifest and load them
+get_target_property(AVIS_TEST_RENDERER_SHADER_DIRECTORY AVIS_VISUALIZER_RENDERING AVIS_SHADER_OUTPUT_DIRECTORY)
+target_compile_definitions(AVIS_TESTS
+	PRIVATE
+		AVIS_TEST_RENDERER_SHADER_DIRECTORY="${AVIS_TEST_RENDERER_SHADER_DIRECTORY}")
 
 # test_scene_gltf.cpp loads its fixtures (Khronos sample models, hand-written invalid files) from the source tree
 target_compile_definitions(AVIS_TESTS

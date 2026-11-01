@@ -49,7 +49,7 @@ shaders:
 | `defines` | no | sequence of strings | `defines` (informational) |
 | `xxh3` | yes (Q2) | string of exactly 16 hexadecimal digits, case-insensitive | `content_hash` |
 
-- **Unknown keys** are ignored, at the top level and in entries, so a newer build script can add fields within version 1 (Q1). A different `avis_shader_manifest` value is an error: the format changed incompatibly.
+- **Unknown keys** are errors, at the top level, in entries and in `bindings` (Q1, decided B for task 11.1): the manifest is generated, so an unknown key means the writer and the parser drifted apart. A format 1 entry with `bindings` is one too. An `avis_shader_manifest` value other than 1 or 2 is an error: the format changed incompatibly.
 - **`file` is checked for path traversal** because the loader joins it to the shader directory: an entry must not reach outside it, whatever wrote the manifest.
 - **Duplicate ids** are reported here with both line numbers. `graphics::shader_library::create` would reject them too (`duplicate_shader_id`), but without positions in the file.
 - The parser doesn't check that ids follow the `<name>.<entry>[.<permutation>].<stage>` convention or that the file name matches the id; the build script guarantees both, and nothing at runtime depends on them.
@@ -138,10 +138,14 @@ The parser is compiled into `AVIS_TESTS` as well as the Visualizer (`target_sour
 ## 7. Open questions
 
 ### Q1. Unknown keys
+**Decided: B** (task 11.1). The build writes the file, and the round-trip test keeps writer and parser in step; additive changes bump the format.
+
 - **A (recommended): ignore them** (§2). The build script can add fields (a source path, a compile timestamp) without breaking deployed Visualizers within format 1; incompatible changes bump the version.
 - **B: reject them.** Catches typos in hand-written manifests, but manifests are generated, and every additive change would need a version bump.
 
 ### Q2. Is `xxh3` required?
+**Decided: A** (task 11.1). Format 2 entries also require their `bindings`.
+
 - **A (recommended): required.** The build always writes it, and the loader's integrity check is the only protection against a stale or half-copied deployment.
 - **B: optional,** checked when present (the graphics structure allows that). Convenient for hand-written test manifests, but a build script regression that drops hashes would go unnoticed. Tests can build a `graphics::shader_manifest` directly instead of writing YAML.
 

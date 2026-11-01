@@ -136,8 +136,8 @@ Each task document has an **Open points** section. They are collected here so th
 | 10 | An `entity_description::represents` field, so a helper is hidden from its `added` change on, without the in-place patch or the follow-up `renamed` change |
 | 10 | 11's residency (§3.6) resolving a material's textures through the snapshot's flat `textures` table, which replaced the textures inside each material entry |
 | 10 | The snapshot buffer's 5 s stress test runs with every `[scene]` run; move it behind a `[stress]` tag if the suite gets slow |
-| 11 | A static library `AVIS_VISUALIZER_RENDERING` so the tests can link the renderer |
-| 11 | 12a Q1 (unknown keys) and Q2 (`xxh3` required) before the parser is written |
+| 11 | *(Resolved: `AVIS_VISUALIZER_RENDERING`, task 11.1)* A static library `AVIS_VISUALIZER_RENDERING` so the tests can link the renderer |
+| 11 | *(Resolved: unknown keys are errors; `xxh3` is required)* 12a Q1 (unknown keys) and Q2 (`xxh3` required) before the parser is written |
 | 11 | The renderer interface without a frame chain: `render(frame_token&, snapshot, views)` or split prepare/record stages |
 | 11 | Image tests: WARP-only reference images (recommended) or hardware references too |
 | 11 | Interpolating snapshot matrices by decomposition, or TRS in the snapshot |

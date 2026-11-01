@@ -5,6 +5,7 @@
 #include "helpers/graphics_test_shaders.h"
 #include "helpers/rhi_fixture.h"
 #include "helpers/runtime_fixture.h"
+#include "rendering/shader_manifest_parser.h"
 
 #include "avis/graphics/binding_layout.h"
 #include "avis/graphics/pipeline_cache.h"
@@ -19,13 +20,13 @@
 #include "avis/rhi/pipeline.h"
 #include "avis/threading/parallel_helpers.h"
 
-#include <yaml-cpp/yaml.h>
-
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <set>
 #include <string>
 #include <string_view>
@@ -42,72 +43,20 @@ namespace
 {
     const std::filesystem::path built_directory{ AVIS_TEST_BUILT_SHADER_DIRECTORY };
 
-    graphics::shader_stage stage_of(const std::string& stage)
-    {
-        if (stage == "vs")
-        {
-            return graphics::shader_stage::vertex;
-        }
-        if (stage == "ps")
-        {
-            return graphics::shader_stage::pixel;
-        }
-        REQUIRE(stage == "cs");
-        return graphics::shader_stage::compute;
-    }
-
-    // A minimal reader of the build's manifest (format 2), for this test only: the library has no parser for it
-    // (D-73), the Visualizer has its own (12a)
+    // The build's manifest, through the Visualizer's parser (12a), which reads format 2 (docs/tasks/11-renderer.md
+    // §11.1): the library has no parser for it (D-73)
     graphics::shader_manifest read_manifest(const std::filesystem::path& path)
     {
-        const YAML::Node root = YAML::LoadFile(path.string());
-        REQUIRE(root["avis_shader_manifest"].as<int>() == 2);
-
-        graphics::shader_manifest manifest;
-        for (const YAML::Node& shader : root["shaders"])
+        std::ifstream file{ path, std::ios::binary };
+        REQUIRE(file.is_open());
+        const std::string text{ std::istreambuf_iterator<char>{ file }, std::istreambuf_iterator<char>{} };
+        auto manifest = visualizer::rendering::parse_shader_manifest(text, path.generic_string());
+        REQUIRE(manifest.has_value());
+        for (const graphics::shader_manifest_entry& entry : manifest->entries)
         {
-            graphics::shader_manifest_entry entry{
-                .id = shader["id"].as<std::string>(),
-                .stage = stage_of(shader["stage"].as<std::string>()),
-                .blob = shader["file"].as<std::string>(),
-                .entry = shader["entry"].as<std::string>(),
-                .content_hash = std::stoull(shader["xxh3"].as<std::string>(), nullptr, 16),
-            };
-            for (const YAML::Node& define : shader["defines"])
-            {
-                entry.defines.push_back(define.as<std::string>());
-            }
-
-            const YAML::Node bindings = shader["bindings"];
-            REQUIRE(bindings.IsMap());
-            graphics::shader_bindings read;
-            for (const YAML::Node& binding : bindings["constant_buffers"])
-            {
-                read.constant_buffers.push_back(
-                    { .shader_register = binding["register"].as<std::uint32_t>(),
-                      .register_space = binding["space"].as<std::uint32_t>(),
-                      .size = binding["size"].as<std::uint32_t>() });
-            }
-            for (const YAML::Node& binding : bindings["buffers"])
-            {
-                const std::string kind = binding["kind"].as<std::string>();
-                REQUIRE((kind == "shader_resource" || kind == "unordered_access"));
-                read.buffers.push_back(
-                    { .kind = kind == "shader_resource" ? graphics::buffer_binding_kind::shader_resource :
-                                                          graphics::buffer_binding_kind::unordered_access,
-                      .shader_register = binding["register"].as<std::uint32_t>(),
-                      .register_space = binding["space"].as<std::uint32_t>() });
-            }
-            for (const YAML::Node& binding : bindings["samplers"])
-            {
-                read.samplers.push_back(
-                    { .shader_register = binding["register"].as<std::uint32_t>(),
-                      .register_space = binding["space"].as<std::uint32_t>() });
-            }
-            entry.bindings = std::move(read);
-            manifest.entries.push_back(std::move(entry));
+            REQUIRE(entry.bindings.has_value()); // format 2
         }
-        return manifest;
+        return std::move(*manifest);
     }
 
     const graphics::shader_manifest_entry&

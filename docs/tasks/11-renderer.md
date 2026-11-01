@@ -79,31 +79,31 @@ flowchart LR
 ## 11.1 Target, settings, shader manifest, shader build
 11 §13, §14, 12 §10, 12a.
 
-- [ ] Create the `AVIS_VISUALIZER_RENDERING` static library from `apps/visualizer/rendering/*.cpp` (except anything Qt), linking `AVIS_LIB` and yaml-cpp. Its include directories are `apps/visualizer` and `data/shaders/visualizer/include`. `AVIS_VISUALIZER` links it; `AVIS_TESTS` links it and compiles `tests/visualizer/rendering/*.cpp`. The library must not depend on Qt (a CMake check: no `Qt6::` in its link interface).
-- [ ] `render_settings.h/.cpp`: `render_settings` with the keys and defaults of 11 §14, and `parse_render_settings(const YAML::Node&)`, which returns `result<render_settings>`. Errors carry the key path. The validation rules:
+- [x] Create the `AVIS_VISUALIZER_RENDERING` static library from `apps/visualizer/rendering/*.cpp` (except anything Qt), linking `AVIS_LIB` and yaml-cpp. Its include directories are `apps/visualizer` and `data/shaders/visualizer/include`. `AVIS_VISUALIZER` links it; `AVIS_TESTS` links it and compiles `tests/visualizer/rendering/*.cpp`. The library must not depend on Qt (a CMake check: no `Qt6::` in its link interface).
+- [x] `render_settings.h/.cpp`: `render_settings` with the keys and defaults of 11 §14, and `parse_render_settings(const YAML::Node&)`, which returns `result<render_settings>`. Errors carry the key path. The validation rules:
   - `shadows.cascades` is between 1 and 4
   - `draw_sorting.opaque_depth_bands` is a power of two, at most 2²⁴
   - `progressive.shadow_lod_scale` is in (0, 1]
   - `tonemapper` is `aces` or `agx`, and `exposure.mode` is `auto` or `manual`
 
   Reading `visualizer.yaml` itself is 12's job.
-- [ ] `shader_manifest_parser.h/.cpp` as in 12a §3–§4, with **format 2** (18 §7, task 8.7). It accepts `avis_shader_manifest: 1` and `2`, and reads `bindings` into `shader_manifest_entry::bindings`. Unknown keys are handled as 12a Q1 decides (see Open points). This replaces task 8's minimal reader in `test_graphics_shader_build.cpp`, which switches to the parser.
-- [ ] `renderer_shaders.h/.cpp`:
+- [x] `shader_manifest_parser.h/.cpp` as in 12a §3–§4, with **format 2** (18 §7, task 8.7). It accepts `avis_shader_manifest: 1` and `2`, and reads `bindings` into `shader_manifest_entry::bindings`. Unknown keys are handled as 12a Q1 decides (see Open points). This replaces task 8's minimal reader in `test_graphics_shader_build.cpp`, which switches to the parser.
+- [x] `renderer_shaders.h/.cpp`:
   - `load_renderer_shaders(directory)`, the sender pipeline of 12a §5 (`read_file`, then parse on a parallel worker, then `load_shader_library`)
   - `resolve_shader_directory(settings, executable_directory)`
   - the `constexpr` shader ids of every renderer shader (`<file>.<entry>[.<permutation>].<stage>`, as `avis_add_shaders` names them)
-- [ ] Shader layout:
+- [x] Shader layout:
   - Move `apps/visualizer/shaders/*` to `data/shaders/visualizer/qt/`; `qt6_add_shaders` keeps building them.
   - Add `data/shaders/visualizer/include/`: `bindless.hlsli` (the 18 §9 contract), `shared_types.hlsli`, `packing.hlsli` (octahedral, f16, sRGB, R11G11B10 helpers), `vertex_pulling.hlsli` (empty stubs for now; filled in by 11.10) and `brdf.hlsli` (11.11).
   - `avis_add_shaders(TARGET AVIS_VISUALIZER_RENDERING SOURCES data/shaders/visualizer/scene/*.hlsl OUTPUT_DIRECTORY <bin>/data/shaders/visualizer)`, with `data/shaders/visualizer/include` on the DXC include path.
-- [ ] A probe shader `binding_probe.hlsl`, compiled with the scene shaders, that includes `bindless.hlsli` and declares every binding it names. A test checks its reflected bindings against `graphics::binding_layout`'s constants (11 §13).
+- [x] A probe shader `binding_probe.hlsl`, compiled with the scene shaders, that includes `bindless.hlsli` and declares every binding it names. A test checks its reflected bindings against `graphics::binding_layout`'s constants (11 §13).
 
 **Tests** (`[renderer][unit]`, except where noted):
-- [ ] Settings: the defaults equal 11 §14, and each validation rule rejects its bad value with the key path.
-- [ ] Manifest parser: 12a §6's hand-written cases (format 1 and 2, missing keys, wrong types, duplicate ids, the `file:line:column` and key path of an error) and the manifest the build actually wrote for the renderer's shaders.
-- [ ] `[renderer]`: `load_renderer_shaders` on the built directory loads every id in `renderer_shaders.h`. A missing manifest is an IO error naming the directory.
-- [ ] The probe's bindings match `binding_layout`.
-- [ ] `static_assert`s on the sizes and offsets of every struct in `shared_types.hlsli`.
+- [x] Settings: the defaults equal 11 §14, and each validation rule rejects its bad value with the key path.
+- [x] Manifest parser: 12a §6's hand-written cases (format 1 and 2, missing keys, wrong types, duplicate ids, the `file:line:column` and key path of an error) and the manifest the build actually wrote for the renderer's shaders.
+- [x] `[renderer]`: `load_renderer_shaders` on the built directory loads every id in `renderer_shaders.h`. A missing manifest is an IO error naming the directory.
+- [x] The probe's bindings match `binding_layout`.
+- [x] `static_assert`s on the sizes and offsets of every struct in `shared_types.hlsli`.
 
 ## 11.2 Renderer interface and test harness
 11 §2.2, §3.5, §12; 10 §8.
@@ -535,8 +535,8 @@ flowchart LR
 - All tests pass in Debug, Release and ASan. The 11 §15 numbers are recorded.
 
 ## Open points
-- **The library target.** The code-placement table puts the renderer in `AVIS_VISUALIZER`, an executable the tests can't link. 12a already says its parser is "also compiled into `AVIS_TESTS`". Proposed: a static library `AVIS_VISUALIZER_RENDERING` for everything in `rendering/` that doesn't use Qt. The representation could later use the same pattern.
-- **12a and manifest format 2.** The parser was planned for the Visualizer task (task 8, 18 §15), but the renderer can't load its shaders without it, so this task takes it. Before 11.1, decide 12a's Q1 (unknown keys: error or warning; recommended: error, since the build writes the file) and Q2 (`xxh3` required; recommended: yes, for format 2).
+- **The library target.** The code-placement table puts the renderer in `AVIS_VISUALIZER`, an executable the tests can't link. 12a already says its parser is "also compiled into `AVIS_TESTS`". Proposed: a static library `AVIS_VISUALIZER_RENDERING` for everything in `rendering/` that doesn't use Qt. The representation could later use the same pattern. *Done in 11.1.*
+- **12a and manifest format 2.** The parser was planned for the Visualizer task (task 8, 18 §15), but the renderer can't load its shaders without it, so this task takes it. Before 11.1, decide 12a's Q1 (unknown keys: error or warning; recommended: error, since the build writes the file) and Q2 (`xxh3` required; recommended: yes, for format 2). *Decided for 11.1: unknown keys are errors, and `xxh3` (plus `bindings` in format 2) is required.*
 - **The interface without a frame chain.** `render(frame_token&, snapshot, views)` returning a `submitted_frame` sender, plus `retire`, is this task's proposal. 12's `frame_loop` calls it. If 12 needs the prepare and record stages split (for example, to flush uploads at a different point), the interface splits into `prepare` and `record`.
 - **Image tests.** Measured properties first, small WARP-rendered references only for TAA and GTAO. Decide whether references are also accepted from hardware runs (tolerances differ), or whether `[renderer]` image tests are WARP-only in CI. Recommended: WARP-only references, and hardware runs check only the measured properties.
 - **Invalid `world_previous`.** Extraction needs task 10's decision on how a pop-in or jump is marked (`history_invalid` flag or `world_previous == world_current`). Both work here; the flag also lets TAA reset that instance's pixels through the reactive mask.

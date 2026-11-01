@@ -1,7 +1,9 @@
-﻿qt_add_executable(AVIS_VISUALIZER
+﻿# The scene renderer: a Qt-free static library, so the tests can link it (docs/tasks/11-renderer.md §11.1)
+add_subdirectory(rendering)
+
+qt_add_executable(AVIS_VISUALIZER
 	main.cpp
 	visualizer_driver.cpp
-	rendering/scene_renderer.cpp
 )
 
 
@@ -15,16 +17,20 @@ qt_add_qml_module(AVIS_VISUALIZER
 		viewport.h
 )
 
+# The Qt-side blit shaders are Visualizer data (11 §13); their resource paths stay :/avis/visualizer/shaders/<file>.qsb
+set(AVIS_VISUALIZER_QT_SHADER_DIRECTORY "${AVIS_SRC_DIR}/data/shaders/visualizer/qt")
 qt6_add_shaders(AVIS_VISUALIZER "shaders"
     HLSL 61
 	GLSL "460"
 	NOMSL
 	OPTIMIZED
     PREFIX
-        "/avis/visualizer"
+        "/avis/visualizer/shaders"
+    BASE
+        "${AVIS_VISUALIZER_QT_SHADER_DIRECTORY}"
     FILES
-        "shaders/fullscreen_triangle.vert"
-        "shaders/fullscreen_texture.frag"
+        "${AVIS_VISUALIZER_QT_SHADER_DIRECTORY}/fullscreen_triangle.vert"
+        "${AVIS_VISUALIZER_QT_SHADER_DIRECTORY}/fullscreen_texture.frag"
 )
 
 target_compile_features(AVIS_VISUALIZER
@@ -59,6 +65,7 @@ target_include_directories(AVIS_VISUALIZER
 target_link_libraries(AVIS_VISUALIZER
 	PRIVATE
 		AVIS_LIB
+		AVIS_VISUALIZER_RENDERING
 
 		EnTT::EnTT
 		Qt6::Gui
