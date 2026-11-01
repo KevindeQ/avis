@@ -286,7 +286,17 @@ TEST_CASE("Eight workers and two pollers use the RHI concurrently for ten second
     CHECK(end.textures <= static_cast<std::uint32_t>(worker_count) * 2);
     CHECK(end.buffers <= static_cast<std::uint32_t>(worker_count) * 4);
 
+    // wait_idle polls once, which frees at most release_limit_per_call releases (D-77). When freeing is slow (the
+    // debugger, the debug layer) the pollers leave a larger backlog, so keep polling like a driver would. The GPU is
+    // idle, so every call frees a full batch and the loop ends.
     rhi_object.wait_idle();
+    const std::size_t backlog = state.lifetime().pending();
+    const std::size_t max_calls = backlog / rhi::d3d12::lifetime_manager::release_limit_per_call + 1;
+    for (std::size_t call = 0; call < max_calls && driver.has_pending_work(); ++call)
+    {
+        driver.poll_completions();
+    }
+    INFO("releases left after wait_idle: " << backlog);
     CHECK(state.lifetime().pending() == 0);
     CHECK_FALSE(driver.has_pending_work());
 }
