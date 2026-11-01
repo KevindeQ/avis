@@ -144,6 +144,7 @@ target_sources(AVIS_LIB
 		scene/assets/mesh_data.cpp
 		scene/assets/wic_decoder.cpp
 		scene/bounds.cpp
+		scene/components/driver.cpp
 		scene/error.cpp
 		scene/scene.cpp
 		scene/scene_graph.cpp

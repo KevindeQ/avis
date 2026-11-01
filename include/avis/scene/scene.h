@@ -1,8 +1,7 @@
 #ifndef AVIS_SCENE_SCENE_H
 #define AVIS_SCENE_SCENE_H
 
-#include "avis/scene/components/material.h"
-#include "avis/scene/components/mesh.h"
+// The prototype scene; rewritten as in 08 §9.5 by docs/tasks/10-scene-management.md §10.9
 
 #include <entt/entt.hpp>
 

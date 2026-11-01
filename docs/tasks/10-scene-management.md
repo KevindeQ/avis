@@ -230,7 +230,7 @@ flowchart LR
 ## 10.7 Components
 08 §3, §8, §9.2.
 
-- [ ] The headers of 08 §9.2's table, with the fields of 08 §3 and §8:
+- [x] The headers of 08 §9.2's table, with the fields of 08 §3 and §8:
   - `identity` and `represents`
   - `node_reference` and `previous_world`
   - `mesh`, `material`, `render_options`, `visibility` and `light` (with `light_kind`)
@@ -238,20 +238,20 @@ flowchart LR
   - `sensor` and `sensor_kind`
   - `driver_entity`, `display_shape` (with `shape_kind`), `properties`, `property_value`, `property_entry`, `belief_geometry` and `lidar_points`
   - `label`, `label_style`, `trail`, `trail_settings`, `trail_sample`, `update_stamp` and `update_time`
-- [ ] The shared enums go in `avis::scene`: `instance_flags`, `draw_layer` and `driver_entity_flags` (with `ALLOW_FLAGS_FOR_ENUM`), plus `entity_category` from 10.2. Put them in `types.h` or a `scene/flags.h`, so the snapshot can use them without the components.
-- [ ] `properties`: a `std::vector<property_entry>` in insertion order, plus a sorted index of `{ key, position }`. The interface:
+- [x] The shared enums go in `avis::scene`: `instance_flags`, `draw_layer` and `driver_entity_flags` (with `ALLOW_FLAGS_FOR_ENUM`), plus `entity_category` from 10.2. Put them in `types.h` or a `scene/flags.h`, so the snapshot can use them without the components.
+- [x] `properties`: a `std::vector<property_entry>` in insertion order, plus a sorted index of `{ key, position }`. The interface:
   - `set(key, value, unit)` replaces a value in place or appends
   - `remove(key)` erases and rebuilds the index
   - `find(key)` returns `const property_entry*`
-- [ ] `update_stamp::latest()`.
-- [ ] `trail::samples` is a `std::deque<trail_sample>`, as 08 §8.2 specifies.
-- [ ] Delete `components/mesh.h` and `components/material.h`.
+- [x] `update_stamp::latest()`.
+- [x] `trail::samples` is a `std::deque<trail_sample>`, as 08 §8.2 specifies.
+- [x] Delete `components/mesh.h` and `components/material.h`.
 
 **Tests** (`test_scene_components.cpp`, `[scene][unit]`):
-- [ ] `static_assert`s: every component is default-constructible and nothrow-move-constructible, and none is a pointer type.
-- [ ] `properties` keeps insertion order across `set`, replace and `remove`, and `find` uses the index (correct after 1,000 random operations, compared against a linear search).
-- [ ] `update_stamp::latest()` picks the newest of the four, by step.
-- [ ] `avis::flags<instance_flags>` combines and tests flags.
+- [x] `static_assert`s: every component is default-constructible and nothrow-move-constructible, and none is a pointer type.
+- [x] `properties` keeps insertion order across `set`, replace and `remove`, and `find` uses the index (correct after 1,000 random operations, compared against a linear search).
+- [x] `update_stamp::latest()` picks the newest of the four, by step.
+- [x] `avis::flags<instance_flags>` combines and tests flags.
 
 ## 10.8 Reflection
 08 §3, §9.7.
