@@ -108,35 +108,39 @@ flowchart LR
 ## 11.2 Renderer interface and test harness
 11 §2.2, §3.5, §12; 10 §8.
 
-- [ ] `view.h`:
+- [x] `view.h`:
   - `view_description { std::string name; camera camera; graphics::texture_extent size; float device_pixel_ratio; output_target output; view_options options; }`
   - `camera`: `Eigen::Affine3f world_from_view`, a vertical field of view, near (0.1 m) and an optional far (infinite reverse-Z by default)
   - `output_target`: the RHI texture to write, its initial and final states, and an optional `ready_after`
   - `view_options`: TAA on, debug selection, a picking request, the progressive budget override
 
   Views come from the caller (11 §2.1); the renderer never reads a camera from the snapshot.
-- [ ] `scene_renderer` (rewritten):
+
+  *As implemented:* `output` is a `std::optional<output_target>` (none: the view's passes are culled). `view_options` also has `reset_history` (11.15), and `debug_selection` and `pick_request` are minimal until 11.19 and 11.20 extend them. `camera` has `view_from_world()` and a reverse-Z `projection(aspect_ratio)`.
+- [x] `scene_renderer` (rewritten):
   - `static result<std::unique_ptr<scene_renderer>> create(renderer_dependencies, const render_settings&, graphics::shader_library&)`. The dependencies are the RHI views, the render graph, the pool, the frame scheduler, the profiler, the pipeline cache, the root signature registry and a per-frame `upload_queue`. `create` registers the standard root signature, creates the base pipeline sets with a startup `bulk` (11.7) and the persistent resources.
   - `render(frame_token&, const scene::snapshot&, std::span<const view_description>, time_point wall_now)`: builds and executes the frame's graph, and returns a sender of `submitted_frame` (10 §7).
   - `retire(completed_frame_index)`, called by the caller when `begin_frame` recycles a context (11 §3.6).
   - `debug_information()` for 12's panel (11.20).
 
   The skeleton passes of task 9.12 go.
-- [ ] Persistent per-view state goes in a `view_history` store keyed by view name, as in 10 §8. It holds TAA history, previous depth, exposure and previous view-projection. Its resources are imported each frame with ping-pong indices, and released after 60 unused frames.
-- [ ] `present_to_shared` (pass 16) copies `ldr_color` into the view's `output_target`, imported with `final = common` (11 §12). Without an output, the view renders nothing after `tonemap` (the graph culls it).
-- [ ] `tests/helpers/renderer_fixture.h/.cpp`:
+
+  *As implemented:* `render` builds and compiles the graph on the calling thread, then returns a sender that executes it; a frame that can't be built (an invalid view, history resources that can't be created) completes with that error and submits nothing. Until the pass chain exists, each view's frame is a placeholder `tonemap` pass that clears `ldr_color` to `background_color`, then `present_to_shared`. The caller calls `gpu_profiler::prepare_frame`. No base pipeline sets yet (11.7).
+- [x] Persistent per-view state goes in a `view_history` store keyed by view name, as in 10 §8. It holds TAA history, previous depth, exposure and previous view-projection. Its resources are imported each frame with ping-pong indices, and released after 60 unused frames.
+- [x] `present_to_shared` (pass 16) copies `ldr_color` into the view's `output_target`, imported with `final = common` (11 §12). Without an output, the view renders nothing after `tonemap` (the graph culls it).
+- [x] `tests/helpers/renderer_fixture.h/.cpp`:
   - the render-graph fixture of task 9, plus a runtime
   - the renderer created from the built shader directory
   - an output texture (RGBA8, 128 × 72 by default)
   - a scene built with task 10's `scene` and `asset_cache` and published to a `snapshot_buffer`
   - helpers to add a unit cube, a sphere (`mesh_builder`), a ground plane, a sun, a point light and an unlit quad
   - `render_and_read(views, frames = 1)`, which runs frames through the scheduler and `readback_queue` and returns the pixels
-  - `read_texture(name)`, which reads any graph resource through the debug selection (11.20), or through the debug information once 11.20 exists
+  - `read_texture(name)`, which reads any graph resource through the debug selection (11.20), or through the debug information once 11.20 exists. *Left for 11.20, which brings the debug selection it reads through.*
 
 **Tests** (`test_renderer_frames.cpp`, `[renderer]`):
-- [ ] An empty snapshot with a sun renders the sky colour of the environment's sun direction (from 11.11 on; until then, the clear colour), with no debug-layer or GPU-based-validation messages.
-- [ ] Two views of different sizes render in one frame into two outputs.
-- [ ] Destroying the renderer after 10 frames leaks nothing: the debug layer's live-object report is clean once the frames retire.
+- [x] An empty snapshot with a sun renders the sky colour of the environment's sun direction (from 11.11 on; until then, the clear colour), with no debug-layer or GPU-based-validation messages.
+- [x] Two views of different sizes render in one frame into two outputs.
+- [x] Destroying the renderer after 10 frames leaks nothing: the debug layer's live-object report is clean once the frames retire. *As implemented:* the live-object report only goes to the debugger output, so the test checks that nothing waits for deferred destruction once the GPU is idle, and that a second renderer reuses every texture and buffer slot the first one freed.
 
 ## 11.3 Geometry arena and mesh residency
 11 §3.2, §3.6, D-41, D-103.
@@ -537,7 +541,7 @@ flowchart LR
 ## Open points
 - **The library target.** The code-placement table puts the renderer in `AVIS_VISUALIZER`, an executable the tests can't link. 12a already says its parser is "also compiled into `AVIS_TESTS`". Proposed: a static library `AVIS_VISUALIZER_RENDERING` for everything in `rendering/` that doesn't use Qt. The representation could later use the same pattern. *Done in 11.1.*
 - **12a and manifest format 2.** The parser was planned for the Visualizer task (task 8, 18 §15), but the renderer can't load its shaders without it, so this task takes it. Before 11.1, decide 12a's Q1 (unknown keys: error or warning; recommended: error, since the build writes the file) and Q2 (`xxh3` required; recommended: yes, for format 2). *Decided for 11.1: unknown keys are errors, and `xxh3` (plus `bindings` in format 2) is required.*
-- **The interface without a frame chain.** `render(frame_token&, snapshot, views)` returning a `submitted_frame` sender, plus `retire`, is this task's proposal. 12's `frame_loop` calls it. If 12 needs the prepare and record stages split (for example, to flush uploads at a different point), the interface splits into `prepare` and `record`.
+- **The interface without a frame chain.** `render(frame_token&, snapshot, views)` returning a `submitted_frame` sender, plus `retire`, is this task's proposal. 12's `frame_loop` calls it. If 12 needs the prepare and record stages split (for example, to flush uploads at a different point), the interface splits into `prepare` and `record`. *11.2 implements the proposal; the build already runs eagerly inside `render`, which is the prepare stage.*
 - **Image tests.** Measured properties first, small WARP-rendered references only for TAA and GTAO. Decide whether references are also accepted from hardware runs (tolerances differ), or whether `[renderer]` image tests are WARP-only in CI. Recommended: WARP-only references, and hardware runs check only the measured properties.
 - **Invalid `world_previous`.** Extraction needs task 10's decision on how a pop-in or jump is marked (`history_invalid` flag or `world_previous == world_current`). Both work here; the flag also lets TAA reset that instance's pixels through the reactive mask.
 - **Interpolating matrices.** The snapshot carries `Matrix4f`s, so interpolation decomposes them into TRS each frame (slerp for rotation). That's about 10k decompositions per frame, which is cheap. The alternative is carrying TRS in the snapshot, which would change 08 §6.1.

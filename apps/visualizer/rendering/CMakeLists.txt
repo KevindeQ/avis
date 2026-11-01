@@ -7,6 +7,8 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	renderer_shaders.cpp
 	scene_renderer.cpp
 	shader_manifest_parser.cpp
+	view.cpp
+	view_history.cpp
 	yaml_reading.cpp)
 
 target_compile_features(AVIS_VISUALIZER_RENDERING

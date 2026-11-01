@@ -52,6 +52,7 @@ target_sources(AVIS_TESTS
 	PRIVATE
 		helpers/allocation_failure.cpp
 		helpers/graphics_fixture.cpp
+		helpers/renderer_fixture.cpp
 		helpers/rhi_fixture.cpp
 		test_asio_senders_receivers.cpp
 		test_async_file.cpp
@@ -128,8 +129,10 @@ target_sources(AVIS_TESTS
 		test_thread_pool.cpp
 		test_transient_resource_pool.cpp
 		visualizer/rendering/test_render_settings.cpp
+		visualizer/rendering/test_renderer_frames.cpp
 		visualizer/rendering/test_renderer_shaders.cpp
-		visualizer/rendering/test_shader_manifest_parser.cpp)
+		visualizer/rendering/test_shader_manifest_parser.cpp
+		visualizer/rendering/test_view.cpp)
 
 # RHI test shaders (docs/tasks/06-rhi.md §6.8): compiled at build time into headers with the bytecode as byte arrays,
 # so the tests need no shader library. Generated, never checked in, rebuilt when the HLSL changes.

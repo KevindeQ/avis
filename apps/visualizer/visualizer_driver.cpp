@@ -149,7 +149,6 @@ void visualizer_driver::on_render()
     {
         return;
     }
-    // Build and compile only: executing needs the frame chain and a completion driver (12). The viewport's size
-    // comes with them too.
-    renderer_.render(*graph_, current_scene_, { 1280, 720 });
+    // TODO(11.22): build and compile the frame through scene_renderer::render, once the Visualizer loads the
+    // renderer's shaders and creates it. Executing needs the frame chain and a completion driver (12).
 }

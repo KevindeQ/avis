@@ -1,7 +1,6 @@
 #ifndef VISUALIZER_VISUALIZER_DRIVER_H
 #define VISUALIZER_VISUALIZER_DRIVER_H
 
-#include "rendering/scene_renderer.h"
 #include "simulator_clock.h"
 
 #include "avis/graphics/frame_scheduler.h"
@@ -61,12 +60,11 @@ private:
     std::unique_ptr<avis::rhi::render_hardware_interface> rhi_;
 
     // The render graph and what it executes with; null without an RHI or when the scheduler couldn't be created.
-    // on_render only builds and compiles the graph: executing frames needs the frame chain and a completion driver
-    // (12).
+    // Executing frames needs the frame chain and a completion driver (12); the scene renderer that builds the graph
+    // comes with its shaders (docs/tasks/11-renderer.md §11.22).
     std::unique_ptr<avis::graphics::frame_scheduler> frames_;
     std::unique_ptr<avis::graphics::transient_resource_pool> transient_pool_;
     std::unique_ptr<avis::graphics::render_graph> graph_;
-    rendering::scene_renderer renderer_;
 };
 
 #endif
