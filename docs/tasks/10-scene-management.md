@@ -272,36 +272,36 @@ flowchart LR
 ## 10.9 `scene`: entities, ids, asset lifetime
 08 §2, §9.2, §9.5.
 
-- [ ] Rewrite `scene.h` and `scene.cpp` with the members of 08 §9.5. Also add `entity_description`, `destroyed_entity`, `tree_change_kind` and `tree_change`. `view_entities` goes.
-- [ ] `create_entity`:
+- [x] Rewrite `scene.h` and `scene.cpp` with the members of 08 §9.5. Also add `entity_description`, `destroyed_entity`, `tree_change_kind` and `tree_change`. `view_entities` goes.
+- [x] `create_entity`:
   - rejects a duplicate id (`duplicate_id`) and a dead or non-spatial parent (`invalid_parent`)
   - allocates a helper id when `id == 0`, through `allocate_helper_id`, a counter in the helper range
   - emplaces `identity`
   - for a spatial entity, creates a node with the local transform and emplaces `node_reference`, but no `previous_world` yet (08 §6.3)
   - inserts into the id index and records an `added` tree change
-- [ ] `destroy_entity`:
+- [x] `destroy_entity`:
   - destroys the node subtree through `scene_graph::destroy_node`
   - destroys each payload in the registry
   - removes each id from the index and returns `destroyed_entity`s for the whole subtree, root included
   - records `removed` changes
 
   A non-spatial entity destroys only itself.
-- [ ] `clear` destroys every entity, resets the helper-id counter, and records one `removed` change per root.
-- [ ] `find`, `alive`, `selection_target` (follows `represents` until an entity without it; a cycle is a debug check), `registry()` and `assets()`.
-- [ ] Owned components (08 §9.2): `identity`, `node_reference`, `previous_world` and `trail::samples`. `scene` connects `on_construct`, `on_update` and `on_destroy` for the first three. It holds a `detail::owner_scope` flag while it writes them, and the signal handlers assert unless the flag is set. `trail::samples` can't be guarded by signals, so `update_trails` checks in debug builds that the sample count only changed through it (keep the count per trail entity). `on_destroy` is allowed when the entity itself is being destroyed by `scene`.
-- [ ] Asset lifetime (08 §9.5): `on_construct` and `on_update` for `mesh` and `material` retain the new handles. On `on_update` the previous handles are released: keep a shadow copy per entity in a private storage, since EnTT's `on_update` doesn't pass the old value. `on_destroy` releases them.
-- [ ] Statistics counters: `on_construct` and `on_destroy` for `identity` keep the entity count and the count per category; `label` and `trail` keep theirs.
-- [ ] Tree changes: create, destroy and `set_parent` (10.10) append `tree_change`s. `hidden` is set for entities that have `represents` when the change is recorded, so the representation must emplace `represents` before the next `take_tree_changes`. A later `emplace<represents>` records a `renamed` change with `hidden` set (see Open points). `take_tree_changes` moves the list out. `scene_version` increments on each structural change.
-- [ ] Thread check: every public member checks the constructing thread in debug builds (Conventions).
+- [x] `clear` destroys every entity, resets the helper-id counter, and records one `removed` change per root.
+- [x] `find`, `alive`, `selection_target` (follows `represents` until an entity without it; a cycle is a debug check), `registry()` and `assets()`.
+- [x] Owned components (08 §9.2): `identity`, `node_reference`, `previous_world` and `trail::samples`. `scene` connects `on_construct`, `on_update` and `on_destroy` for the first three. It holds a `detail::owner_scope` flag while it writes them, and the signal handlers assert unless the flag is set. `trail::samples` can't be guarded by signals, so `update_trails` checks in debug builds that the sample count only changed through it (keep the count per trail entity). `on_destroy` is allowed when the entity itself is being destroyed by `scene`.
+- [x] Asset lifetime (08 §9.5): `on_construct` and `on_update` for `mesh` and `material` retain the new handles. On `on_update` the previous handles are released: keep a shadow copy per entity in a private storage, since EnTT's `on_update` doesn't pass the old value. `on_destroy` releases them.
+- [x] Statistics counters: `on_construct` and `on_destroy` for `identity` keep the entity count and the count per category; `label` and `trail` keep theirs.
+- [x] Tree changes: create, destroy and `set_parent` (10.10) append `tree_change`s. `hidden` is set for entities that have `represents` when the change is recorded, so the representation must emplace `represents` before the next `take_tree_changes`. A later `emplace<represents>` records a `renamed` change with `hidden` set (see Open points). `take_tree_changes` moves the list out. `scene_version` increments on each structural change.
+- [x] Thread check: every public member checks the constructing thread in debug builds (Conventions).
 
 **Tests** (`test_scene.cpp`, `[scene][unit]`):
-- [ ] `destroy_entity` on a vehicle with four sensors and a child helper returns six entries with their ids. `find` fails for each afterwards, and `alive` is false.
-- [ ] `find` resolves Driver ids and helper ids. A duplicate id fails without creating anything; a dead parent fails.
-- [ ] `selection_target` of a label helper (`represents { vehicle }`) is the vehicle.
-- [ ] Assets: emplacing `mesh` and `material` retains them. `replace` releases the old handles and retains the new ones. `remove` and `destroy_entity` release them. After `clear`, the cache's counts are back to what the test itself holds.
-- [ ] Owned components: `registry().emplace<identity>` or `patch<node_reference>` from the test asserts (recording assertion handler).
-- [ ] Tree changes: create, create a child, destroy the parent: `added`, `added`, then one `removed` for the root (see Open points). `hidden` is set for a helper with `represents`.
-- [ ] A call from another thread asserts.
+- [x] `destroy_entity` on a vehicle with four sensors and a child helper returns six entries with their ids. `find` fails for each afterwards, and `alive` is false.
+- [x] `find` resolves Driver ids and helper ids. A duplicate id fails without creating anything; a dead parent fails.
+- [x] `selection_target` of a label helper (`represents { vehicle }`) is the vehicle.
+- [x] Assets: emplacing `mesh` and `material` retains them. `replace` releases the old handles and retains the new ones. `remove` and `destroy_entity` release them. After `clear`, the cache's counts are back to what the test itself holds.
+- [x] Owned components: `registry().emplace<identity>` or `patch<node_reference>` from the test asserts (recording assertion handler).
+- [x] Tree changes: create, create a child, destroy the parent: `added`, `added`, then one `removed` for the root (see Open points). `hidden` is set for a helper with `represents`.
+- [x] A call from another thread asserts.
 
 ## 10.10 Hierarchy, transforms, tick sequence
 08 §4, §4.1, §4.3, §9.5, §9.6.

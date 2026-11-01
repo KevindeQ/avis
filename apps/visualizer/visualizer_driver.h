@@ -8,6 +8,7 @@
 #include "avis/graphics/render_graph.h"
 #include "avis/graphics/transient_resource_pool.h"
 #include "avis/rhi/render_hardware_interface.h"
+#include "avis/scene/assets/asset_cache.h"
 #include "avis/scene/scene.h"
 
 #include <QObject>
@@ -39,7 +40,10 @@ private:
     std::chrono::milliseconds max_frame_time = 100ms;
     std::chrono::milliseconds accumulator_ = 0ms;
 
-    avis::scene::scene current_scene_;
+    // Declared before the scene, which releases its assets on destruction. Without an IO context for now, so it
+    // can't load glTF yet; task 10.13 passes the runtime's.
+    avis::scene::asset_cache assets_;
+    avis::scene::scene current_scene_{ assets_ };
 
     // Simulation time tracking
     avis::virtual_clock_state clock_state_;
