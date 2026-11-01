@@ -1,9 +1,11 @@
 #include "avis/scene/scene.h"
 
 #include "avis/detail/check.h"
+#include "avis/scene/components/driver.h"
 #include "avis/scene/components/viewing.h"
 #include "avis/scene/error.h"
 
+#include <chrono>
 #include <format>
 #include <string_view>
 #include <type_traits>
@@ -17,6 +19,21 @@ namespace avis::scene
 
         // The first id of the helper range: source 0xFF in bits 63–56 (types.h)
         constexpr object_id first_helper_id = (helper_source << 56) + 1;
+
+        // A Driver entity's node has unit scale (§4.3)
+        constexpr float unit_scale_tolerance = 1e-4f;
+
+        const transform& identity_transform() noexcept
+        {
+            static const transform identity{};
+            return identity;
+        }
+
+        const Eigen::Affine3f& identity_affine() noexcept
+        {
+            static const Eigen::Affine3f identity = Eigen::Affine3f::Identity();
+            return identity;
+        }
 
         template<typename Component>
         constexpr std::string_view owned_name() noexcept
@@ -194,6 +211,11 @@ namespace avis::scene
 
         record_change(tree_change_kind::added, created);
         ++scene_version_;
+        tick_active_ = true;
+        if (description.spatial)
+        {
+            note_transform_change();
+        }
         return created;
     }
 
@@ -233,6 +255,7 @@ namespace avis::scene
         }
 
         ++scene_version_;
+        tick_active_ = true;
         return destroyed;
     }
 
@@ -254,6 +277,8 @@ namespace avis::scene
         ids_.clear();
         next_helper_id_ = first_helper_id;
         ++scene_version_;
+        tick_active_ = true;
+        transforms_pending_ = false; // nothing left to propagate
     }
 
     bool scene::alive(const entity entity) const noexcept
@@ -323,6 +348,144 @@ namespace avis::scene
     {
         check_thread("assets");
         return assets_;
+    }
+
+    // ---- hierarchy and transforms ----
+
+    result<void> scene::set_parent(const entity child, const entity parent, const bool keep_world)
+    {
+        check_thread("set_parent");
+
+        const auto* reference = alive(child) ? registry_.try_get<components::node_reference>(child) : nullptr;
+        if (reference == nullptr)
+        {
+            return std::unexpected(
+                make_error(error_kind::invalid_parent, "set_parent: the entity isn't alive or has no node"));
+        }
+
+        node_handle parent_node; // null: the entity becomes a root
+        if (parent != entt::null)
+        {
+            const auto* parent_reference =
+                alive(parent) ? registry_.try_get<components::node_reference>(parent) : nullptr;
+            if (parent_reference == nullptr)
+            {
+                return std::unexpected(make_error(
+                    error_kind::invalid_parent,
+                    std::format("set_parent: the new parent of {:#x} isn't alive or has no node", id_of(child))));
+            }
+            parent_node = parent_reference->node;
+        }
+
+        // invalid_parent and cycle come from the scene graph with the same kinds
+        if (result<void> moved = graph_.reparent(reference->node, parent_node, keep_world); !moved)
+        {
+            return moved;
+        }
+
+        record_change(tree_change_kind::moved, child);
+        ++scene_version_;
+        tick_active_ = true;
+        note_transform_change();
+        return {};
+    }
+
+    void scene::set_local(const entity entity, const transform& local, const bool discontinuity)
+    {
+        check_thread("set_local");
+        const node_handle node = node_of(entity, "set_local");
+        if (!node.valid())
+        {
+            return;
+        }
+
+#ifndef NDEBUG
+        if (registry_.all_of<components::driver_entity>(entity))
+        {
+            AVIS_CHECK(
+                logger_name,
+                ((local.scale.array() - 1.0f).abs() <= unit_scale_tolerance).all(),
+                std::format(
+                    "set_local: the Driver entity {:#x} has scale ({}, {}, {}); its node must have unit scale, and the "
+                    "extent goes to its representation (08 §4.3)",
+                    id_of(entity),
+                    local.scale.x(),
+                    local.scale.y(),
+                    local.scale.z()));
+        }
+#endif
+
+        graph_.set_local(node, local, discontinuity);
+        tick_active_ = true;
+        note_transform_change();
+    }
+
+    const transform& scene::local(const entity entity) const
+    {
+        check_thread("local");
+        const node_handle node = node_of(entity, "local");
+        return node.valid() ? graph_.local(node) : identity_transform();
+    }
+
+    const Eigen::Affine3f& scene::world(const entity entity) const
+    {
+        check_thread("world");
+        const node_handle node = node_of(entity, "world");
+        return node.valid() ? graph_.world(node) : identity_affine();
+    }
+
+    Eigen::Affine3f scene::relative_transform(const entity from, const entity to) const
+    {
+        check_thread("relative_transform");
+        return world(from).inverse(Eigen::Affine) * world(to);
+    }
+
+    // ---- per tick ----
+
+    void scene::update_world_transforms()
+    {
+        check_thread("update_world_transforms");
+        const auto start = std::chrono::steady_clock::now();
+        {
+            // A jumped node doesn't interpolate: its previous world is its new one (§4.1)
+            const owner_scope scope{ *this };
+            graph_.update_transforms([this](const node_handle node)
+                                     { store_previous_world(graph_.payload(node), graph_.world(node)); });
+        }
+        transforms_pending_ = false;
+        tick_active_ = true;
+        tick_transform_time_ += std::chrono::steady_clock::now() - start;
+    }
+
+    void scene::end_tick()
+    {
+        check_thread("end_tick");
+#ifndef NDEBUG
+        AVIS_CHECK(
+            logger_name,
+            tick_active_,
+            "end_tick: called twice with no change or update_world_transforms in between (08 §9.6)");
+#endif
+        if (!AVIS_CHECK(
+                logger_name,
+                !transforms_pending_,
+                "end_tick: a transform changed after the last update_world_transforms (08 §9.6)"))
+        {
+            update_world_transforms(); // so previous_world gets current worlds
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        {
+            const owner_scope scope{ *this };
+            for (const auto [entity, reference] : registry_.view<components::node_reference>().each())
+            {
+                store_previous_world(entity, graph_.world(reference.node));
+            }
+        }
+        tick_transform_time_ += std::chrono::steady_clock::now() - start;
+
+        last_transform_time_ = std::exchange(tick_transform_time_, std::chrono::nanoseconds{ 0 });
+        tick_active_ = false;
     }
 
     // ---- UI ----
@@ -398,6 +561,45 @@ namespace avis::scene
         const owner_scope scope{ *this, true };
         registry_.clear(); // the on_destroy signals release the assets
         graph_.clear();
+    }
+
+    node_handle scene::node_of(const entity entity, const char* operation) const noexcept
+    {
+        const auto* reference = alive(entity) ? registry_.try_get<components::node_reference>(entity) : nullptr;
+        if (!AVIS_CHECK(
+                logger_name, reference != nullptr, std::format("{}: the entity isn't alive or has no node", operation)))
+        {
+            return {};
+        }
+        return reference->node;
+    }
+
+    void scene::store_previous_world(const entity entity, const Eigen::Affine3f& world)
+    {
+        // A plain write when it's there, so the steady state fires no signal
+        if (auto* previous = registry_.try_get<components::previous_world>(entity))
+        {
+            previous->world = world;
+        }
+        else
+        {
+            registry_.emplace<components::previous_world>(entity, world);
+        }
+    }
+
+    void scene::note_transform_change() noexcept
+    {
+        transforms_pending_ = true;
+    }
+
+    void scene::check_snapshot_order([[maybe_unused]] const char* operation) const noexcept
+    {
+#ifndef NDEBUG
+        AVIS_CHECK(
+            logger_name,
+            !transforms_pending_,
+            std::format("{}: a transform changed after the last update_world_transforms (08 §9.6)", operation));
+#endif
     }
 
     // ---- signal handlers ----

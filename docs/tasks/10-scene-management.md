@@ -306,26 +306,26 @@ flowchart LR
 ## 10.10 Hierarchy, transforms, tick sequence
 08 §4, §4.1, §4.3, §9.5, §9.6.
 
-- [ ] `set_parent(entity, parent, keep_world)` forwards to `scene_graph::reparent`, maps its errors, and records a `moved` change. A null parent makes the entity a root.
-- [ ] `set_local(entity, local, discontinuity)`. In debug builds it asserts unit scale on entities with `driver_entity` (tolerance 1e-4, 08 §4.3).
-- [ ] `local`, `world` and `relative_transform`. An entity without a node is a debug check, and returns the identity.
-- [ ] `update_world_transforms()` calls `scene_graph::update_transforms` with a callback that writes `previous_world = world` for each jumped node's payload. It emplaces `previous_world` when it's missing, so a jump on a new entity doesn't make it pop in twice. Time it for the statistics.
-- [ ] `end_tick()`:
+- [x] `set_parent(entity, parent, keep_world)` forwards to `scene_graph::reparent`, maps its errors, and records a `moved` change. A null parent makes the entity a root.
+- [x] `set_local(entity, local, discontinuity)`. In debug builds it asserts unit scale on entities with `driver_entity` (tolerance 1e-4, 08 §4.3).
+- [x] `local`, `world` and `relative_transform`. An entity without a node is a debug check, and returns the identity.
+- [x] `update_world_transforms()` calls `scene_graph::update_transforms` with a callback that writes `previous_world = world` for each jumped node's payload. It emplaces `previous_world` when it's missing, so a jump on a new entity doesn't make it pop in twice. Time it for the statistics.
+- [x] `end_tick()`:
   - writes `previous_world = world` for every entity with a node, emplacing it where missing, so a new entity interpolates from its second snapshot onwards
   - records the tick's timings
   - advances the tick-order state
 
   Iterate `view<node_reference>` once; 10,000 entities should take under 0.1 ms.
-- [ ] Tick-order checks (08 §9.6) are a small state machine in debug builds:
+- [x] Tick-order checks (08 §9.6) are a small state machine in debug builds:
   - `make_snapshot` asserts when a `set_local`, `create_entity` or `set_parent` came after the last `update_world_transforms`
   - `end_tick` twice without any change or `update_world_transforms` in between asserts
   - a republish (`make_snapshot` without `end_tick`) is allowed
 
 **Tests** (`test_scene_transforms.cpp`, `[scene][unit]`):
-- [ ] A discontinuity on a parent: in the snapshot after the tick, `world_previous == world_current` for it and its whole subtree. The next tick interpolates normally. Use 10.11's `make_snapshot` or read `previous_world` directly if 10.11 isn't done yet.
-- [ ] `previous_world` after `end_tick` equals the world of that tick. An entity created this tick has none until `end_tick`.
-- [ ] `relative_transform(vehicle, sensor)` equals the sensor's local transform.
-- [ ] `set_local` with scale 2 on a Driver entity asserts; on a helper it doesn't.
+- [x] A discontinuity on a parent: in the snapshot after the tick, `world_previous == world_current` for it and its whole subtree. The next tick interpolates normally. Use 10.11's `make_snapshot` or read `previous_world` directly if 10.11 isn't done yet.
+- [x] `previous_world` after `end_tick` equals the world of that tick. An entity created this tick has none until `end_tick`.
+- [x] `relative_transform(vehicle, sensor)` equals the sensor's local transform.
+- [x] `set_local` with scale 2 on a Driver entity asserts; on a helper it doesn't.
 - [ ] Tick order: `make_snapshot` after an unpropagated `set_local` asserts, and so does `end_tick` twice. The republish sequence of 08 §9.6 doesn't.
 
 ## 10.11 Snapshots

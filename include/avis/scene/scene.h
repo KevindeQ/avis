@@ -6,8 +6,8 @@
 // previous_world, ties the lifetime of mesh and material handles to their components, and records tree changes for
 // the GUI. Only the simulation thread uses it: the thread that constructed it, checked in debug builds.
 //
-// Task 10.9 adds the entity members; hierarchy, transforms, the tick sequence, snapshots, viewing aids and statistics
-// follow in tasks 10.10–10.12.
+// Tasks 10.9 and 10.10 add the entity, hierarchy, transform and tick members; snapshots, viewing aids and statistics
+// follow in tasks 10.11 and 10.12.
 
 #include "avis/error.h"
 #include "avis/scene/assets/asset_cache.h"
@@ -18,10 +18,12 @@
 #include "avis/scene/scene_graph.h"
 #include "avis/scene/types.h"
 
+#include <Eigen/Geometry>
 #include <entt/entity/registry.hpp>
 #include <entt/entity/storage.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -108,12 +110,45 @@ namespace avis::scene
 
         asset_cache& assets() noexcept;
 
+        // ---- hierarchy and transforms ----
+
+        // Moves the entity under `parent`, or makes it a root when `parent` is null. With keep_world, the local
+        // transform changes so the world transform stays (exact only under a parent with uniform scale, §4). Fails
+        // with invalid_parent when the entity or the parent isn't alive or has no node, and cycle when the parent is
+        // in the entity's own subtree; the tree is then unchanged. Records a `moved` change.
+        result<void> set_parent(entity child, entity parent, bool keep_world);
+
+        // Stores the local TRS; the world transform follows at the next update_world_transforms. A discontinuity
+        // marks the node and its subtree as having jumped, so they don't interpolate (§4.1). Debug builds assert unit
+        // scale on entities with driver_entity (§4.3).
+        void set_local(entity entity, const transform& local, bool discontinuity = false);
+
+        // An entity without a node is a debug check and gives the identity. world() needs an update after the last
+        // change (a debug check in the scene graph).
+        const transform& local(entity entity) const;
+        const Eigen::Affine3f& world(entity entity) const;
+        Eigen::Affine3f relative_transform(entity from, entity to) const; // world(from)⁻¹ · world(to)
+
+        // ---- per tick (§9.6) ----
+
+        // Propagates the changed transforms. Each node that jumped, itself or through an ancestor, gets
+        // previous_world = world, emplaced when missing, so it doesn't interpolate across the jump.
+        void update_world_transforms();
+
+        // previous_world = world for every entity with a node, emplaced when missing: an entity created this tick
+        // interpolates from its second snapshot onwards. Records the tick's timings.
+        //
+        // Debug builds check the tick order: end_tick twice with nothing in between, and end_tick or make_snapshot
+        // after a transform change that update_world_transforms hasn't propagated. A republish (make_snapshot
+        // without end_tick) is allowed.
+        void end_tick();
+
         // ---- UI ----
 
         // Since the last call (§7)
         std::vector<tree_change> take_tree_changes();
 
-        // Increments on each structural change: create, destroy, clear
+        // Increments on each structural change: create, destroy, set_parent, clear
         std::uint64_t scene_version() const noexcept;
 
     private:
@@ -138,6 +173,20 @@ namespace avis::scene
 
         // Destroys every entity under the owner scope; records nothing
         void destroy_all();
+
+        // The entity's node; an invalid handle, after a debug check, when it's dead or has no node
+        node_handle node_of(entity entity, const char* operation) const noexcept;
+
+        // previous_world = world, emplaced when missing
+        void store_previous_world(entity entity, const Eigen::Affine3f& world);
+
+        // ---- tick order (§9.6) ----
+
+        // Something that can change world transforms: create_entity, set_parent, set_local
+        void note_transform_change() noexcept;
+
+        // For make_snapshot (10.11): a debug check that every transform change was propagated
+        void check_snapshot_order(const char* operation) const noexcept;
 
         // ---- signal handlers ----
         template<typename Component>
@@ -173,6 +222,12 @@ namespace avis::scene
         std::vector<tree_change> tree_changes_;
         std::uint64_t scene_version_ = 0;
         counters counters_;
+
+        // Tick order and timings
+        bool transforms_pending_ = false; // a change since the last update_world_transforms
+        bool tick_active_ = true; // a change or an update since the last end_tick
+        std::chrono::nanoseconds tick_transform_time_{ 0 }; // update_world_transforms and end_tick, this tick
+        std::chrono::nanoseconds last_transform_time_{ 0 }; // the same, for the last finished tick
 
         int owner_writes_ = 0; // > 0 while scene writes the components it owns
         bool destroying_ = false; // while scene destroys entities: no `renamed` change for a lost `represents`
