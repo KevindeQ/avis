@@ -134,6 +134,7 @@ target_sources(AVIS_LIB
 		rhi/d3d12/transient_upload.cpp
 		rhi/d3d12/view_descriptions.cpp
 
+		scene/error.cpp
 		scene/scene.cpp
 		scene/scene_graph.cpp
 
