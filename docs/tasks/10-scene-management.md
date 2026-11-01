@@ -161,28 +161,28 @@ flowchart LR
 ## 10.5 Asset cache
 08 §5.1, §5.2, §8.5, §9.4.
 
-- [ ] `assets/asset_cache.h` and `.cpp`, without `load_gltf` (10.6).
+- [x] `assets/asset_cache.h` and `.cpp`, without `load_gltf` (10.6).
   - `versioned<T>` and its aliases, and `asset_statistics`.
   - Three slot tables (mesh, material, texture). Each slot holds the generation, a reference count, the version counter and the current `versioned<T>`. A `std::shared_mutex` guards the tables: shared for `current` and `retain`, exclusive for `create_*`, `update_*` and the last `release` (08 §9.4).
-- [ ] `create_mesh` and `update_mesh` call `validate_and_bound` and store the data in a `std::shared_ptr<const mesh_data>`. The pointer is created with a deleter that subtracts `byte_size()` from the byte counters:
+- [x] `create_mesh` and `update_mesh` call `validate_and_bound` and store the data in a `std::shared_ptr<const mesh_data>`. The pointer is created with a deleter that subtracts `byte_size()` from the byte counters:
   - `current_geometry_bytes` while the version is current
   - `retained_geometry_bytes` after `update_mesh` or the last `release` supersedes it
 
   A version moves from current to retained under the exclusive lock. The deleter decrements whichever counter holds the version (keep a per-version atomic flag in a small control block next to the data). Versions start at 1 and only increase. A failed update keeps the old version.
-- [ ] `create_material` and `update_material` check that each texture handle is alive (`invalid_material` otherwise) and retain each texture. A freed material releases its textures.
-- [ ] `create_texture` stores the data; texture bytes aren't geometry bytes, so they aren't counted in the §8.5 counters.
-- [ ] `retain`, `release` and `release_all`. A slot is freed when its count reaches 0: the cache's `versioned` is dropped and the generation bumps. The CPU data lives on while a snapshot holds a `shared_ptr` (§5.2).
-- [ ] The destructor asserts that every slot is free (08 §9.4: "only the cache's own references remain").
-- [ ] `statistics()` reads the counts and the atomics.
-- [ ] Deduplication by path and content hash belongs to `load_gltf` (10.6); `create_*` never deduplicates.
+- [x] `create_material` and `update_material` check that each texture handle is alive (`invalid_material` otherwise) and retain each texture. A freed material releases its textures.
+- [x] `create_texture` stores the data; texture bytes aren't geometry bytes, so they aren't counted in the §8.5 counters.
+- [x] `retain`, `release` and `release_all`. A slot is freed when its count reaches 0: the cache's `versioned` is dropped and the generation bumps. The CPU data lives on while a snapshot holds a `shared_ptr` (§5.2).
+- [x] The destructor asserts that every slot is free (08 §9.4: "only the cache's own references remain").
+- [x] `statistics()` reads the counts and the atomics.
+- [x] Deduplication by path and content hash belongs to `load_gltf` (10.6); `create_*` never deduplicates.
 
 **Tests** (`test_scene_asset_cache.cpp`, `[scene][unit]`):
-- [ ] `update_mesh` bumps the version and leaves a `shared_ptr` to the earlier version valid with its old contents.
-- [ ] Once the cache and every outside `shared_ptr` (standing in for snapshot slots) drop a version, its deleter runs, and `retained_geometry_bytes` returns to its starting value.
-- [ ] Reference counts: create, retain, release and release free the slot; a handle to a freed slot is stale (debug check on `current`); a new create reuses the slot with a higher generation.
-- [ ] `create_material` with a dead texture fails with `invalid_material`. Freeing a material releases its textures, so a texture created, used by one material and released is freed when the material is.
-- [ ] Concurrency: four threads each run 10,000 random creates, updates, `current`s, retains and releases, while a fifth drops old `shared_ptr`s. After joining, the counts and both byte counters match a recomputation. Run it under ASan.
-- [ ] The destructor's check fires with a live handle (recording assertion handler).
+- [x] `update_mesh` bumps the version and leaves a `shared_ptr` to the earlier version valid with its old contents.
+- [x] Once the cache and every outside `shared_ptr` (standing in for snapshot slots) drop a version, its deleter runs, and `retained_geometry_bytes` returns to its starting value.
+- [x] Reference counts: create, retain, release and release free the slot; a handle to a freed slot is stale (debug check on `current`); a new create reuses the slot with a higher generation.
+- [x] `create_material` with a dead texture fails with `invalid_material`. Freeing a material releases its textures, so a texture created, used by one material and released is freed when the material is.
+- [x] Concurrency: four threads each run 10,000 random creates, updates, `current`s, retains and releases, while a fifth drops old `shared_ptr`s. After joining, the counts and both byte counters match a recomputation. Run it under ASan.
+- [x] The destructor's check fires with a live handle (recording assertion handler).
 
 ## 10.6 glTF import
 08 §5.1, §5.3, §9.4, A-03.

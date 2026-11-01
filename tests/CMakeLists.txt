@@ -100,6 +100,7 @@ target_sources(AVIS_TESTS
 		test_rhi_types.cpp
 		test_runtime.cpp
 		test_runtime_configuration.cpp
+		test_scene_asset_cache.cpp
 		test_scene_bounds.cpp
 		test_scene_error.cpp
 		test_scene_graph.cpp
