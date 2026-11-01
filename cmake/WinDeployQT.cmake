@@ -12,9 +12,9 @@ function(qt_deploy_windows target qml_dir)
                 --verbose 1
                 $<IF:$<CONFIG:debug>,--debug,--release>
                 --no-opengl-sw
-                --no-compiler-runtime
-                --no-system-d3d-compiler
-                --no-system-dxc-compiler
+                #--no-compiler-runtime
+                #--no-system-d3d-compiler
+                #--no-system-dxc-compiler
                 --qmldir ${qml_dir}
                 \"$<TARGET_FILE:${target}>\"
         COMMENT "Deploying Qt libraries using windeployqt for compilation target '${target}' ..."
