@@ -5,20 +5,23 @@
 // materials and textures behind reference-counted generational handles.
 //
 // Thread-safety: every member is thread-safe. A std::shared_mutex guards the slot tables: current() and retain() take
-// it shared, create_*, update_* and the last release() exclusive. The byte counters are atomics, because the
-// shared_ptr deleters that decrement them run wherever the last snapshot or upload lets go, including the render
-// thread; they stay valid after the cache is destroyed.
+// it shared, create_*, update_* and the last release() exclusive. load_gltf completions insert from parallel workers.
+// The byte counters are atomics, because the shared_ptr deleters that decrement them run wherever the last snapshot or
+// upload lets go, including the render thread; they stay valid after the cache is destroyed.
 //
 // A stale handle is a debug check (AVIS_CHECK on the "scene" logger). In release builds it makes retain() and
 // release() do nothing and current() return an empty versioned.
 
 #include "avis/error.h"
+#include "avis/scene/assets/gltf.h"
 #include "avis/scene/assets/material.h"
 #include "avis/scene/assets/mesh_data.h"
 #include "avis/scene/assets/texture_data.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
+#include <optional>
 
 namespace avis::io
 {
@@ -27,8 +30,6 @@ namespace avis::io
 
 namespace avis::scene
 {
-    struct gltf_asset_set;
-
     template<typename T>
     struct versioned
     {
@@ -66,6 +67,15 @@ namespace avis::scene
         asset_cache(asset_cache&&) = delete;
         asset_cache& operator=(asset_cache&&) = delete;
 
+        // Reads the file with io::read_file on the cache's IO context, parses it with fastgltf and decodes its images
+        // with WIC on the parallel scheduler, then creates the assets (gltf.h, docs/tasks/10-scene-management.md
+        // §10.6). Deduplicated by canonical path plus the XXH3-64 hash of the file: loading an unchanged file again,
+        // while its assets are alive, completes with new references to the same handles, without parsing.
+        //
+        // Errors: an IO error passes through unchanged; gltf_invalid, gltf_unsupported, image_decode_failed. A failure
+        // or a stop releases every asset created so far. A cache without IO fails with generic logic_error.
+        gltf_load_sender load_gltf(std::filesystem::path path);
+
         // Validates the data and computes its bounds (invalid_mesh otherwise), then stores an immutable copy as
         // version 1, with one reference. Never deduplicates.
         result<mesh_handle> create_mesh(mesh_data data);
@@ -102,6 +112,14 @@ namespace avis::scene
         io::io_context* io() const noexcept;
 
     private:
+        friend struct detail::gltf_load_core;
+
+        // Deduplication for load_gltf. find_gltf retains every handle of the set remembered for the path and
+        // returns a copy, when the hash matches and every asset is still alive; otherwise it forgets the entry.
+        // remember_gltf replaces the path's entry. The cache holds no references through these entries.
+        std::optional<gltf_asset_set> find_gltf(const std::filesystem::path& canonical_path, std::uint64_t hash);
+        void remember_gltf(const std::filesystem::path& canonical_path, std::uint64_t hash, const gltf_asset_set& set);
+
         struct state;
 
         io::io_context* io_ = nullptr;

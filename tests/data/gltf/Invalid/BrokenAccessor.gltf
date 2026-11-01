@@ -1,0 +1,10 @@
+{
+    "asset": { "version": "2.0", "generator": "hand-written for the Avis tests" },
+    "scene": 0,
+    "scenes": [ { "nodes": [ 0 ] } ],
+    "nodes": [ { "name": "triangle", "mesh": 0 } ],
+    "meshes": [ { "primitives": [ { "attributes": { "POSITION": 0 } } ] } ],
+    "accessors": [ { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" } ],
+    "bufferViews": [ { "buffer": 0, "byteLength": 12 } ],
+    "buffers": [ { "byteLength": 12, "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAA" } ]
+}

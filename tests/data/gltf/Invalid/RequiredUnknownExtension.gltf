@@ -1,0 +1,8 @@
+{
+    "asset": { "version": "2.0", "generator": "hand-written for the Avis tests" },
+    "extensionsUsed": [ "EXT_avis_unknown" ],
+    "extensionsRequired": [ "EXT_avis_unknown" ],
+    "scene": 0,
+    "scenes": [ { "nodes": [ 0 ] } ],
+    "nodes": [ { "name": "empty" } ]
+}

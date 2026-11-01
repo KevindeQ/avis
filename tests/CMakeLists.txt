@@ -103,6 +103,7 @@ target_sources(AVIS_TESTS
 		test_scene_asset_cache.cpp
 		test_scene_bounds.cpp
 		test_scene_error.cpp
+		test_scene_gltf.cpp
 		test_scene_graph.cpp
 		test_scene_mesh_data.cpp
 		test_scene_public_headers.cpp
@@ -157,6 +158,11 @@ avis_add_shaders(
 target_compile_definitions(AVIS_TESTS
 	PRIVATE
 		AVIS_TEST_BUILT_SHADER_DIRECTORY="${AVIS_TEST_BUILT_SHADER_DIRECTORY}")
+
+# test_scene_gltf.cpp loads its fixtures (Khronos sample models, hand-written invalid files) from the source tree
+target_compile_definitions(AVIS_TESTS
+	PRIVATE
+		AVIS_TEST_GLTF_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/data/gltf")
 
 target_include_directories(AVIS_TESTS
 	PRIVATE

@@ -187,45 +187,45 @@ flowchart LR
 ## 10.6 glTF import
 08 §5.1, §5.3, §9.4, A-03.
 
-- [ ] `assets/gltf.h` (public):
+- [x] `assets/gltf.h` (public):
   - `gltf_node` and `gltf_asset_set`
   - the named sender `gltf_load_sender`, with `static_assert(avis::sender_of<gltf_load_sender, gltf_asset_set>)`, D-66
   - `asset_cache::load_gltf(std::filesystem::path)`
 
   The sender's operation state lives in the private `gltf_import.h`, so fastgltf stays out of the public headers.
-- [ ] The pipeline runs in four steps:
+- [x] The pipeline runs in four steps:
   1. `io::read_file` (on the IO context the cache was given).
   2. Then, on the parallel scheduler: parse with `fastgltf::Parser` from the bytes (`.gltf` with external `.bin` files resolved relative to the path and read through `read_file` as well, and `.glb`). `fastgltf` errors become `gltf_invalid` with the path and fastgltf's message. Required extensions outside the supported set, skinning and morph targets become `gltf_unsupported`.
   3. Decode the images with one parallel operation per image, through `stdexec::bulk` or `when_all` over the images.
   4. Create the assets in the cache and complete with the set.
 
   Stop requests are honoured between stages. A failure releases everything created so far.
-- [ ] Geometry:
+- [x] Geometry:
   - each glTF primitive becomes one `mesh_primitive` of the mesh, in the Avis vertex format (normals, tangents, `TEXCOORD_0`, `COLOR_0` to sRGB u8x4)
   - generated flat normals when the primitive has none
   - triangles only (glTF modes 4, 5 and 6 converted to lists); lines and points pass through
   - the Y-up to Z-up axis change ([00 §4.1](../design/00-overview.md#41-coordinate-systems-and-units)) applied once to positions, normals, tangents and node transforms, so no runtime transform is needed
-- [ ] Materials:
+- [x] Materials:
   - `pbrMetallicRoughness`, the normal, occlusion and emissive textures, and `alphaMode`, `alphaCutoff` and `doubleSided` map to `material_description`
   - `KHR_materials_emissive_strength` multiplies `emissive_factor`
   - `KHR_texture_transform` is supported on `base_color_texture` for offset and scale: bake it into the uvs when only one transform is used per mesh, else log a warning and ignore it (see Open points)
   - other extensions log a warning and are ignored
-- [ ] Textures:
+- [x] Textures:
   - PNG and JPEG are decoded with WIC (`wic_decoder.cpp`) into `rgba8_srgb` for colour textures and `rgba8_unorm` for data textures (normal, metallic-roughness, occlusion), with `generate_mips = true`
   - a WIC failure is `image_decode_failed`, naming the image and the file
   - COM is initialised per worker thread, as described in Open points
   - DDS and KTX2 BCn images (`MSFT_texture_dds`, `KHR_texture_basisu`) are deferred; see Open points
-- [ ] Nodes become `gltf_node`s, parents before children, each with its local transform, mesh and materials.
-- [ ] Deduplication: the cache keeps `canonical path + XXH3-64 of the file bytes → gltf_asset_set`. A second load of the same unchanged file retains every handle and completes with a copy of the set, without parsing.
-- [ ] Link `windowscodecs` in `lib/avis/CMakeLists.txt`.
-- [ ] Add the fixtures: the Khronos sample models Box, BoxTextured and DamagedHelmet (glTF-Binary and glTF) under `tests/data/gltf/`, with their licence files. Also add a hand-written glTF with a required unknown extension and one with a broken accessor.
+- [x] Nodes become `gltf_node`s, parents before children, each with its local transform, mesh and materials.
+- [x] Deduplication: the cache keeps `canonical path + XXH3-64 of the file bytes → gltf_asset_set`. A second load of the same unchanged file retains every handle and completes with a copy of the set, without parsing.
+- [x] Link `windowscodecs` in `lib/avis/CMakeLists.txt`.
+- [x] Add the fixtures: the Khronos sample models Box, BoxTextured and DamagedHelmet (glTF-Binary and glTF) under `tests/data/gltf/`, with their licence files. Also add a hand-written glTF with a required unknown extension and one with a broken accessor.
 
 **Tests** (`test_scene_gltf.cpp`, `[scene]`, runtime fixture):
-- [ ] Box: one mesh, one primitive, 24 vertices and 36 indices. Its bounds after the axis change are Z-up, so the box's glTF Y extent is now along Z. The node has the expected transform.
-- [ ] BoxTextured: the base-colour texture decodes to the expected size, and one sampled texel has the expected colour; the material references it.
-- [ ] DamagedHelmet: five textures, the emissive factor, and normals and tangents present. A second load hits the deduplication: the same handles and one more reference each.
-- [ ] Errors: a missing file is an IO error passed through unchanged; a required unknown extension is `gltf_unsupported`; a broken accessor is `gltf_invalid`; a corrupt PNG is `image_decode_failed`. In each case the cache's statistics are back to their starting values.
-- [ ] A stop request during decoding completes with `set_stopped` and leaks nothing.
+- [x] Box: one mesh, one primitive, 24 vertices and 36 indices. Its bounds after the axis change are Z-up, so the box's glTF Y extent is now along Z. The node has the expected transform.
+- [x] BoxTextured: the base-colour texture decodes to the expected size, and one sampled texel has the expected colour; the material references it.
+- [x] DamagedHelmet: five textures, the emissive factor, and normals and tangents present. A second load hits the deduplication: the same handles and one more reference each.
+- [x] Errors: a missing file is an IO error passed through unchanged; a required unknown extension is `gltf_unsupported`; a broken accessor is `gltf_invalid`; a corrupt PNG is `image_decode_failed`. In each case the cache's statistics are back to their starting values.
+- [x] A stop request during decoding completes with `set_stopped` and leaks nothing.
 
 ## 10.7 Components
 08 §3, §8, §9.2.

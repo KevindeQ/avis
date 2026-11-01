@@ -55,6 +55,10 @@ target_link_libraries(AVIS_LIB
 		fastgltf::fastgltf
 		xxHash::xxhash
 		yaml-cpp::yaml-cpp
+
+		# WIC decodes the glTF import's PNG and JPEG images (scene/assets/wic_decoder.cpp)
+		ole32
+		windowscodecs
 )
 
 target_sources(AVIS_LIB
@@ -135,8 +139,10 @@ target_sources(AVIS_LIB
 		rhi/d3d12/view_descriptions.cpp
 
 		scene/assets/asset_cache.cpp
+		scene/assets/gltf_import.cpp
 		scene/assets/mesh_builder.cpp
 		scene/assets/mesh_data.cpp
+		scene/assets/wic_decoder.cpp
 		scene/bounds.cpp
 		scene/error.cpp
 		scene/scene.cpp

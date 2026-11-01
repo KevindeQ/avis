@@ -10,6 +10,7 @@
 #include <deque>
 #include <format>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <shared_mutex>
 #include <string_view>
@@ -169,6 +170,13 @@ namespace avis::scene
             }
         }
 
+        // A remembered glTF load (load_gltf's deduplication)
+        struct gltf_entry
+        {
+            std::uint64_t hash = 0;
+            gltf_asset_set set;
+        };
+
         avis::error stale_error(const char* const operation)
         {
             return avis::make_error(
@@ -183,6 +191,10 @@ namespace avis::scene
         slot_table<material_description> materials;
         slot_table<texture_data> textures;
         std::shared_ptr<geometry_counters> counters = std::make_shared<geometry_counters>();
+
+        // load_gltf's deduplication, by canonical path. Taken before `mutex`, never after.
+        std::mutex gltf_mutex;
+        std::map<std::filesystem::path, gltf_entry> gltf_sets;
 
         slot_table<mesh_data>& table(mesh_handle) noexcept
         {
@@ -279,6 +291,56 @@ namespace avis::scene
             return true;
         }
 
+        // Retains every handle of the set when all of them are alive and referenced, else none. Under the
+        // exclusive lock, so a release can't free one of them in between. A slot whose count dropped to 0 is treated
+        // as dead: its last release is on its way to free it.
+        bool retain_all_alive(const gltf_asset_set& set) noexcept
+        {
+            const std::unique_lock lock{ mutex };
+            const auto referenced = [this](const auto handle)
+            {
+                const auto* found = table(handle).find(handle);
+                return found != nullptr && found->references.load(std::memory_order_relaxed) != 0;
+            };
+            for (const mesh_handle mesh : set.meshes)
+            {
+                if (!referenced(mesh))
+                {
+                    return false;
+                }
+            }
+            for (const material_handle material : set.materials)
+            {
+                if (!referenced(material))
+                {
+                    return false;
+                }
+            }
+            for (const texture_handle texture : set.textures)
+            {
+                if (!referenced(texture))
+                {
+                    return false;
+                }
+            }
+
+            const auto add = [this](const auto handle)
+            { table(handle).find(handle)->references.fetch_add(1, std::memory_order_relaxed); };
+            for (const mesh_handle mesh : set.meshes)
+            {
+                add(mesh);
+            }
+            for (const material_handle material : set.materials)
+            {
+                add(material);
+            }
+            for (const texture_handle texture : set.textures)
+            {
+                add(texture);
+            }
+            return true;
+        }
+
         template<typename Handle>
         bool release(const Handle handle) noexcept
         {
@@ -333,6 +395,40 @@ namespace avis::scene
                 AVIS_CHECK(logger_name, false, "asset_cache destroyed with live assets");
             }
         }
+    }
+
+    gltf_load_sender asset_cache::load_gltf(std::filesystem::path path)
+    {
+        return { *this, std::move(path) };
+    }
+
+    std::optional<gltf_asset_set>
+        asset_cache::find_gltf(const std::filesystem::path& canonical_path, const std::uint64_t hash)
+    {
+        const std::scoped_lock lock{ state_->gltf_mutex };
+        const auto found = state_->gltf_sets.find(canonical_path);
+        if (found == state_->gltf_sets.end())
+        {
+            return std::nullopt;
+        }
+        if (found->second.hash == hash)
+        {
+            gltf_asset_set copy = found->second.set; // before retaining, so a failed copy leaks no reference
+            if (state_->retain_all_alive(copy))
+            {
+                return copy;
+            }
+        }
+        // The file changed, or its assets were released: load it again
+        state_->gltf_sets.erase(found);
+        return std::nullopt;
+    }
+
+    void asset_cache::remember_gltf(
+        const std::filesystem::path& canonical_path, const std::uint64_t hash, const gltf_asset_set& set)
+    {
+        const std::scoped_lock lock{ state_->gltf_mutex };
+        state_->gltf_sets.insert_or_assign(canonical_path, gltf_entry{ .hash = hash, .set = set });
     }
 
     result<mesh_handle> asset_cache::create_mesh(mesh_data data)
