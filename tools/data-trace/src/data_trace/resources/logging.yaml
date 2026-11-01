@@ -26,10 +26,10 @@ handlers:
 root:
     level: NOTSET
     handlers: [console]
-    propogate: yes
+    propagate: yes
 
 loggers:
     data_trace:
         level: DEBUG
         handlers: [console, log_file]
-        propogate: no
+        propagate: no

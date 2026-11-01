@@ -9,7 +9,9 @@ import traceback
 import yaml
 
 from data_trace.command import Command
+from data_trace.exceptions import ShaderManifestError
 from data_trace.pack.pack_command import PackCommand
+from data_trace.shaders.shader_manifest_command import ShaderManifestCommand
 
 logger = logging.getLogger()
 
@@ -22,6 +24,9 @@ class Driver:
         sub_parser = self._arg_parser.add_subparsers(required=True)
 
         self._register_command(sub_parser=sub_parser, name=PackCommand.name(), command=PackCommand())
+        self._register_command(
+            sub_parser=sub_parser, name=ShaderManifestCommand.name(), command=ShaderManifestCommand()
+        )
 
     def run(self) -> int:
         args = self._arg_parser.parse_args()
@@ -75,6 +80,7 @@ def clean_terminate(error):
         TimeoutError,
     ) + (
         # Put own exceptions here
+        ShaderManifestError,
     )
 
     if isinstance(error, user_errors):
