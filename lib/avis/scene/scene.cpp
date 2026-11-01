@@ -1,5 +1,7 @@
 #include "avis/scene/scene.h"
 
+#include "labels.h"
+
 #include "avis/detail/check.h"
 #include "avis/scene/components/driver.h"
 #include "avis/scene/components/viewing.h"
@@ -139,12 +141,14 @@ namespace avis::scene
     scene::scene(asset_cache& assets) :
         assets_{ assets },
         owner_thread_{ std::this_thread::get_id() },
-        next_helper_id_{ first_helper_id }
+        next_helper_id_{ first_helper_id },
+        labels_{ std::make_unique<detail::label_formatter>() }
     {
         using namespace components;
 
         registry_.on_construct<identity>().connect<&scene::on_identity_construct>(*this);
         registry_.on_destroy<identity>().connect<&scene::on_identity_destroy>(*this);
+        registry_.on_destroy<identity>().connect<&scene::on_entity_destroy>(*this);
         registry_.on_construct<represents>().connect<&scene::on_represents_construct>(*this);
         registry_.on_destroy<represents>().connect<&scene::on_represents_destroy>(*this);
         registry_.on_construct<mesh>().connect<&scene::on_draw_set_change>(*this);
@@ -462,6 +466,63 @@ namespace avis::scene
         return world(from).inverse(Eigen::Affine) * world(to);
     }
 
+    std::optional<aabb> scene::world_bounds(const entity entity) const
+    {
+        check_thread("world_bounds");
+        if (!check_alive(entity, "world_bounds"))
+        {
+            return std::nullopt;
+        }
+        const auto* reference = registry_.try_get<components::node_reference>(entity);
+        if (reference == nullptr)
+        {
+            return std::nullopt; // non-spatial: nothing is drawn
+        }
+
+        aabb bounds;
+        graph_.for_each_in_subtree(
+            reference->node,
+            [&](const node_handle node)
+            {
+                const avis::scene::entity payload = graph_.payload(node);
+                const auto* drawn = registry_.try_get<components::mesh>(payload);
+                if (drawn == nullptr || !drawn->asset.valid())
+                {
+                    return;
+                }
+                const auto* options = registry_.try_get<components::render_options>(payload);
+                if (options != nullptr && options->flags & instance_flags::screen_aligned)
+                {
+                    return; // in pixels: labels (§8.1)
+                }
+
+                const versioned_mesh current = assets_.current(drawn->asset);
+                if (!current.data)
+                {
+                    return;
+                }
+                const std::vector<mesh_primitive>& primitives = current.data->primitives;
+                const auto count = static_cast<std::uint32_t>(primitives.size());
+                aabb local;
+                for (std::uint32_t index = drawn->primitive_first;
+                     index < count && index - drawn->primitive_first < drawn->primitive_count;
+                     ++index)
+                {
+                    local.extend(primitives[index].bounds);
+                }
+                if (!local.empty())
+                {
+                    bounds.extend(local.transformed(graph_.world(node)));
+                }
+            });
+
+        if (bounds.empty())
+        {
+            return std::nullopt;
+        }
+        return bounds;
+    }
+
     // ---- per tick ----
 
     void scene::update_world_transforms()
@@ -471,8 +532,16 @@ namespace avis::scene
         {
             // A jumped node doesn't interpolate: its previous world is its new one (§4.1)
             const owner_scope scope{ *this };
-            graph_.update_transforms([this](const node_handle node)
-                                     { store_previous_world(graph_.payload(node), graph_.world(node)); });
+            graph_.update_transforms(
+                [this](const node_handle node)
+                {
+                    const avis::scene::entity payload = graph_.payload(node);
+                    store_previous_world(payload, graph_.world(node));
+                    if (!jumped_.contains(payload))
+                    {
+                        jumped_.push(payload); // for update_trails
+                    }
+                });
         }
         transforms_pending_ = false;
         tick_active_ = true;
@@ -493,6 +562,7 @@ namespace avis::scene
         target.environment = environment_;
         target.scene_version = scene_version_;
 
+        last_snapshot_step_ = target.step;
         last_snapshot_instances_ = target.instances.size();
         last_snapshot_lights_ = target.lights.size();
         last_snapshot_time_ = std::chrono::steady_clock::now() - start;
@@ -527,6 +597,8 @@ namespace avis::scene
 
         last_transform_time_ = std::exchange(tick_transform_time_, std::chrono::nanoseconds{ 0 });
         tick_active_ = false;
+        jumped_.clear();
+        trails_updated_ = false;
     }
 
     // ---- environment ----
@@ -555,6 +627,59 @@ namespace avis::scene
     {
         check_thread("scene_version");
         return scene_version_;
+    }
+
+    reflected_entity scene::reflect(const entity entity) const
+    {
+        check_thread("reflect");
+        if (!check_alive(entity, "reflect"))
+        {
+            return {};
+        }
+
+        const auto& identity = registry_.get<components::identity>(entity);
+        reflected_entity reflected{ .id = identity.id, .name = identity.name };
+        detail::reflect_components(registry_, entity, reflected.components);
+        if (const auto* values = registry_.try_get<components::properties>(entity))
+        {
+            reflected.properties = values->entries();
+        }
+        if (const auto* stamp = registry_.try_get<components::update_stamp>(entity))
+        {
+            reflected.stamp = *stamp;
+        }
+        reflected.world_bounds = world_bounds(entity);
+        return reflected;
+    }
+
+    scene_statistics scene::statistics() const
+    {
+        check_thread("statistics");
+
+        const auto narrow = [](const std::size_t count) { return static_cast<std::uint32_t>(count); };
+        const asset_statistics cached = assets_.statistics();
+        scene_statistics result{
+            .step = last_snapshot_step_,
+            .entities = narrow(counters_.entities),
+            .nodes = narrow(graph_.size()),
+            .instances = narrow(last_snapshot_instances_),
+            .lights = narrow(last_snapshot_lights_),
+            .meshes = cached.meshes,
+            .materials = cached.materials,
+            .textures = cached.textures,
+            .current_geometry_bytes = cached.current_geometry_bytes,
+            .retained_geometry_bytes = cached.retained_geometry_bytes,
+            .labels = narrow(counters_.labels),
+            .trails = narrow(counters_.trails),
+            .trail_samples = narrow(counters_.trail_samples),
+            .transform_update_milliseconds = std::chrono::duration<double, std::milli>(last_transform_time_).count(),
+            .snapshot_build_milliseconds = std::chrono::duration<double, std::milli>(last_snapshot_time_).count(),
+        };
+        for (std::size_t category = 0; category < entity_category_count; ++category)
+        {
+            result.entities_per_category[category] = narrow(counters_.per_category[category]);
+        }
+        return result;
     }
 
     // ---- private ----
@@ -616,6 +741,7 @@ namespace avis::scene
         const owner_scope scope{ *this, true };
         registry_.clear(); // the on_destroy signals release the assets
         graph_.clear();
+        jumped_.clear();
     }
 
     node_handle scene::node_of(const entity entity, const char* operation) const noexcept
@@ -955,13 +1081,26 @@ namespace avis::scene
         --counters_.labels;
     }
 
-    void scene::on_trail_construct(entt::registry&, entity)
+    void scene::on_trail_construct(entt::registry& registry, const entity entity)
     {
+        const std::size_t samples = registry.get<components::trail>(entity).samples.size();
+        trail_counts_.emplace(entity, samples);
         ++counters_.trails;
+        counters_.trail_samples += samples;
     }
 
-    void scene::on_trail_destroy(entt::registry&, entity)
+    void scene::on_trail_destroy(entt::registry&, const entity entity)
     {
         --counters_.trails;
+        if (trail_counts_.contains(entity))
+        {
+            counters_.trail_samples -= trail_counts_.get(entity);
+            trail_counts_.erase(entity);
+        }
+    }
+
+    void scene::on_entity_destroy(entt::registry&, const entity entity)
+    {
+        jumped_.remove(entity);
     }
 } // namespace avis::scene

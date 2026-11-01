@@ -6,35 +6,45 @@
 // previous_world, ties the lifetime of mesh and material handles to their components, and records tree changes for
 // the GUI. Only the simulation thread uses it: the thread that constructed it, checked in debug builds.
 //
-// Tasks 10.9–10.11 add the entity, hierarchy, transform, tick and snapshot members; viewing aids and statistics follow
-// in task 10.12.
 
 #include "avis/error.h"
 #include "avis/scene/assets/asset_cache.h"
 #include "avis/scene/assets/mesh_data.h"
+#include "avis/scene/bounds.h"
 #include "avis/scene/components/identity.h"
 #include "avis/scene/components/rendering.h"
 #include "avis/scene/components/spatial.h"
+#include "avis/scene/reflection.h"
 #include "avis/scene/scene_graph.h"
 #include "avis/scene/snapshot.h"
+#include "avis/scene/statistics.h"
 #include "avis/scene/types.h"
+#include "avis/simulation/time.h"
 
 #include <Eigen/Geometry>
 #include <entt/entity/registry.hpp>
+#include <entt/entity/sparse_set.hpp>
 #include <entt/entity/storage.hpp>
 
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
 namespace avis::scene
 {
+    namespace detail
+    {
+        class label_formatter; // labels.h, private
+    } // namespace detail
+
     struct entity_description
     {
         object_id id = 0; // 0 = allocate a helper id
@@ -130,17 +140,29 @@ namespace avis::scene
         const Eigen::Affine3f& world(entity entity) const;
         Eigen::Affine3f relative_transform(entity from, entity to) const; // world(from)⁻¹ · world(to)
 
+        // The union of what the entity's subtree draws, in world space (§8.3): for each entity with mesh, the
+        // current version's primitive bounds in its range, transformed by its world. Skips screen_aligned instances
+        // (labels) and empty bounds. nullopt when nothing was added, or for an entity without a node. Computed on
+        // demand, O(subtree).
+        std::optional<aabb> world_bounds(entity entity) const;
+
         // ---- per tick (§9.6) ----
 
         // Propagates the changed transforms. Each node that jumped, itself or through an ancestor, gets
         // previous_world = world, emplaced when missing, so it doesn't interpolate across the jump.
         void update_world_transforms();
 
+        // Samples the trails from the new worlds (§8.2): appends the world origin when the node moved at least
+        // minimum_spacing since the last sample, or has none; appends with starts_segment when it jumped this tick;
+        // drops samples older than time − duration_seconds. Once per tick, after update_world_transforms (debug
+        // checks). No call, no sample: a paused scene keeps its trails.
+        void update_trails(simulation::simulation_duration time);
+
         // Fills `target` with the instances and lights in stable id order, the environment, the scene version and the
         // current version of every referenced asset (§6.3). Leaves the step fields and publish_sequence to the
-        // caller and the buffer. An entity without previous_world (created this tick) gets world_previous =
-        // world_current and instance_flags::history_invalid. A steady state allocates nothing once `target` has
-        // grown. Debug builds assert that every transform change was propagated (§9.6).
+        // caller and the buffer; set `step` first, for statistics(). An entity without previous_world (created this
+        // tick) gets world_previous = world_current and instance_flags::history_invalid. A steady state allocates
+        // nothing once `target` has grown. Debug builds assert that every transform change was propagated (§9.6).
         void make_snapshot(snapshot& target);
 
         // previous_world = world for every entity with a node, emplaced when missing: an entity created this tick
@@ -157,10 +179,26 @@ namespace avis::scene
         void set_environment(const environment_settings& environment);
         const environment_settings& environment() const noexcept;
 
-        // ---- UI ----
+        // ---- viewing aids, UI ----
+
+        // The entity's label text, from its label::text_template (§8.1): {name} and {id} from identity,
+        // {property:<key>[:<spec>]} from properties, formatted with std::format and the spec, with the unit after a
+        // space. {{ and }} are escapes. A missing key or a bad spec gives "–", and a bad spec or unknown field logs
+        // once per template. Empty without a label.
+        std::string format_label(entity entity) const;
+
+        // The same with another template, for the entity's identity and properties
+        std::string format_label(std::string_view text_template, entity entity) const;
 
         // Since the last call (§7)
         std::vector<tree_change> take_tree_changes();
+
+        // For the inspector (§9.7): the reflected components in the order of 08 §9.2, the properties, the update stamp
+        // (default when missing) and the world bounds
+        reflected_entity reflect(entity entity) const;
+
+        // Counters, sizes and the last timings (§8.5); O(1)
+        scene_statistics statistics() const;
 
         // Increments on each structural change: create, destroy, set_parent, clear
         std::uint64_t scene_version() const noexcept;
@@ -176,6 +214,7 @@ namespace avis::scene
             std::array<std::size_t, entity_category_count> per_category{};
             std::size_t labels = 0;
             std::size_t trails = 0;
+            std::size_t trail_samples = 0;
         };
 
         bool check_thread(const char* operation) const noexcept;
@@ -199,7 +238,7 @@ namespace avis::scene
         // Something that can change world transforms: create_entity, set_parent, set_local
         void note_transform_change() noexcept;
 
-        // For make_snapshot: a debug check that every transform change was propagated
+        // For make_snapshot and update_trails: a debug check that every transform change was propagated
         void check_snapshot_order(const char* operation) const noexcept;
 
         // ---- snapshots ----
@@ -227,6 +266,7 @@ namespace avis::scene
         void on_label_construct(entt::registry& registry, entity entity);
         void on_label_destroy(entt::registry& registry, entity entity);
         void on_trail_construct(entt::registry& registry, entity entity);
+        void on_entity_destroy(entt::registry& registry, entity entity); // any entity: leaves the jumped set
         void on_trail_destroy(entt::registry& registry, entity entity);
 
         asset_cache& assets_;
@@ -263,6 +303,13 @@ namespace avis::scene
         std::chrono::nanoseconds last_snapshot_time_{ 0 };
         std::size_t last_snapshot_instances_ = 0;
         std::size_t last_snapshot_lights_ = 0;
+        simulation::step_index last_snapshot_step_ = 0;
+
+        // Viewing aids
+        std::unique_ptr<detail::label_formatter> labels_; // the parsed-template cache
+        entt::sparse_set jumped_; // entities that jumped this tick (update_world_transforms to end_tick), for trails
+        entt::storage<std::size_t> trail_counts_; // trail::samples' size as update_trails left it (owner check)
+        bool trails_updated_ = false; // update_trails ran this tick
 
         int owner_writes_ = 0; // > 0 while scene writes the components it owns
         bool destroying_ = false; // while scene destroys entities: no `renamed` change for a lost `represents`

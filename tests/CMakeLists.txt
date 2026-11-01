@@ -111,9 +111,11 @@ target_sources(AVIS_TESTS
 		test_scene_reflection.cpp
 		test_scene_snapshot.cpp
 		test_scene_snapshot_buffer.cpp
+		test_scene_statistics.cpp
 		test_scene_transforms.cpp
 		test_scene.cpp
 		test_scene_types.cpp
+		test_scene_viewing_aids.cpp
 		test_sender_of.cpp
 		test_thread_pool.cpp
 		test_transient_resource_pool.cpp)

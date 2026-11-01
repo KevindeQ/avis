@@ -146,10 +146,12 @@ target_sources(AVIS_LIB
 		scene/bounds.cpp
 		scene/components/driver.cpp
 		scene/error.cpp
+		scene/labels.cpp
 		scene/reflection.cpp
 		scene/scene.cpp
 		scene/scene_graph.cpp
 		scene/snapshot.cpp
+		scene/trails.cpp
 		scene/types.cpp
 
 		threading/parallel_backend.cpp

@@ -364,41 +364,41 @@ flowchart LR
 ## 10.12 Viewing aids and statistics
 08 §8.1–§8.5, §9.5.
 
-- [ ] `scene::format_label(entity)` parses the template once per call. The `labels.cpp` parser is small and allocation-light, and keeps a per-template cache keyed by the template string's hash (see Open points):
+- [x] `scene::format_label(entity)` parses the template once per call. The `labels.cpp` parser is small and allocation-light, and keeps a per-template cache keyed by the template string's hash (see Open points):
   - `{name}` and `{id}` come from `identity`
   - `{property:<key>[:<format>]}` formats with `std::vformat` and the spec. Numbers get the spec; strings and booleans ignore it; vectors are formatted as `(x, y, z)` with the spec per element. The unit is appended after a space.
   - a missing key, an entity without `properties`, or a bad format spec gives `–`, and a bad spec also logs once per template
   - `{{` and `}}` are escapes
-- [ ] `scene::update_trails(time)` follows 08 §8.2 for `view<node_reference, trail>`:
+- [x] `scene::update_trails(time)` follows 08 §8.2 for `view<node_reference, trail>`:
   - It appends the world origin when the node moved at least `minimum_spacing` from the last sample, or when there's no sample yet.
   - It appends with `starts_segment` when the node jumped this tick. Record the jumped set in `update_world_transforms` and clear it in `end_tick`.
   - It drops samples older than `time − duration_seconds`.
   - It counts the samples for the statistics.
   - It's a debug check to call it twice in one tick.
-- [ ] `scene::world_bounds(entity)` follows 08 §8.3:
+- [x] `scene::world_bounds(entity)` follows 08 §8.3:
   - It walks the subtree and, for each entity with `mesh`, extends by the union of the current version's primitive bounds in the mesh's range, transformed by the node's world.
   - It skips `screen_aligned` instances and empty bounds.
   - It returns `nullopt` when nothing was added.
-- [ ] `scene::reflect(entity)` walks `detail::reflected_components`, adding a `reflected_component` for each component the entity has. It also copies `properties`, `update_stamp` (default when missing) and `world_bounds`.
-- [ ] `statistics.h` has `scene_statistics` as in 08 §8.5, and `scene::statistics()` fills it from the 10.9 counters, `scene_graph::size()`, the last snapshot's instance and light counts, `asset_cache::statistics()` and the timings. It's O(1).
+- [x] `scene::reflect(entity)` walks `detail::reflected_components`, adding a `reflected_component` for each component the entity has. It also copies `properties`, `update_stamp` (default when missing) and `world_bounds`.
+- [x] `statistics.h` has `scene_statistics` as in 08 §8.5, and `scene::statistics()` fills it from the 10.9 counters, `scene_graph::size()`, the last snapshot's instance and light counts, `asset_cache::statistics()` and the timings. It's O(1).
 
 **Tests** (`test_scene_viewing_aids.cpp`, `test_scene_statistics.cpp`, `[scene][unit]`):
-- [ ] Labels:
+- [x] Labels:
   - `"{name} · {property:perception.speed:.1f}"` with speed 8.333 and unit `m/s` gives `car 1042 · 8.3 m/s`
   - `{id}`, escapes, a missing key (`–`), a bad spec (`–`, logged once), a string property, a boolean property and a vector property all format as described
-- [ ] Trails:
+- [x] Trails:
   - samples respect spacing and duration
   - a discontinuity gives a sample with `starts_segment`
   - no `update_trails` call, no sample
   - trails disappear with their entity
   - 08 §8.2's block chunking is the representation's (12) and isn't tested here
-- [ ] World bounds:
+- [x] World bounds:
   - a vehicle with a proxy mesh child and two sensor frustum children gives the union of all three
   - a `screen_aligned` label child is skipped
   - an entity with nothing drawn returns `nullopt`
   - the result matches a brute-force transform of the meshes' vertices
-- [ ] `reflect` lists components in the 08 §9.2 header order, whatever order they were emplaced in.
-- [ ] Statistics:
+- [x] `reflect` lists components in the 08 §9.2 header order, whatever order they were emplaced in.
+- [x] Statistics:
   - after 10,000 random creates and destroys, the counts match a full registry scan
   - geometry bytes go back to their starting value once every mesh is released and both snapshot slots are reused
   - the timings are non-zero after a tick
