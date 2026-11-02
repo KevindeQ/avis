@@ -9,7 +9,7 @@ namespace avis::rhi::d3d12
 {
     namespace
     {
-        constexpr std::array<std::pair<format, DXGI_FORMAT>, 28> formats{ {
+        constexpr std::array<std::pair<format, DXGI_FORMAT>, 29> formats{ {
             { format::unknown, DXGI_FORMAT_UNKNOWN },
             { format::rgba8_unorm, DXGI_FORMAT_R8G8B8A8_UNORM },
             { format::rgba8_unorm_srgb, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB },
@@ -27,6 +27,7 @@ namespace avis::rhi::d3d12
             { format::r32_float, DXGI_FORMAT_R32_FLOAT },
             { format::r32_uint, DXGI_FORMAT_R32_UINT },
             { format::rg32_float, DXGI_FORMAT_R32G32_FLOAT },
+            { format::rg32_uint, DXGI_FORMAT_R32G32_UINT },
             { format::rgba32_float, DXGI_FORMAT_R32G32B32A32_FLOAT },
             { format::rgba32_uint, DXGI_FORMAT_R32G32B32A32_UINT },
             { format::d32_float, DXGI_FORMAT_D32_FLOAT },

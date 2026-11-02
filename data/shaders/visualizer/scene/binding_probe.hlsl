@@ -10,6 +10,7 @@
 #include "bindless.hlsli"
 #include "brdf.hlsli"
 #include "packing.hlsli"
+#include "scene_varyings.hlsli"
 #include "shared_types.hlsli"
 #include "vertex_pulling.hlsli"
 

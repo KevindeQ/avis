@@ -145,6 +145,14 @@ namespace avis::visualizer::rendering
         }
         state.generate_mips = *generate_mips;
 
+        auto pipeline_variants =
+            pipeline_variant_registry::create(dependencies.pipeline_cache, dependencies.root_signatures, shaders);
+        if (!pipeline_variants)
+        {
+            return std::unexpected{ std::move(pipeline_variants).error() };
+        }
+        state.pipeline_variants = std::move(*pipeline_variants);
+
         auto arena = geometry_arena::create(dependencies.resources, split_geometry_arena(settings.geometry.arena_mib));
         if (!arena)
         {
@@ -185,6 +193,7 @@ namespace avis::visualizer::rendering
         standard_signature_{ state.standard_signature },
         histories_{ dependencies.resources },
         generate_mips_pipeline_{ state.generate_mips },
+        pipeline_variants_{ std::move(state.pipeline_variants) },
         arena_{ std::move(state.arena) },
         residency_{ std::make_unique<residency_cache>(*arena_, dependencies.uploads, dependencies.synchronization) },
         textures_{ std::move(state.textures) },
@@ -229,6 +238,7 @@ namespace avis::visualizer::rendering
                             .skipped_invalid = extraction_.skipped_invalid,
                             .dropped_lights = extraction_.dropped_lights },
             .frame_data = frame_data_->statistics(),
+            .pipelines = pipeline_variants_->statistics(),
         };
     }
 

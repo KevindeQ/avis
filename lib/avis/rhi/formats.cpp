@@ -40,6 +40,8 @@ namespace avis::rhi
             return "r32_uint";
         case format::rg32_float:
             return "rg32_float";
+        case format::rg32_uint:
+            return "rg32_uint";
         case format::rgba32_float:
             return "rgba32_float";
         case format::rgba32_uint:

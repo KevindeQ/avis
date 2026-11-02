@@ -304,24 +304,68 @@ flowchart LR
 ## 11.7 Pipeline variant registry
 11 §4.4, §4.7, 18 §10, §11, D-106.
 
-- [ ] `pipeline_variant_registry.h/.cpp`:
+- [x] `pipeline_variant_registry.h/.cpp`:
   - `pipeline_set_key { shading_model, alpha_mode, blend_operation, topology, attribute_mask, double_sided, screen_aligned }`, mapped to a 12-bit set index
   - each set has one slot per pass kind (`depth`, `shadow`, `gbuffer`, `gbuffer_picking`, `forward`, `forward_picking`, `overlay`, `overlay_picking`). A slot holds the PSO handle and its `root_signature_handle`, or "not drawn by this pass".
-- [ ] Each pass kind's pipeline description is built from the key:
+
+  *As implemented:*
+  - Two more pass kinds, `overlay_on_top` and `overlay_on_top_picking`: `overlay_on_top` has no depth test (11 §3.4), which is PSO state, so it can't share the `overlay` PSO.
+  - Which kinds draw a key: depth, shadow and G-buffer for `opaque`/`mask`; forward for `blend`; the four overlay kinds for every key, since an overlay instance may use any material. A `screen_aligned` key is drawn only by the overlay kinds.
+  - The attribute mask is `flags<scene::vertex_attribute>`. `canonical()` sets `blend_operation` to `normal` unless `alpha_mode` is `blend`, and `find` uses the canonical key.
+- [x] Each pass kind's pipeline description is built from the key:
   - shader ids with permutations by topology and attributes
   - blend state from `blend_operation`: premultiplied alpha for `blended`, additive for `additive`, reverse-subtract for `subtractive`
   - cull mode from `double_sided`
   - depth state per pass: equal and no write for the G-buffer, reverse-Z greater-equal elsewhere
   - render-target formats from the pass's attachments
-- [ ] Startup creates every base set that the material model can produce, in a `bulk` through `pipeline_cache` (18 §11). There are 2 shading models × 3 alpha modes × the blend ops for `blend` × 3 topologies × the attribute masks the vertex shaders support × 2 sidedness values. Lower indices go to the common sets: lit, opaque, triangles, with normals and uv0. A key outside the base set is created on first use (logged) and gets the next free index.
-- [ ] Write-mask override variants (11 §4.7) are created on first use and cached by `(set, pass kind, mask)`.
-- [ ] `find(key)` returns the set index. It's O(1) through a hash map, and read-only after startup except for first-use insertions, which happen on the frame chain's prepare stage, never during parallel recording.
+
+  *As implemented* (`shader_ids_for`, `pipeline_state_for`, `attachment_formats`):
+  - **Shaders.** These are new, with placeholder bodies that their passes' tasks fill in. They share `scene_varyings.hlsli`, which also holds the draw constants `{instance_index_offset, material, mesh}`.
+    - `scene_vertex.hlsl` serves every pass. It is permuted by `SCREEN_ALIGNED`, `LINES`/`POINTS`, `UV` and `COLOR`. The varyings are the same in every permutation, so any vertex shader links with any pixel shader. Normals and tangents are read by the mesh's attribute mask at run time, so they don't multiply the permutations.
+    - One pixel shader per pass family, permuted by topology, `ALPHA_MASK`, `UNLIT` and `PICKING`:
+      - `depth_prepass.hlsl`, also used by the shadow passes. Opaque triangles and lines are depth-only.
+      - `gbuffer.hlsl`
+      - `forward_transparent.hlsl`
+      - `overlay.hlsl`
+    - A permutation can only define one name (13 §3), so each name joins its parts in a fixed order (`screen_aligned_lines_uv.vs`, `lines_unlit_picking.ps`). The annotations and their `#if defined(…)` decoders list every combination.
+  - **State.**
+    - The topology is always `triangle_list`, since lines and points are expanded into quads.
+    - Cull mode: `none` when double-sided, otherwise `back`, with counter-clockwise front faces.
+    - Depth: greater-equal and write for depth and shadow; equal without writes for the G-buffer; greater-equal without writes for forward and overlay; no test for `overlay_on_top`.
+    - Blending is premultiplied (the overlay shader premultiplies too). `blended` uses one / inverse source alpha. `additive` uses one / one. `subtractive` uses one / one with reverse-subtract; the additive and subtractive ops leave the destination alpha unchanged. The reactive mask keeps the maximum, and the picking target is never blended.
+    - The shadow depth bias is left to 11.12.
+  - **Formats.**
+    - G-buffer: RGBA8 sRGB, RG16_UNORM, RGBA8, R11G11B10F and RG16F.
+    - Forward: RGBA16F and R8.
+    - Overlay: RGBA8.
+    - Depth: D32F.
+    - Picking adds an `rg32_uint` target. That format is new in the RHI (`rhi::format`, its DXGI mapping and 09 §3.5).
+- [x] Startup creates every base set that the material model can produce, in a `bulk` through `pipeline_cache` (18 §11). There are 2 shading models × 3 alpha modes × the blend ops for `blend` × 3 topologies × the attribute masks the vertex shaders support × 2 sidedness values. Lower indices go to the common sets: lit, opaque, triangles, with normals and uv0. A key outside the base set is created on first use (logged) and gets the next free index.
+
+  *As implemented:*
+  - **Base set count.** All 16 attribute masks are supported, giving 2 × 5 × 3 × 16 × 2 = 960 base sets. Screen-aligned keys are instance state, not material state, so they are created on first use.
+  - **Order.** Topology, then the alpha mode and blend operation, then the shading model, then the attribute mask (`normal|uv0`, `normal|tangent|uv0`, `normal`, none, the same four with `color0`, then the rest), then sidedness. Index 0 is lit, opaque, triangles, `normal|uv0`, single-sided.
+  - **Shared PSOs.** Each pass kind keeps only the state its PSO depends on:
+    - the depth passes drop the shading model, and opaque ones also drop the attributes
+    - the G-buffer writes the shading model as a value
+    - overlays are always unlit
+
+    The 960 sets have 894 distinct PSOs. The bulk creates each distinct PSO once, in one item each.
+  - **Creation.** Startup takes about 0.6 s on hardware with GPU-based validation, and 0.4 s on WARP. The registry matches each PSO's root signature itself, through `root_signature_registry::find_compatible`, and names it to the pipeline cache, so the slot knows its signature. On a thread where blocking is forbidden, the bulk runs serially.
+- [x] Write-mask override variants (11 §4.7) are created on first use and cached by `(set, pass kind, mask)`.
+  *As implemented:* `write_mask_variant(set, kind, mask)`. The mask holds the colour channels of every target in bits 0–3, and depth writes in bit 4 (`write_mask::all` is the set's own PSO). A mask only takes writes away. It is thread-safe, so a range walker can call it while recording.
+- [x] `find(key)` returns the set index. It's O(1) through a hash map, and read-only after startup except for first-use insertions, which happen on the frame chain's prepare stage, never during parallel recording.
 
 **Tests** (`test_pipeline_variant_registry.cpp`, `[renderer]`):
-- [ ] Startup creates the base sets without errors, and every set's depth, shadow and G-buffer slots are filled exactly for the `opaque`/`mask` keys.
-- [ ] Set indices are stable across two renderer creations.
-- [ ] A new key creates a set on first use, and a second lookup returns the same index without creating PSOs (pipeline-cache hit counters).
-- [ ] Each slot records the root signature its PSO was matched to (18 §10).
+- [x] Startup creates the base sets without errors, and every set's depth, shadow and G-buffer slots are filled exactly for the `opaque`/`mask` keys.
+- [x] Set indices are stable across two renderer creations.
+- [x] A new key creates a set on first use, and a second lookup returns the same index without creating PSOs (pipeline-cache hit counters).
+- [x] Each slot records the root signature its PSO was matched to (18 §10).
+
+*As implemented:*
+- The pipeline cache counts its entries (`size()`), not hits, so the tests check that the count doesn't change.
+- `[renderer][unit]` tests cover the base keys and their order, canonical keys, which kinds draw which keys, and the state, formats and shader ids per pass kind.
+- Further `[renderer]` tests cover write-mask variants and check that every id of `pipeline_variant_shader_ids()` is in the built library.
 
 ## 11.8 Draw lists: cull, items, sort
 11 §4.1, §4.4–§4.6.

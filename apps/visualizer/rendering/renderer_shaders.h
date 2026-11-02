@@ -29,6 +29,8 @@ namespace avis::visualizer::rendering
 {
     // The ids of every renderer shader, as avis_add_shaders names them: <file>.<entry>[.<permutation>].<stage>. Each
     // pass family adds its own as it comes (docs/tasks/11-renderer.md); the startup test checks that they all load.
+    // The scene passes' vertex and pixel shaders aren't listed: pipeline_variant_registry builds their ids from a
+    // pipeline set's key, and pipeline_variant_shader_ids() lists them (11.7).
     namespace shader_ids
     {
         // Declares every binding of bindless.hlsli, for the binding_layout check (11 §13)

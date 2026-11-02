@@ -2,6 +2,7 @@
 // hand-written cases for formats 1 and 2, every rule with its position and key path, and the manifest the build wrote
 // for the renderer's shaders
 
+#include "rendering/pipeline_variant_registry.h"
 #include "rendering/renderer_shaders.h"
 #include "rendering/shader_manifest_parser.h"
 
@@ -15,6 +16,7 @@
 #include <iterator>
 #include <set>
 #include <string>
+#include <utility>
 
 #ifndef AVIS_TEST_RENDERER_SHADER_DIRECTORY
 #    error "tests/CMakeLists.txt defines AVIS_TEST_RENDERER_SHADER_DIRECTORY, where the renderer's shaders are built"
@@ -365,5 +367,13 @@ TEST_CASE("the manifest the build wrote for the renderer's shaders parses", "[re
         CHECK(entry.bindings.has_value()); // format 2
         CHECK(entry.blob == std::filesystem::path{ entry.id + ".cso" });
     }
-    CHECK(ids == std::set<std::string>(shader_ids::all.begin(), shader_ids::all.end()));
+    // The listed ids and the pipeline sets' (11.7). The build always compiles an entry without permutations too, and
+    // the depth prepass's isn't used: opaque triangles and lines are depth-only.
+    std::set<std::string> expected(shader_ids::all.begin(), shader_ids::all.end());
+    for (std::string& id : pipeline_variant_shader_ids())
+    {
+        expected.insert(std::move(id));
+    }
+    expected.insert("depth_prepass.pixel_main.ps");
+    CHECK(ids == expected);
 }

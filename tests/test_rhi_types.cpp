@@ -73,6 +73,7 @@ namespace
         expected_format{ format::r32_float, "r32_float", texel(4) },
         expected_format{ format::r32_uint, "r32_uint", texel(4) },
         expected_format{ format::rg32_float, "rg32_float", texel(8) },
+        expected_format{ format::rg32_uint, "rg32_uint", texel(8) },
         expected_format{ format::rgba32_float, "rgba32_float", texel(16) },
         expected_format{ format::rgba32_uint, "rgba32_uint", texel(16) },
         expected_format{ format::d32_float, "d32_float", { .bytes_per_block = 4, .depth = true } },

@@ -284,7 +284,7 @@ namespace avis::rhi
         unknown,
         rgba8_unorm, rgba8_unorm_srgb, bgra8_unorm, rgb10a2_unorm, r11g11b10_float,
         rgba16_float, rg16_float, rg16_unorm, rg16_snorm, r16_float, r16_uint,
-        r8_unorm, r8_uint, r32_float, r32_uint, rg32_float, rgba32_float, rgba32_uint,
+        r8_unorm, r8_uint, r32_float, r32_uint, rg32_float, rg32_uint, rgba32_float, rgba32_uint,
         d32_float,
         bc1_unorm, bc1_unorm_srgb, bc3_unorm, bc3_unorm_srgb, bc4_unorm, bc5_unorm, bc7_unorm, bc7_unorm_srgb
     };

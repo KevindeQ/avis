@@ -27,6 +27,7 @@ namespace avis::rhi
         r32_float,
         r32_uint,
         rg32_float,
+        rg32_uint,
         rgba32_float,
         rgba32_uint,
         d32_float,
@@ -92,6 +93,7 @@ namespace avis::rhi
         case format::r32_uint:
             return texel(4);
         case format::rg32_float:
+        case format::rg32_uint:
             return texel(8);
         case format::rgba32_float:
         case format::rgba32_uint:

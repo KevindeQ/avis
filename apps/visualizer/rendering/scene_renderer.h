@@ -10,12 +10,14 @@
 // (11.3), its textures into their own RHI textures and its materials into the material table (11.4). The arena and
 // the material table are imported into the graph, and the frame generates the mip chains of newly uploaded images.
 // Extraction (11.5) then builds the frame's instance and light arrays, interpolated at the frame's time, and pass 0
-// (upload_frame_data) copies them into persistent ring-indexed buffers.
+// (upload_frame_data) copies them into persistent ring-indexed buffers. Startup creates the pipeline sets the passes
+// draw with (11.7).
 
 #include "rendering/extraction.h"
 #include "rendering/frame_data.h"
 #include "rendering/geometry_arena.h"
 #include "rendering/material_table.h"
+#include "rendering/pipeline_variant_registry.h"
 #include "rendering/render_settings.h"
 #include "rendering/residency_cache.h"
 #include "rendering/texture_residency.h"
@@ -105,6 +107,7 @@ namespace avis::visualizer::rendering
             std::size_t dropped_lights = 0;
         } extraction;
         frame_data_statistics frame_data; // pass 0 (11.5)
+        pipeline_variant_statistics pipelines; // 11.7
     };
 
     // The geometry arena in this frame's graph (11 §3.2), imported outside any view with the newest ready_after of the
@@ -125,9 +128,10 @@ namespace avis::visualizer::rendering
     class scene_renderer
     {
     public:
-        // Registers the standard root signature (18 §9) as "standard" and creates the renderer's persistent resources,
-        // the geometry arena among them (geometry.arena_mib; invalid_argument for an arena the RHI can't address). The
-        // shader library must outlive the renderer.
+        // Registers the standard root signature (18 §9) as "standard", creates the base pipeline sets in a bulk on the
+        // parallel scheduler (11.7) and the renderer's persistent resources, the geometry arena among them
+        // (geometry.arena_mib; invalid_argument for an arena the RHI can't address). The shader library must outlive
+        // the renderer.
         static result<std::unique_ptr<scene_renderer>> create(
             const renderer_dependencies& dependencies,
             const render_settings& settings,
@@ -240,6 +244,17 @@ namespace avis::visualizer::rendering
             return extraction_state_;
         }
 
+        // The pipeline sets (11.7): the draw lists key draws by set, the passes take their PSOs from it
+        pipeline_variant_registry& pipeline_variants() noexcept
+        {
+            return *pipeline_variants_;
+        }
+
+        const pipeline_variant_registry& pipeline_variants() const noexcept
+        {
+            return *pipeline_variants_;
+        }
+
         // The frame data in the graph of the frame being built, for its passes (11.10 on)
         const frame_buffers& frame_data() const noexcept
         {
@@ -252,6 +267,7 @@ namespace avis::visualizer::rendering
         {
             rhi::root_signature_handle standard_signature;
             rhi::compute_pipeline_handle generate_mips;
+            std::unique_ptr<pipeline_variant_registry> pipeline_variants;
             std::unique_ptr<geometry_arena> arena;
             std::unique_ptr<texture_residency> textures;
             std::unique_ptr<material_table> materials;
@@ -286,6 +302,7 @@ namespace avis::visualizer::rendering
         rhi::root_signature_handle standard_signature_;
         view_history_store histories_;
         rhi::compute_pipeline_handle generate_mips_pipeline_;
+        std::unique_ptr<pipeline_variant_registry> pipeline_variants_;
         std::unique_ptr<geometry_arena> arena_;
         std::unique_ptr<residency_cache> residency_; // refers to arena_ and the upload queue
         std::unique_ptr<texture_residency> textures_;
