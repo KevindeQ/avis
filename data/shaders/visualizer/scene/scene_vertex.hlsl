@@ -10,7 +10,9 @@
 //
 // The shadow passes use it too, with each cascade's view constants (11.12).
 //
-// The body is a placeholder: the depth prepass and G-buffer task (11.10) pulls the vertices from the geometry arena.
+// Triangles pull their positions and vertex colours from the geometry arena (11.9, for the range walker's tests). The
+// depth prepass and G-buffer task (11.10) adds the other attributes and expands lines and points; until then their
+// quads are degenerate.
 
 #include "bindless.hlsli"
 #include "scene_varyings.hlsli"
@@ -45,12 +47,26 @@
 #endif
 
 AVIS_DRAW_CONSTANTS(scene_draw_constants, draw);
+AVIS_PASS_CONSTANTS(scene_pass_constants, scene_pass);
 AVIS_VIEW_CONSTANTS(view_constants, view);
 
 scene_varyings vertex_main(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID)
 {
     scene_varyings output = (scene_varyings)0;
-    const float4 world_position = float4(0.0, 0.0, 0.0, 1.0);
+    const instance_data instance = pull_instance(scene_pass, draw, instance_id);
+#if AVIS_LINES || AVIS_POINTS
+    // Six vertices per point or segment (11 §9); 11.10 expands them
+    const uint vertex = 0;
+#else
+    const uint vertex = vertex_id; // relative to the primitive's first vertex, indexed or not
+#endif
+    const float3 local_position = pull_position(scene_pass, draw, vertex);
+#if AVIS_SCREEN_ALIGNED
+    // The anchor is the origin of the world matrix; the position is an offset in pixels at its depth (11 §10.5)
+    const float4 world_position = mul(instance.world, float4(0.0, 0.0, 0.0, 1.0));
+#else
+    const float4 world_position = mul(instance.world, float4(local_position, 1.0));
+#endif
     output.position = mul(view.view_projection, world_position);
     output.world_position = world_position.xyz;
     output.normal = float3(0.0, 0.0, 1.0);
@@ -59,9 +75,10 @@ scene_varyings vertex_main(uint vertex_id : SV_VertexID, uint instance_id : SV_I
     output.current_clip = mul(view.view_projection_unjittered, world_position);
     output.previous_clip = mul(view.view_projection_previous, world_position);
 #if AVIS_SCREEN_ALIGNED
-    // A pixel offset at the anchor's depth
-    output.position.xy += float2(vertex_id & 1, vertex_id >> 1) * 2.0 * view.inverse_size * view.device_pixel_ratio *
-                          output.position.w;
+    const float2 offset = local_position.xy * 2.0 * view.inverse_size * view.device_pixel_ratio;
+    output.position.xy += offset * output.position.w;
+    output.current_clip.xy += offset * output.current_clip.w;
+    output.previous_clip.xy += offset * output.previous_clip.w;
 #endif
 #if AVIS_LINES || AVIS_POINTS
     output.quad = float2((vertex_id & 1) ? 1.0 : -1.0, (vertex_id & 2) ? 1.0 : -1.0);
@@ -70,7 +87,7 @@ scene_varyings vertex_main(uint vertex_id : SV_VertexID, uint instance_id : SV_I
     output.uv = float2(0.0, 0.0);
 #endif
 #if AVIS_HAS_COLOR0
-    output.color = float4(1.0, 1.0, 1.0, 1.0);
+    output.color = pull_color(scene_pass, draw, vertex);
 #endif
     output.instance = draw.instance_index_offset + instance_id;
     output.material = draw.material;

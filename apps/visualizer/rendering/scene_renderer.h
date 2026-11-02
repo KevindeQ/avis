@@ -11,7 +11,8 @@
 // the material table are imported into the graph, and the frame generates the mip chains of newly uploaded images.
 // Extraction (11.5) then builds the frame's instance and light arrays, interpolated at the frame's time, and pass 0
 // (upload_frame_data) copies them into persistent ring-indexed buffers. Startup creates the pipeline sets the passes
-// draw with (11.7).
+// draw with (11.7). Each view's draw list (11.8) is cut into runs before pass 0, which uploads their instance
+// indices; the passes record their key ranges with the range walker (11.9).
 
 #include "rendering/draw_lists.h"
 #include "rendering/extraction.h"
@@ -19,6 +20,7 @@
 #include "rendering/geometry_arena.h"
 #include "rendering/material_table.h"
 #include "rendering/pipeline_variant_registry.h"
+#include "rendering/range_walker.h"
 #include "rendering/render_settings.h"
 #include "rendering/residency_cache.h"
 #include "rendering/texture_residency.h"
@@ -110,6 +112,8 @@ namespace avis::visualizer::rendering
         frame_data_statistics frame_data; // pass 0 (11.5)
         pipeline_variant_statistics pipelines; // 11.7
         std::vector<draw_list_statistics> draw_lists; // the last frame's, one per view in view order (11.8)
+        std::vector<std::size_t> draw_runs; // the runs of each of those lists (11.9)
+        std::size_t instance_indices = 0; // of the last frame's runs, uploaded by pass 0
     };
 
     // The geometry arena in this frame's graph (11 §3.2), imported outside any view with the newest ready_after of the
@@ -270,6 +274,25 @@ namespace avis::visualizer::rendering
             return draw_lists_;
         }
 
+        // Their runs, one per view in view order, for the passes' range walks (11.9); valid until the next render
+        std::span<const prepared_draw_list> prepared_draw_lists() const noexcept
+        {
+            return prepared_draw_lists_;
+        }
+
+        // The frame's instance indices: each draw run's at its instance_offset. Pass 0 uploads them into
+        // frame_data().instance_indices.
+        std::span<const std::uint32_t> instance_indices() const noexcept
+        {
+            return instance_indices_;
+        }
+
+        // The frame's mesh table, parallel to extraction().meshes: what the draw lists and the range walks read
+        std::span<const draw_mesh> draw_meshes() const noexcept
+        {
+            return draw_meshes_;
+        }
+
     private:
         // What create makes before the renderer exists
         struct persistent_state
@@ -302,8 +325,7 @@ namespace avis::visualizer::rendering
             std::chrono::steady_clock::time_point wall_now);
 
         std::optional<error> check_view(const view_description& view) const;
-        std::optional<error>
-            add_view(const graphics::frame_token& frame, const scene::snapshot& snapshot, const view_description& view);
+        std::optional<error> add_view(const graphics::frame_token& frame, const view_description& view);
 
         // The view's draw list (11 §4.5), in the graph's arena
         draw_list build_view_draw_list(const scene::snapshot& snapshot, const view_description& view);
@@ -330,6 +352,8 @@ namespace avis::visualizer::rendering
         frame_buffers frame_buffers_; // of the frame being built
         std::vector<draw_mesh> draw_meshes_; // the frame's meshes for the draw lists, parallel to extraction_.meshes
         std::vector<draw_list> draw_lists_; // of the frame being built, per view
+        std::vector<prepared_draw_list> prepared_draw_lists_; // their runs, per view (11.9)
+        std::vector<std::uint32_t> instance_indices_; // of every view's draw runs, uploaded by pass 0
         std::optional<std::chrono::steady_clock::time_point> last_pipeline_warning_;
 
         std::optional<error> build_failure_; // of the last render; thrown by its sender

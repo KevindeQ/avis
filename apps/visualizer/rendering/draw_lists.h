@@ -21,6 +21,7 @@
 // next frame's build). The inputs are CPU data and lookups, so the tests build lists without a device.
 
 #include "rendering/extraction.h"
+#include "rendering/geometry_arena.h"
 #include "rendering/pipeline_variant_registry.h"
 #include "rendering/sort_key.h"
 #include "rendering/view.h"
@@ -69,7 +70,11 @@ namespace avis::visualizer::rendering
 
     static_assert(std::is_trivially_copyable_v<draw_item> && std::is_trivially_copyable_v<draw_record>);
 
-    // What a draw list needs of a mesh the frame draws: its pipeline state and its submeshes' local bounds
+    // The alignment of a command item's arguments in draw_list::command_arguments() (11.9)
+    inline constexpr std::size_t command_argument_alignment = 16;
+
+    // What a draw list needs of a mesh the frame draws: its pipeline state and its submeshes' local bounds; and what
+    // the range walker (11.9) needs to draw it: its place in the geometry arena
     struct draw_mesh
     {
         scene::mesh_topology topology = scene::mesh_topology::triangles;
@@ -77,6 +82,7 @@ namespace avis::visualizer::rendering
         bool progressive = false;
         std::span<const scene::mesh_primitive> primitives; // the submeshes; their bounds are local (pixels when the
                                                            // instance is screen_aligned)
+        geometry_range range; // the resident version's
     };
 
     // What a draw list needs of the material an instance draws with: the state of its pipeline set
@@ -115,6 +121,7 @@ namespace avis::visualizer::rendering
         std::span<const draw_mesh> meshes; // by instance_data::mesh, parallel to extraction.meshes
         std::span<const cascade_viewpoint> cascades; // at most maximum_shadow_cascades; empty: no shadow items
         std::span<const draw_item> commands; // the renderer's command items (11 §4.7), copied into the list
+        std::span<const std::byte> command_arguments; // their arguments, at each item's value (draw_commands, 11.9)
         draw_list_lookup lookup;
         std::uint32_t opaque_depth_bands = 16; // render.draw_sorting.opaque_depth_bands (11 §4.3)
     };
@@ -164,6 +171,12 @@ namespace avis::visualizer::rendering
             return groups_;
         }
 
+        // The command items' arguments, at each item's value; 16-byte aligned (11.9)
+        std::span<const std::byte> command_arguments() const noexcept
+        {
+            return command_arguments_;
+        }
+
         // The items whose key has `prefix`, or between the two ends of `range`; empty when there are none
         std::span<const draw_item> range(sort_key_prefix prefix) const noexcept;
         std::span<const draw_item> range(key_range keys) const noexcept;
@@ -180,6 +193,7 @@ namespace avis::visualizer::rendering
         std::span<const draw_item> items_;
         std::span<const draw_record> records_;
         std::span<const draw_group> groups_;
+        std::span<const std::byte> command_arguments_;
         draw_list_statistics statistics_;
     };
 

@@ -9,6 +9,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	geometry_arena.cpp
 	material_table.cpp
 	pipeline_variant_registry.cpp
+	range_walker.cpp
 	render_settings.cpp
 	renderer_shaders.cpp
 	residency_cache.cpp

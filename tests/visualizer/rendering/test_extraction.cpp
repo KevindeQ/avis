@@ -417,7 +417,11 @@ TEST_CASE_METHOD(tests::renderer_fixture, "the renderer extracts the snapshot an
     CHECK(information.extraction.lights == 2);
     CHECK(information.extraction.skipped_not_resident == 0);
     CHECK(information.frame_data.uploads == 1);
-    CHECK(information.frame_data.uploaded_bytes == 2 * sizeof(gpu::instance_data) + 2 * sizeof(gpu::light_data));
+    // Plus the instance indices of the draw runs (11.9): one per drawn item
+    CHECK(information.instance_indices == 2);
+    CHECK(
+        information.frame_data.uploaded_bytes ==
+        2 * sizeof(gpu::instance_data) + 2 * sizeof(gpu::light_data) + 2 * sizeof(std::uint32_t));
     REQUIRE(renderer->extraction().sun.has_value());
 
     const graphics::pass_debug_information* upload = find_pass(*this, "upload_frame_data");
@@ -448,7 +452,11 @@ TEST_CASE_METHOD(
     CHECK(information.extraction.reused);
     CHECK(information.frame_data.instance_slot == slot);
     CHECK(information.extraction.instances == 1);
-    CHECK(find_pass(*this, "upload_frame_data") == nullptr); // nothing to copy
+    // Only the instance indices are copied: the draw runs follow the camera (11.9)
+    const graphics::pass_debug_information* upload = find_pass(*this, "upload_frame_data");
+    REQUIRE(upload != nullptr);
+    CHECK_FALSE(upload->culled);
+    CHECK(information.instance_indices == 1);
 
     // A new publish of the same scene: a new sequence, so a new slot
     publish();

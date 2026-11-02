@@ -259,6 +259,8 @@ flowchart LR
   - **Graph.** The slots are imported every frame as `frame_instances`, `frame_instance_indices` and `frame_lights` (`frame_buffers`, with their SRVs and counts), and pass 0 writes them as `copy_destination`. A frame with nothing to copy (a reused frame until 11.9 adds the indices) has no pass 0.
   - The instance indices are empty until 11.9. The view and frame constants come with the passes that read them (11.10).
 
+    *Since 11.9:* the indices are the draw runs' (`prepare_draw_runs`), so every frame has a pass 0. A reused frame copies only the indices, which follow the camera.
+
 **Tests** (`test_extraction.cpp`, `[renderer][unit]` on hand-built snapshots):
 - [x] `alpha` for an anchor at rate 1 halfway between ticks is 0.5. At rate 0 it's 1, and after the end of the tick it's clamped to 1.
 - [x] A 90° rotation interpolates through 45° at `alpha = 0.5` (slerp, not a matrix lerp).
@@ -430,22 +432,71 @@ flowchart LR
 ## 11.9 Range walker, commands, recording groups
 11 §4.6–§4.8.
 
-- [ ] `range_walker.h/.cpp`, `walk(range, pass_kind, recorder, context)`:
+- [x] `range_walker.h/.cpp`, `walk(range, pass_kind, recorder, context)`:
   - **Commands** run through the pass context. `clear_*` checks the attachment against the pass's declared writes (debug check).
   - **Draw runs.** A run continues while the key is equal and the mesh and submesh match. Each run becomes one instanced draw: write the run's instance indices contiguously into this frame's `instance_indices` (preallocated from the draw-list size), then push `{ instance_index_offset, material slot, mesh range offsets, attribute mask }` as draw constants with `binding_layout::push_draw_constants`, and call `draw_indexed` or `draw`.
   - **Progressive meshes** draw one instance per run with their own vertex count (11.18).
   - **Translucent groups** merge only identical keys.
-- [ ] Redundant-state filter: the last pipeline, root signature, draw constants, viewport and scissor. A signature switch forgets the root arguments (18 §10.3). The index buffer is bound once per recording group.
-- [ ] Viewport changes: a new value of the key's viewport field binds that viewport's array slice (a DSV per cascade slice), viewport and scissor.
-- [ ] PIX markers: one `begin_event` / `end_event` per group, named from the prefix.
-- [ ] Recording groups: a range longer than `passes_per_group` × the target item count is split at run boundaries into groups recorded in parallel (10 §7). Each starts with a clean filter. The instance-index offsets are computed in a serial prefix pass before recording, so groups don't race.
-- [ ] `command_list.h`: add `set_stencil_reference(std::uint32_t)` (missing from the RHI) and `clear_depth_stencil(view, depth, stencil, flags)` if `clear_depth` doesn't cover stencil. Neither has a caller in iteration 1 except the command table; see Open points.
+
+  *As implemented:*
+  - **Two stages.** The runs are cut in the prepare stage, not while walking. `prepare_draw_runs(list, meshes, arena, instance_indices)` cuts a whole draw list into `draw_run {first, count, instance_offset}` and appends each draw run's instance indices to the frame's array. `prepared_draw_list::runs_of(range)` gives a range's runs. Since runs never span keys, ranges start and end on run boundaries.
+  - **Signature.** `walk(runs, kind, context, sources, bindings)`. The recorder comes from the pass context.
+    - `range_walk_sources`: the prepared list, the frame's mesh table, the pipeline variant registry and the arena's index buffer.
+    - `pass_bindings`: one `viewport_binding {render_targets, depth, viewport, scissor, view_constants}` per viewport index, whether the pass writes depth, and the pass constants.
+    - It returns `range_walk_statistics`: runs, draws, instances, commands, events, pipeline and signature changes, constant pushes, viewport changes, viewport and scissor sets, and skipped items.
+  - **Draw constants.** `scene_draw_constants` moved to `shared_types.hlsli`. It holds the instance index offset, the material slot, the mesh index, the attribute mask, the primitive's first vertex and vertex count, its first index (absolute) and index count, and the five stream offsets, in 64 bytes.
+    - Indices and `SV_VertexID` are relative to the primitive's first vertex, which the shader adds, so `base_vertex` is always 0.
+    - Lines and points are drawn with `draw` as six vertices per segment or point.
+    - `scene_pass_constants` (b1) has the SRVs of the instances, instance indices, vertex and index buffers and materials.
+  - **Vertex pulling.** `scene_vertex.hlsl` now pulls positions, vertex colours and instances, including the screen-aligned anchor. The test image needs it. 11.10 adds the other attributes and the line and point expansion.
+  - **Progressive meshes** get one run per instance, drawing the primitive's full vertex count until 11.18.
+  - **Commands.** `draw_commands` builds the command items and their arguments. The arguments are 16-byte aligned, and each item has its own offset. The draw list copies them into the arena (`draw_list_sources::command_arguments`, `draw_list::command_arguments()`).
+    - `clear_depth_stencil` needs `pass_bindings::depth_written`. `clear_render_target` needs an attachment index below the viewport's target count. Either failure is a debug check, and the command is skipped.
+    - `set_viewport_scissor`, `set_write_mask` (through `write_mask_variant`) and `reset_state` set and drop overrides for the rest of the walk.
+    - A callback gets a `command_context` (the pass context, the viewport's targets, the group), and the filter forgets everything after it.
+    - `set_stencil_reference`, and the stencil part of `clear_depth_stencil`, fail a debug check. See the last item.
+- [x] Redundant-state filter: the last pipeline, root signature, draw constants, viewport and scissor. A signature switch forgets the root arguments (18 §10.3). The index buffer is bound once per recording group.
+
+  *As implemented:* the filter also tracks the pass and view constants. They are set after every signature switch (the first `set_pipeline` included, since root arguments set before it would be lost), and the view constants again when the viewport changes them. The index buffer is bound once per walk, at the first indexed draw.
+- [x] Viewport changes: a new value of the key's viewport field binds that viewport's array slice (a DSV per cascade slice), viewport and scissor.
+
+  *As implemented:* the pass gives each viewport's binding (a cascade's DSV is a `texture_view` of one layer). An item of a viewport the pass doesn't bind fails a debug check and is skipped.
+- [x] PIX markers: one `begin_event` / `end_event` per group, named from the prefix.
+
+  *As implemented:* `group_name` gives "scene/camera/world/opaque" or "scene/shadow_cascade[2]/world/opaque". A part reopens the event of the group it starts in.
+- [x] Recording groups: a range longer than `passes_per_group` × the target item count is split at run boundaries into groups recorded in parallel (10 §7). Each starts with a clean filter. The instance-index offsets are computed in a serial prefix pass before recording, so groups don't race.
+
+  *As implemented:* a graph pass has one recorder, so each part is its own graph pass, and the graph puts the passes into recording groups.
+  - `recording_part_count(items, {items_per_part = 4096, passes_per_group, maximum_parts = 16})` gives one part up to `passes_per_group × items_per_part` items, since fewer parts would land in one recording group anyway. Above that, it gives about one part per `items_per_part` items.
+  - `split_runs(runs, parts)` splits at run boundaries into parts with about equal item counts.
+  - **Renderer.** `build_frame` now builds every view's draw list, then its runs, before pass 0, which uploads the indices. `scene_renderer` exposes `prepared_draw_lists()`, `instance_indices()` and `draw_meshes()`, and the debug information has each list's run count and the index count. `draw_mesh` gained the resident version's `geometry_range`.
+- [x] `command_list.h`: add `set_stencil_reference(std::uint32_t)` (missing from the RHI) and `clear_depth_stencil(view, depth, stencil, flags)` if `clear_depth` doesn't cover stencil. Neither has a caller in iteration 1 except the command table; see Open points.
+
+  *As implemented:* left out, as the Open point "Selection mask" recommends (an R8 target, so the depth formats have no stencil). The command table keeps both opcodes. `set_stencil_reference` and a stencil clear fail a debug check.
 
 **Tests** (`test_range_walker.cpp`, `[renderer]`, recording into a test recorder on the fixture and counting through debug information):
-- [ ] 100 instances of one mesh and material give one draw with 100 instances. Two meshes give two draws. Interleaved translucent items keep back-to-front order and aren't merged.
-- [ ] The filter emits one `set_pipeline` per set per band in the common case (11 §15), counted with a recorder-call counter in debug builds.
-- [ ] A clear command on an undeclared attachment asserts.
-- [ ] Splitting into four groups gives the same image as one group, read back.
+- [x] 100 instances of one mesh and material give one draw with 100 instances. Two meshes give two draws. Interleaved translucent items keep back-to-front order and aren't merged.
+- [x] The filter emits one `set_pipeline` per set per band in the common case (11 §15), counted with a recorder-call counter in debug builds.
+- [x] A clear command on an undeclared attachment asserts.
+- [x] Splitting into four groups gives the same image as one group, read back.
+
+*As implemented:*
+- **Setup.** The `[renderer]` tests walk real draw lists with the renderer's pipeline sets, in a graph of their own on the renderer fixture. The scene is unit quads with vertex colours, and the geometry and frame arrays are in upload buffers. The counters are the walk's statistics, kept in every build.
+- **The listed tests.**
+  - The translucent test also checks the blended image: the nearest quad dominates.
+  - The filter test draws 400 quads in two sets over several bands with the depth prepass's PSOs. It checks one `set_pipeline` per set change along the range, at most one per (band, set) pair.
+  - The split test draws 600 overlapping overlay quads, opaque and blended, in four parts with one pass per recording group. The two images are identical.
+- **Unit tests** (`[renderer][unit]`):
+  - the runs and their instance indices, including progressive meshes, commands, and random lists against a reference count
+  - `runs_of` per group
+  - the part count and `split_runs`
+  - the group names
+- **Further `[renderer]` tests:**
+  - two cascades bound as slices of a depth array
+  - each command: clears before and after a group's draws, the scissor override, a write mask, a callback with its arguments
+  - the renderer's runs and uploaded indices
+
+  The 11.5 tests expect pass 0 on reused frames now, and count the indices' bytes.
 
 ## 11.10 Depth prepass, G-buffer, linearize depth, points and lines
 11 §2.3 passes 1, 2, 4, §3.2, §5, §9.1, §9.2.
@@ -708,7 +759,7 @@ flowchart LR
 - **Interpolating matrices.** The snapshot carries `Matrix4f`s, so interpolation decomposes them into TRS each frame (slerp for rotation). That's about 10k decompositions per frame, which is cheap. The alternative is carrying TRS in the snapshot, which would change 08 §6.1.
 - **`depth_mips` layout.** 11 says "min/max per tile" for clusters but "view-space Z, 5 mips" for GTAO. Proposed: an RG32F chain with min in R and max in G. GTAO reads R. Alternative: two R32F chains.
 - **Arena split.** `geometry.arena_mib` is one number, but there are two buffers. Proposed: 80% vertices, 20% indices, with a log line when either fills first. Alternative: one buffer holding both as raw ranges, which avoids the split; the index buffer view can point anywhere in a raw buffer. *Done in 11.3: 80% / 20%. The residency warning names the buffer that filled, its use and its largest free block.*
-- **Selection mask.** 11 §10.5 describes "a stencil-like mask written by the selected instances". A stencil bit would need stencil in the depth format (D32_S8) and the new `set_stencil_reference`. An R8 extra target in the passes that draw selected instances needs no RHI change. Recommended: the R8 target, written only on frames with a selection, the same way as picking. In that case `set_stencil_reference` and `clear_depth_stencil` stay unused and can be left out of 11.9.
+- **Selection mask.** 11 §10.5 describes "a stencil-like mask written by the selected instances". A stencil bit would need stencil in the depth format (D32_S8) and the new `set_stencil_reference`. An R8 extra target in the passes that draw selected instances needs no RHI change. Recommended: the R8 target, written only on frames with a selection, the same way as picking. In that case `set_stencil_reference` and `clear_depth_stencil` stay unused and can be left out of 11.9. *11.9 follows the recommendation: the RHI is unchanged, and both stencil uses fail a debug check in the walker.*
 - **Pick and inspector results.** How results reach 12: a `take_pick_results()` poll on the frame chain, or a sender completed per request. Recommended: the poll. The frame chain posts results to the GUI with the rest of its per-frame state.
 - **Hosek–Wilkie data.** The model's published coefficient tables (from the authors' reference implementation, under a BSD-style licence) need to be vendored, either as a header under `apps/visualizer/rendering/third_party/` or in `external/`. Check the licence first. Alternative: Preetham, which is simpler, analytic and lower quality.
 - **Blue-noise texture.** The dithering and possibly GTAO want a 64² blue-noise texture. Either generate one offline (void-and-cluster, a `dt` command) or vendor a CC0 one.

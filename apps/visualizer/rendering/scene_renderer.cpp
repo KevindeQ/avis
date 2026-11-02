@@ -253,6 +253,18 @@ namespace avis::visualizer::rendering
                 }
                 return lists;
             }(),
+            .draw_runs =
+                [this]
+            {
+                std::vector<std::size_t> runs;
+                runs.reserve(prepared_draw_lists_.size());
+                for (const prepared_draw_list& list : prepared_draw_lists_)
+                {
+                    runs.push_back(list.runs.size());
+                }
+                return runs;
+            }(),
+            .instance_indices = instance_indices_.size(),
         };
     }
 
@@ -281,6 +293,8 @@ namespace avis::visualizer::rendering
     {
         graph_.reset();
         draw_lists_.clear(); // they were in the arena
+        prepared_draw_lists_.clear();
+        instance_indices_.clear();
 
         // Checked before anything is added: the graph's own checks on view names only assert
         std::set<std::string_view> names;
@@ -346,7 +360,21 @@ namespace avis::visualizer::rendering
                 { .topology = resident->topology,
                   .attributes = resident->attributes,
                   .progressive = resident->progressive,
-                  .primitives = resident->primitives });
+                  .primitives = resident->primitives,
+                  .range = resident->range });
+        }
+
+        // Each view's draw list, culled, keyed and sorted (11 §4.5), then cut into runs whose instance indices pass 0
+        // uploads (11.9): a serial prefix pass, so the passes' recording groups don't race
+        draw_lists_.reserve(views.size());
+        for (const view_description& view : views)
+        {
+            draw_lists_.push_back(build_view_draw_list(snapshot, view));
+        }
+        prepared_draw_lists_.reserve(draw_lists_.size());
+        for (const draw_list& list : draw_lists_)
+        {
+            prepared_draw_lists_.push_back(prepare_draw_runs(list, draw_meshes_, graph_.arena(), instance_indices_));
         }
 
         // Shared work, outside any view scope (10 §8). The arena and the material table wait on the newest copies this
@@ -370,15 +398,15 @@ namespace avis::visualizer::rendering
         };
         add_mip_passes();
 
-        // Pass 0 (11 §2.3): the frame's arrays into their ring slots, on the copy queue. The instance indices come with
-        // the range walker (11.9).
+        // Pass 0 (11 §2.3): the frame's arrays into their ring slots, on the copy queue. A reused frame copies only the
+        // instance indices, which follow the camera.
         auto uploaded = frame_data_->add_upload_pass(
             graph_,
             frame,
             std::max(completed_frame_index_, frame.completed_index()),
             extraction_.instances,
             extraction_.lights,
-            {},
+            instance_indices_,
             reuse);
         if (!uploaded)
         {
@@ -388,7 +416,7 @@ namespace avis::visualizer::rendering
 
         for (const view_description& view : views)
         {
-            if (auto failed = add_view(frame, snapshot, view))
+            if (auto failed = add_view(frame, view))
             {
                 return failed;
             }
@@ -588,8 +616,7 @@ namespace avis::visualizer::rendering
         return list;
     }
 
-    std::optional<error> scene_renderer::add_view(
-        const graphics::frame_token& frame, const scene::snapshot& snapshot, const view_description& view)
+    std::optional<error> scene_renderer::add_view(const graphics::frame_token& frame, const view_description& view)
     {
         auto history = histories_.acquire(view.name, view.size, frame.index());
         if (!history)
@@ -608,9 +635,6 @@ namespace avis::visualizer::rendering
         [[maybe_unused]] const Eigen::Matrix4f view_projection_previous =
             (*history)->has_previous ? (*history)->view_projection : view_projection;
         (*history)->view_projection = view_projection;
-
-        // Culled, keyed and sorted (11 §4.5); the passes walk its ranges (11.9 on)
-        draw_lists_.push_back(build_view_draw_list(snapshot, view));
 
         const graphics::view_scope scope = graph_.begin_view(view.name, view.size);
         [[maybe_unused]] const history_imports imported = import_history(graph_, **history);

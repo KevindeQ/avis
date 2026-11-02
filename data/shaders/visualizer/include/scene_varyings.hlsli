@@ -1,19 +1,12 @@
 #ifndef AVIS_SCENE_VARYINGS_HLSLI
 #define AVIS_SCENE_VARYINGS_HLSLI
 
-// What the scene vertex shader (scene_vertex.hlsl) passes to every scene pixel shader, and the draw constants of the
-// scene passes (docs/design/11-renderer.md §4.8, docs/tasks/11-renderer.md §11.7). Every vertex shader permutation
-// writes every member, with defaults for the attributes its mesh doesn't have, so any of them links with any scene
-// pixel shader.
+// What the scene vertex shader (scene_vertex.hlsl) passes to every scene pixel shader (docs/design/11-renderer.md §4.8,
+// docs/tasks/11-renderer.md §11.7). Every vertex shader permutation writes every member, with defaults for the
+// attributes its mesh doesn't have, so any of them links with any scene pixel shader. The draw and pass constants of
+// the scene passes, scene_draw_constants and scene_pass_constants, are in shared_types.hlsli (11.9).
 
-// The root constants of a draw (11 §4.8): the vertex shader reads instance_indices[instance_index_offset +
-// SV_InstanceID]
-struct scene_draw_constants
-{
-    uint instance_index_offset;
-    uint material; // material slot
-    uint mesh; // geometry arena entry
-};
+#include "shared_types.hlsli"
 
 struct scene_varyings
 {

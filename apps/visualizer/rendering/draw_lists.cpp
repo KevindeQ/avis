@@ -581,6 +581,12 @@ namespace avis::visualizer::rendering
         }
         statistics.command_items = command_count;
         statistics.items = items.size();
+        if (!sources.command_arguments.empty())
+        {
+            void* const arguments = arena.allocate(sources.command_arguments.size(), command_argument_alignment);
+            std::memcpy(arguments, sources.command_arguments.data(), sources.command_arguments.size());
+            list.command_arguments_ = { static_cast<const std::byte*>(arguments), sources.command_arguments.size() };
+        }
 
         // ---- 4. Sort ----
         sort_draw_items(items, arena);

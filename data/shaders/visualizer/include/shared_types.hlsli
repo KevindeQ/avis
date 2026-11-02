@@ -186,6 +186,45 @@ struct view_constants
     uint frame_index;
 };
 
+// The root constants of one scene draw (11 §4.8, 11.9), pushed by the range walker with
+// binding_layout::push_draw_constants. The vertex shader reads instance_indices[instance_index_offset + SV_InstanceID]
+// and pulls the vertices from the geometry arena by the stream offsets.
+struct scene_draw_constants
+{
+    uint instance_index_offset; // the draw's first entry in instance_indices[]
+    uint material; // material slot
+    uint mesh; // index into the frame's mesh table (instance_data::mesh)
+    uint attributes; // vertex_attribute_* of the mesh
+    uint vertex_first; // the primitive's first vertex: indices, and SV_VertexID of non-indexed draws, are relative to it
+    uint vertex_count; // the primitive's vertex count
+    uint index_first; // the primitive's first index in the arena's index buffer, in indices
+    uint index_count; // 0 for a non-indexed primitive
+    uint position_offset; // byte offsets of the streams in the arena's vertex buffer; vertex_stream_absent when absent
+    uint normal_offset;
+    uint tangent_offset;
+    uint uv0_offset;
+    uint color0_offset;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
+// scene_draw_constants' offset of a stream the mesh doesn't have
+AVIS_SHARED_CONSTANT(uint, vertex_stream_absent, 0xFFFFFFFFu);
+
+// The pass constants (b1) of the scene passes (11.9): the bindless SRVs of the frame's arrays and the geometry arena
+struct scene_pass_constants
+{
+    uint instances; // StructuredBuffer<instance_data>
+    uint instance_indices; // StructuredBuffer<uint>
+    uint vertices; // ByteAddressBuffer, the arena's vertex buffer
+    uint indices; // ByteAddressBuffer, the arena's index buffer (u32)
+    uint materials; // StructuredBuffer<material_data>
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
 #ifdef __cplusplus
 
 static_assert(sizeof(float2) == 8 && sizeof(float3) == 12 && sizeof(float4) == 16);
@@ -253,6 +292,28 @@ static_assert(offsetof(view_constants, near_plane) == 536);
 static_assert(offsetof(view_constants, device_pixel_ratio) == 540);
 static_assert(offsetof(view_constants, camera_position) == 544);
 static_assert(offsetof(view_constants, frame_index) == 556);
+
+static_assert(sizeof(scene_draw_constants) == 64); // binding_layout::draw_constant_count 32-bit values
+static_assert(offsetof(scene_draw_constants, instance_index_offset) == 0);
+static_assert(offsetof(scene_draw_constants, material) == 4);
+static_assert(offsetof(scene_draw_constants, mesh) == 8);
+static_assert(offsetof(scene_draw_constants, attributes) == 12);
+static_assert(offsetof(scene_draw_constants, vertex_first) == 16);
+static_assert(offsetof(scene_draw_constants, vertex_count) == 20);
+static_assert(offsetof(scene_draw_constants, index_first) == 24);
+static_assert(offsetof(scene_draw_constants, index_count) == 28);
+static_assert(offsetof(scene_draw_constants, position_offset) == 32);
+static_assert(offsetof(scene_draw_constants, normal_offset) == 36);
+static_assert(offsetof(scene_draw_constants, tangent_offset) == 40);
+static_assert(offsetof(scene_draw_constants, uv0_offset) == 44);
+static_assert(offsetof(scene_draw_constants, color0_offset) == 48);
+
+static_assert(sizeof(scene_pass_constants) == 32);
+static_assert(offsetof(scene_pass_constants, instances) == 0);
+static_assert(offsetof(scene_pass_constants, instance_indices) == 4);
+static_assert(offsetof(scene_pass_constants, vertices) == 8);
+static_assert(offsetof(scene_pass_constants, indices) == 12);
+static_assert(offsetof(scene_pass_constants, materials) == 16);
 
 } // namespace avis::visualizer::rendering::gpu
 
