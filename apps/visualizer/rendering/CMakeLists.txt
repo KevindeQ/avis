@@ -13,6 +13,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	scene_renderer.cpp
 	texture_residency.cpp
 	shader_manifest_parser.cpp
+	sort_key.cpp
 	view.cpp
 	view_history.cpp
 	yaml_reading.cpp)

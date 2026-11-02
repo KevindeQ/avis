@@ -270,26 +270,36 @@ flowchart LR
 ## 11.6 Sort keys
 11 §4.2, §4.3.
 
-- [ ] `sort_key.h`:
+- [x] `sort_key.h`:
   - the field enums: `fullscreen_layer`, `viewport` (`camera`, `shadow_cascade(c)`), `viewport_layer`, `translucency`, `command_opcode`
   - `constexpr` `make_draw_key`, `make_command_key` and `decode_key`, with `static_assert`ed widths and positions per 11 §4.2 tables, and a debug check for every field
   - `key_prefix(…)` and `prefix_range(prefix)` for group lookups
-- [ ] `quantize_depth(view_distance)`: logarithmic over [0.1 m, 2 km] into 24 bits, clamped. Plus the per-group depth fields of 11 §4.3:
+
+  *As implemented:*
+  - `viewport` is a small struct (`camera()`, `shadow_cascade(c)` for c in 0–3, `index` 5–7 reserved), the group is `key_group`, and the fields are `draw_key_fields` and `command_key_fields`. `decode_key` returns a `std::variant` of the two; a command's data is a `std::variant` of `builtin_command {opcode, immediate}` and `callback_command {address}`. The positions and widths are the `key_fields` constants, `static_assert`ed adjacent and of the 11 §4.2 widths.
+  - The debug check is `sort_key_detail::report_out_of_range`, in `sort_key.cpp` (`AVIS_CHECK` on "renderer"). It isn't `constexpr`, so an out-of-range field in a constant expression is a compile error. At run time the field is masked to its width, so it can't spill into its neighbours.
+  - The group is 10 bits; with the command bit it is the 11-bit prefix of 11 §4.2. `key_prefix` takes a fullscreen layer, plus a viewport, plus a viewport layer, or a whole `key_group`. `prefix_range` gives an inclusive `key_range`, and its two-prefix overload spans consecutive groups (`blended` … `subtractive`, `overlay` … `overlay_on_top`, cascades 0–3).
+  - `command_context` is only declared; 11.9 defines it.
+- [x] `quantize_depth(view_distance)`: logarithmic over [0.1 m, 2 km] into 24 bits, clamped. Plus the per-group depth fields of 11 §4.3:
   - opaque: bands in the top `log2(bands)` bits
   - translucent: `2²⁴ − 1 − q`
   - overlay: `layer_priority` in bits 23–16 and a 16-bit back-to-front depth (or 0 when opaque)
   - `fullscreen_effects`: the stacking index
-- [ ] Callback commands: a function pointer encoded in 47 bits, with a debug check that it is below 2⁴⁷.
+
+  *As implemented:* `quantize_depth` isn't `constexpr` (`std::log`); it returns 0 for NaN. The depth fields are `opaque_depth_field(q, bands)` (a band count that isn't a power of two up to 2²⁴ fails the debug check and gives no banding), `translucent_depth_field(q)`, `overlay_depth_field(layer_priority, translucent, q)` (the 16-bit depth is the top 16 bits of `q`, inverted) and `fullscreen_effects_depth_field(index)`.
+- [x] Callback commands: a function pointer encoded in 47 bits, with a debug check that it is below 2⁴⁷.
 
 **Tests** (`test_sort_key.cpp`, `[renderer][unit]`):
-- [ ] Round trip: `decode_key(make_*_key(fields)) == fields` for random fields. Out-of-range fields assert.
-- [ ] Ordering:
+- [x] Round trip: `decode_key(make_*_key(fields)) == fields` for random fields. Out-of-range fields assert.
+- [x] Ordering:
   - a command sorts after every draw of its group and before the next group
   - the translucency order is opaque < blended < additive < subtractive
   - `overlay` sorts before `overlay_on_top`
   - opaque items in one band sort by pipeline set, then material
   - translucent items sort far to near
-- [ ] `quantize_depth` is monotonic and gives 0 at 0.1 m and 2²⁴ − 1 at 2 km. With 16 bands, items 1 m and 1.1 m away share a band.
+- [x] `quantize_depth` is monotonic and gives 0 at 0.1 m and 2²⁴ − 1 at 2 km. With 16 bands, items 1 m and 1.1 m away share a band.
+
+*As implemented:* further tests cover callback addresses, the `constexpr` use (`static_assert`s), command sequence order, the camera / cascade / fullscreen-effects order, the per-group depth fields and the prefix ranges.
 
 ## 11.7 Pipeline variant registry
 11 §4.4, §4.7, 18 §10, §11, D-106.
