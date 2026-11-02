@@ -206,6 +206,13 @@ namespace avis::graphics
             return configuration_;
         }
 
+        // The frame's arena (§3.5), for other per-frame data the passes read, such as the renderer's draw lists. Reset
+        // with the graph: what is allocated in it is valid until the next reset().
+        linear_arena& arena() noexcept
+        {
+            return arena_;
+        }
+
         // Bytes the frame's tables, passes and pass data use (debug overlay)
         std::size_t arena_bytes_used() const noexcept
         {

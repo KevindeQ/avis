@@ -370,7 +370,7 @@ flowchart LR
 ## 11.8 Draw lists: cull, items, sort
 11 §4.1, §4.4–§4.6.
 
-- [ ] `draw_lists.h/.cpp`: `build_draw_list(view, extraction_result, cascades, registry, arena) → draw_list`, single-threaded, in five steps:
+- [x] `draw_lists.h/.cpp`: `build_draw_list(view, extraction_result, cascades, registry, arena) → draw_list`, single-threaded, in five steps:
   1. **Records.** Count the visible instances per `(mesh, submesh)`, take a prefix sum, and scatter `draw_record`s (11 §4.4) into the frame's `linear_arena`, mesh-major.
   2. **Cull per viewport.**
      - `camera`: the frustum against the world bounds (mesh bounds transformed by the interpolated world, Arvo's method), plus `maximum_view_distance` from the bounds centre.
@@ -379,16 +379,53 @@ flowchart LR
   3. **Items.** Generate `(key, value)` items per 11 §4.2's mapping table, plus the renderer's command items, into one arena array sized from the cull counts.
   4. **Sort** with `std::ranges::sort`.
   5. **Index** the group starts with a binary search per prefix, giving `draw_list::range(prefix)`.
-- [ ] Debug check: `screen_aligned` in `world`.
-- [ ] `material` with `alpha_mode = blend` in `world` takes the translucency from `blend_operation`. Overlay instances take `opaque`, or the value from `blend_operation`.
+
+  *As implemented:*
+  - **Signature.** `build_draw_list(view, sources, arena)`. `draw_list_sources` holds:
+    - the snapshot, for each instance's submesh, layer, flags and `maximum_view_distance`
+    - the extraction result
+    - the frame's `draw_mesh` table (topology, attributes, submesh bounds), parallel to `extraction_result::meshes`
+    - the cascades, as `cascade_viewpoint {view_from_world, projection}`, which 11.12 computes
+    - the command items
+    - `render.draw_sorting.opaque_depth_bands`
+    - a `draw_list_lookup`: the material state of an instance's material, and the pipeline set of a key
+
+    The lookups keep the build CPU-only, so the tests need no device. The renderer passes the material table's `material_data` (through `draw_material_of`) and `pipeline_variant_registry::find`. The build caches both lookups in small direct-mapped tables.
+  - **Records.** One `draw_record` per extracted instance. Within a `(mesh, submesh)` the records are in object id order, so the list doesn't depend on the input order. Instances whose mesh or submesh isn't in the table get no record. So do instances that fail the debug check, counted as `skipped_invalid`.
+  - **Culling.**
+    - The camera frustum comes from the unjittered projection, with a degenerate far plane (infinite projection) always passed.
+    - The world bounds are the submesh's bounds through the interpolated world, by Arvo's method.
+    - `maximum_view_distance` is measured from the bounds centre, in the camera viewport only.
+    - Casters are world-layer instances with an opaque or mask material and `casts_shadows`.
+    - A `screen_aligned` anchor must be between the near and far planes. Its widening uses the larger side of the pixel bounds on each axis, times `device_pixel_ratio`, so it doesn't depend on which way pixel y points.
+    - The cull walks the instances in order (the records are mesh-major), so it reads their arrays sequentially.
+  - **Depth.** The view depth is the bounds centre's distance along the viewpoint's −Z: the camera's, or the cascade's light view.
+  - **Sort.** `sort_draw_items` is an LSD radix sort on (value, then key) bytes for lists of 512 items or more, skipping bytes every item shares, with its scratch array in the arena. Below 512 it uses `std::ranges::sort`. Both give the same order, since it is total. 11 §4.5 plans the radix sort for when sorting shows up in profiles, and it does: 15k items take 0.7 ms with `std::ranges::sort` and 0.19 ms with the radix sort, which the benchmark needed.
+  - **Groups.** `draw_list::groups()` lists `{group, first, count}` in key order. `range(prefix)` and `range(key_range)` are binary searches.
+  - **Storage.** Everything is in the render graph's arena, which `render_graph::arena()` now exposes (10 §3.5). A list is valid until the next frame's build.
+  - **Renderer.** Each view's draw list is built in `add_view`, without cascades or commands until 11.12 and 11.9. `scene_renderer::draw_lists()` returns them, and `renderer_debug_information::draw_lists` has their counts. An instance whose pipeline set can't be created isn't drawn, and a warning with the error is logged at most once a second.
+- [x] Debug check: `screen_aligned` in `world`.
+- [x] `material` with `alpha_mode = blend` in `world` takes the translucency from `blend_operation`. Overlay instances take `opaque`, or the value from `blend_operation`.
 
 **Tests** (`test_draw_lists.cpp`, `[renderer][unit]` with hand-built extraction results):
-- [ ] 1,000 random instances: each visible camera instance appears once in `camera` and once per cascade it's a caster in. Culled instances (outside the frustum, beyond the distance, not casters) don't.
-- [ ] The ranges cover the list without gaps, and an absent prefix gives an empty span.
-- [ ] Mesh-major: in a group with equal keys, records of the same mesh are adjacent.
-- [ ] The output is identical across two builds with shuffled input instances (total order).
-- [ ] A screen-aligned anchor just outside the frustum, whose pixel bounds reach inside, is kept.
-- [ ] `[!benchmark]`: 10,000 instances with one or two cascades each build and sort in under 1.5 ms in Release (11 §15).
+- [x] 1,000 random instances: each visible camera instance appears once in `camera` and once per cascade it's a caster in. Culled instances (outside the frustum, beyond the distance, not casters) don't.
+- [x] The ranges cover the list without gaps, and an absent prefix gives an empty span.
+- [x] Mesh-major: in a group with equal keys, records of the same mesh are adjacent.
+- [x] The output is identical across two builds with shuffled input instances (total order).
+- [x] A screen-aligned anchor just outside the frustum, whose pixel bounds reach inside, is kept.
+- [x] `[!benchmark]`: 10,000 instances with one or two cascades each build and sort in under 1.5 ms in Release (11 §15).
+
+*As implemented:*
+- The benchmark builds about 15k items in 1.0–1.3 ms. It also reports the sort alone against `std::ranges::sort`.
+- Further `[renderer][unit]` tests cover:
+  - the groups and fields of 11 §4.2's mapping table
+  - the depth order per group
+  - the commands in their groups
+  - `sort_draw_items` against `std::ranges::sort`, on both sides of the threshold
+  - the frustum planes
+  - `draw_material_of`
+  - the debug check, a bad submesh, and a failed pipeline set lookup
+- A `[renderer]` test renders two views and checks their lists and keys against the registry's sets.
 
 ## 11.9 Range walker, commands, recording groups
 11 §4.6–§4.8.

@@ -13,6 +13,7 @@
 // (upload_frame_data) copies them into persistent ring-indexed buffers. Startup creates the pipeline sets the passes
 // draw with (11.7).
 
+#include "rendering/draw_lists.h"
 #include "rendering/extraction.h"
 #include "rendering/frame_data.h"
 #include "rendering/geometry_arena.h"
@@ -108,6 +109,7 @@ namespace avis::visualizer::rendering
         } extraction;
         frame_data_statistics frame_data; // pass 0 (11.5)
         pipeline_variant_statistics pipelines; // 11.7
+        std::vector<draw_list_statistics> draw_lists; // the last frame's, one per view in view order (11.8)
     };
 
     // The geometry arena in this frame's graph (11 §3.2), imported outside any view with the newest ready_after of the
@@ -261,6 +263,13 @@ namespace avis::visualizer::rendering
             return frame_buffers_;
         }
 
+        // The draw lists of the frame being built, one per view in view order (11.8). They live in the graph's arena:
+        // valid until the next render.
+        std::span<const draw_list> draw_lists() const noexcept
+        {
+            return draw_lists_;
+        }
+
     private:
         // What create makes before the renderer exists
         struct persistent_state
@@ -293,7 +302,11 @@ namespace avis::visualizer::rendering
             std::chrono::steady_clock::time_point wall_now);
 
         std::optional<error> check_view(const view_description& view) const;
-        std::optional<error> add_view(const graphics::frame_token& frame, const view_description& view);
+        std::optional<error>
+            add_view(const graphics::frame_token& frame, const scene::snapshot& snapshot, const view_description& view);
+
+        // The view's draw list (11 §4.5), in the graph's arena
+        draw_list build_view_draw_list(const scene::snapshot& snapshot, const view_description& view);
 
         renderer_dependencies dependencies_;
         graphics::render_graph& graph_;
@@ -315,6 +328,9 @@ namespace avis::visualizer::rendering
         std::uint64_t texture_changes_resolved_ = 0; // texture_residency::status_changes() at the last material update
         std::unique_ptr<frame_data_upload> frame_data_;
         frame_buffers frame_buffers_; // of the frame being built
+        std::vector<draw_mesh> draw_meshes_; // the frame's meshes for the draw lists, parallel to extraction_.meshes
+        std::vector<draw_list> draw_lists_; // of the frame being built, per view
+        std::optional<std::chrono::steady_clock::time_point> last_pipeline_warning_;
 
         std::optional<error> build_failure_; // of the last render; thrown by its sender
         std::uint64_t frames_rendered_ = 0;

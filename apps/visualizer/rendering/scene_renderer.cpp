@@ -16,6 +16,7 @@
 #include "avis/graphics/texture.h"
 #include "avis/graphics/upload_queue.h"
 #include "avis/graphics/view_scope.h"
+#include "avis/log.h"
 #include "avis/rhi/formats.h"
 
 #include <algorithm>
@@ -31,6 +32,8 @@ namespace avis::visualizer::rendering
     {
         // The name the standard root signature is registered under; the pipeline cache matches pipelines to it
         constexpr std::string_view standard_signature_name = "standard";
+
+        constexpr std::string_view logger_name = "renderer";
 
         error invalid_view(const std::string_view name, const std::string_view message)
         {
@@ -239,6 +242,17 @@ namespace avis::visualizer::rendering
                             .dropped_lights = extraction_.dropped_lights },
             .frame_data = frame_data_->statistics(),
             .pipelines = pipeline_variants_->statistics(),
+            .draw_lists =
+                [this]
+            {
+                std::vector<draw_list_statistics> lists;
+                lists.reserve(draw_lists_.size());
+                for (const draw_list& list : draw_lists_)
+                {
+                    lists.push_back(list.statistics());
+                }
+                return lists;
+            }(),
         };
     }
 
@@ -266,6 +280,7 @@ namespace avis::visualizer::rendering
         const std::chrono::steady_clock::time_point wall_now)
     {
         graph_.reset();
+        draw_lists_.clear(); // they were in the arena
 
         // Checked before anything is added: the graph's own checks on view names only assert
         std::set<std::string_view> names;
@@ -316,6 +331,24 @@ namespace avis::visualizer::rendering
         }
         extraction_reused_ = reuse;
 
+        // The meshes the draw lists cull and key by: the versions extraction found resident. A reused frame draws the
+        // same ones, since residency was idle.
+        draw_meshes_.clear();
+        for (const frame_mesh& mesh : extraction_.meshes)
+        {
+            const resident_mesh* resident = residency_->find(mesh.handle);
+            if (resident == nullptr || resident->version != mesh.version)
+            {
+                draw_meshes_.push_back({}); // no submeshes: its instances get no record
+                continue;
+            }
+            draw_meshes_.push_back(
+                { .topology = resident->topology,
+                  .attributes = resident->attributes,
+                  .progressive = resident->progressive,
+                  .primitives = resident->primitives });
+        }
+
         // Shared work, outside any view scope (10 §8). The arena and the material table wait on the newest copies this
         // frame draws.
         const rhi::access_state common = rhi::access_states::common;
@@ -355,7 +388,7 @@ namespace avis::visualizer::rendering
 
         for (const view_description& view : views)
         {
-            if (auto failed = add_view(frame, view))
+            if (auto failed = add_view(frame, snapshot, view))
             {
                 return failed;
             }
@@ -507,7 +540,56 @@ namespace avis::visualizer::rendering
         return std::nullopt;
     }
 
-    std::optional<error> scene_renderer::add_view(const graphics::frame_token& frame, const view_description& view)
+    draw_list scene_renderer::build_view_draw_list(const scene::snapshot& snapshot, const view_description& view)
+    {
+        // The material state of the slot extraction gave the instance: the material's current slot, or the default
+        // material (lit, opaque, single-sided). A set that can't be created is tried again next frame.
+        std::optional<std::string> failure; // the first pipeline set error
+        const draw_list_sources sources{
+            .snapshot = snapshot,
+            .extraction = extraction_,
+            .meshes = draw_meshes_,
+            .cascades = {}, // the shadow cascades come with 11.12
+            .commands = {},
+            .lookup = { .material =
+                            [this](const scene::material_handle material)
+                        {
+                            const resident_material* resident = materials_->find(material);
+                            return resident != nullptr ? draw_material_of(resident->data) : draw_material{};
+                        },
+                        .pipeline_set =
+                            [this, &failure](const pipeline_set_key& key)
+                        {
+                            auto found = pipeline_variants_->find(key);
+                            if (!found && !failure)
+                            {
+                                failure = found.error().message;
+                            }
+                            return found;
+                        } },
+            .opaque_depth_bands = settings_.draw_sorting.opaque_depth_bands,
+        };
+        draw_list list = build_draw_list(view, sources, graph_.arena());
+
+        if (const std::size_t skipped = list.statistics().skipped_no_pipeline; skipped > 0)
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (!last_pipeline_warning_ || now - *last_pipeline_warning_ >= std::chrono::seconds{ 1 })
+            {
+                last_pipeline_warning_ = now;
+                log::get(logger_name)
+                    ->warn(
+                        "view '{}': {} instances have no pipeline set and aren't drawn: {}",
+                        view.name,
+                        skipped,
+                        failure.value_or("unknown error"));
+            }
+        }
+        return list;
+    }
+
+    std::optional<error> scene_renderer::add_view(
+        const graphics::frame_token& frame, const scene::snapshot& snapshot, const view_description& view)
     {
         auto history = histories_.acquire(view.name, view.size, frame.index());
         if (!history)
@@ -526,6 +608,9 @@ namespace avis::visualizer::rendering
         [[maybe_unused]] const Eigen::Matrix4f view_projection_previous =
             (*history)->has_previous ? (*history)->view_projection : view_projection;
         (*history)->view_projection = view_projection;
+
+        // Culled, keyed and sorted (11 §4.5); the passes walk its ranges (11.9 on)
+        draw_lists_.push_back(build_view_draw_list(snapshot, view));
 
         const graphics::view_scope scope = graph_.begin_view(view.name, view.size);
         [[maybe_unused]] const history_imports imported = import_history(graph_, **history);
