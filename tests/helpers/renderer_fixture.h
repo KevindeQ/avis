@@ -24,10 +24,12 @@
 #include "avis/scene/scene.h"
 #include "avis/scene/snapshot.h"
 #include "avis/scene/types.h"
+#include "avis/simulation/time.h"
 
 #include <Eigen/Core>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -140,6 +142,13 @@ namespace avis::tests
         scene::asset_cache assets;
         scene::scene world{ assets };
         scene::snapshot_buffer snapshots;
+
+        // Copied into every publish (03 §5). The default anchor is paused (rate 0), so frames render at alpha 1.
+        simulation::time_anchor anchor;
+        simulation::simulation_duration time_previous{ 0 };
+        simulation::simulation_duration time_current{ 0 };
+        // render_frame's wall time; steady_clock::now() when empty
+        std::optional<std::chrono::steady_clock::time_point> wall_now;
 
     private:
         scene::entity add_drawn(

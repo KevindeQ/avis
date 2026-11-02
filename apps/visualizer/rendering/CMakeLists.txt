@@ -3,6 +3,8 @@
 # Visualizer data under data/shaders/visualizer/ (11 §13), compiled by avis_add_shaders next to the executable.
 
 add_library(AVIS_VISUALIZER_RENDERING STATIC
+	extraction.cpp
+	frame_data.cpp
 	geometry_arena.cpp
 	material_table.cpp
 	render_settings.cpp

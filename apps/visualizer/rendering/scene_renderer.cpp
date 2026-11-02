@@ -5,6 +5,7 @@
 #include "avis/graphics/binding_layout.h"
 #include "avis/graphics/buffer.h"
 #include "avis/graphics/error.h"
+#include "avis/graphics/frame_scheduler.h"
 #include "avis/graphics/pass_context.h"
 #include "avis/graphics/pipeline_cache.h"
 #include "avis/graphics/render_pass_builder.h"
@@ -187,7 +188,9 @@ namespace avis::visualizer::rendering
         arena_{ std::move(state.arena) },
         residency_{ std::make_unique<residency_cache>(*arena_, dependencies.uploads, dependencies.synchronization) },
         textures_{ std::move(state.textures) },
-        materials_{ std::move(state.materials) }
+        materials_{ std::move(state.materials) },
+        frame_data_{ std::make_unique<frame_data_upload>(
+            dependencies.resources, dependencies.frames.frames_in_flight()) }
     {}
 
     scene_renderer::~scene_renderer() = default;
@@ -216,14 +219,41 @@ namespace avis::visualizer::rendering
             .residency = residency_->statistics(),
             .textures = textures_->statistics(),
             .materials = materials_->statistics(),
+            .extraction = { .alpha = extraction_.interpolation.alpha,
+                            .reused = extraction_reused_,
+                            .instances = extraction_.instances.size(),
+                            .meshes = extraction_.meshes.size(),
+                            .lights = extraction_.lights.size(),
+                            .skipped_invisible = extraction_.skipped_invisible,
+                            .skipped_not_resident = extraction_.skipped_not_resident,
+                            .skipped_invalid = extraction_.skipped_invalid,
+                            .dropped_lights = extraction_.dropped_lights },
+            .frame_data = frame_data_->statistics(),
         };
+    }
+
+    bool scene_renderer::can_reuse_extraction(
+        const scene::snapshot& snapshot, const frame_interpolation& interpolation) const
+    {
+        // The same snapshot at the same time, and arrays without motion: with motion, their world_previous would be
+        // the frame before's, not the world they draw now. Residency must have nothing left to do, since it is
+        // skipped too: no upload to retry, no mip chain to generate, and no material to rewrite, either for a pending
+        // write or for a texture whose status changed after the material table's last update.
+        if (!frame_data_->can_reuse() || extraction_.publish_sequence != snapshot.publish_sequence ||
+            extraction_.interpolation.alpha != interpolation.alpha || !extraction_.stationary)
+        {
+            return false;
+        }
+        return residency_->statistics().pending_uploads == 0 && textures_->statistics().pending == 0 &&
+               textures_->mip_requests().empty() && textures_->status_changes() == texture_changes_resolved_ &&
+               materials_->statistics().pending_writes == 0;
     }
 
     std::optional<error> scene_renderer::build_frame(
         const graphics::frame_token& frame,
         const scene::snapshot& snapshot,
         const std::span<const view_description> views,
-        [[maybe_unused]] const std::chrono::steady_clock::time_point wall_now)
+        const std::chrono::steady_clock::time_point wall_now)
     {
         graph_.reset();
 
@@ -241,23 +271,43 @@ namespace avis::visualizer::rendering
             }
         }
 
-        // Residency (11 §3.6, D-103): queue the uploads of the snapshot's new mesh, texture and material versions
-        // (materials after textures, which they resolve against), flush them on the copy queue (the graph records none
-        // of them), then make the uploaded versions current. A failed flush keeps the copies queued for the next
-        // frame; this one submits nothing.
-        residency_->update(snapshot, frame.index());
-        textures_->update(snapshot, frame.index());
-        materials_->update(snapshot, frame.index());
-        if (auto flushed = dependencies_.uploads.flush(); !flushed)
+        // The reuse shortcut (11 §3.5): the previous frame's arrays, residency and extraction skipped
+        const frame_interpolation interpolation = interpolate(snapshot, wall_now);
+        const bool reuse = can_reuse_extraction(snapshot, interpolation);
+
+        if (!reuse)
         {
-            return std::move(flushed).error();
+            // Residency (11 §3.6, D-103): queue the uploads of the snapshot's new mesh, texture and material versions
+            // (materials after textures, which they resolve against), flush them on the copy queue (the graph records
+            // none of them), then make the uploaded versions current. A failed flush keeps the copies queued for the
+            // next frame; this one submits nothing.
+            residency_->update(snapshot, frame.index());
+            textures_->update(snapshot, frame.index());
+            materials_->update(snapshot, frame.index());
+            texture_changes_resolved_ = textures_->status_changes();
+            if (auto flushed = dependencies_.uploads.flush(); !flushed)
+            {
+                return std::move(flushed).error();
+            }
+            residency_->after_flush();
+            textures_->after_flush();
+            materials_->after_flush();
+
+            // Extraction (11 §3.5 steps 1 and 3): the instances of resident meshes, at this frame's time
+            const extraction_lookup lookup{
+                .mesh_version = [this](const scene::mesh_handle mesh) -> std::optional<std::uint64_t>
+                {
+                    const resident_mesh* resident = residency_->find(mesh);
+                    return resident != nullptr ? std::optional{ resident->version } : std::nullopt;
+                },
+                .material_slot = [this](const scene::material_handle material) { return materials_->slot(material); },
+            };
+            extract(snapshot, wall_now, extraction_state_, lookup, extraction_);
         }
-        residency_->after_flush();
-        textures_->after_flush();
-        materials_->after_flush();
+        extraction_reused_ = reuse;
 
         // Shared work, outside any view scope (10 §8). The arena and the material table wait on the newest copies this
-        // frame draws; the frame data upload (pass 0) comes with extraction (11.5).
+        // frame draws.
         const rhi::access_state common = rhi::access_states::common;
         const auto wait_for = [](const rhi::synchronization_point point)
         { return point.value != 0 ? std::optional{ point } : std::nullopt; };
@@ -276,6 +326,22 @@ namespace avis::visualizer::rendering
                 wait_for(rhi::latest(materials_->frame_ready_after(), textures_->frame_ready_after()))),
         };
         add_mip_passes();
+
+        // Pass 0 (11 §2.3): the frame's arrays into their ring slots, on the copy queue. The instance indices come with
+        // the range walker (11.9).
+        auto uploaded = frame_data_->add_upload_pass(
+            graph_,
+            frame,
+            std::max(completed_frame_index_, frame.completed_index()),
+            extraction_.instances,
+            extraction_.lights,
+            {},
+            reuse);
+        if (!uploaded)
+        {
+            return std::move(uploaded).error();
+        }
+        frame_buffers_ = *uploaded;
 
         for (const view_description& view : views)
         {

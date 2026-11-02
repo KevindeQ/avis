@@ -9,7 +9,11 @@
 // step. Residency runs in every frame's prepare stage: the snapshot's meshes are uploaded into the geometry arena
 // (11.3), its textures into their own RHI textures and its materials into the material table (11.4). The arena and
 // the material table are imported into the graph, and the frame generates the mip chains of newly uploaded images.
+// Extraction (11.5) then builds the frame's instance and light arrays, interpolated at the frame's time, and pass 0
+// (upload_frame_data) copies them into persistent ring-indexed buffers.
 
+#include "rendering/extraction.h"
+#include "rendering/frame_data.h"
 #include "rendering/geometry_arena.h"
 #include "rendering/material_table.h"
 #include "rendering/render_settings.h"
@@ -86,6 +90,21 @@ namespace avis::visualizer::rendering
         residency_statistics residency; // meshes, pending uploads and arena use (11.3)
         texture_residency_statistics textures; // 11.4
         material_table_statistics materials; // 11.4
+
+        // Extraction (11.5), of the last frame: reused is true when it read the previous frame's arrays (11 §3.5)
+        struct extraction_counts
+        {
+            float alpha = 1.0f;
+            bool reused = false;
+            std::size_t instances = 0;
+            std::size_t meshes = 0;
+            std::size_t lights = 0;
+            std::size_t skipped_invisible = 0;
+            std::size_t skipped_not_resident = 0;
+            std::size_t skipped_invalid = 0;
+            std::size_t dropped_lights = 0;
+        } extraction;
+        frame_data_statistics frame_data; // pass 0 (11.5)
     };
 
     // The geometry arena in this frame's graph (11 §3.2), imported outside any view with the newest ready_after of the
@@ -125,7 +144,10 @@ namespace avis::visualizer::rendering
         // be created, a failed upload flush) completes with that error and submits nothing.
         //
         // Before building the graph, the prepare stage makes the snapshot's meshes resident (11 §3.6): it queues their
-        // uploads, flushes the upload queue and imports the geometry arena.
+        // uploads, flushes the upload queue and imports the geometry arena. It then extracts the snapshot at the time
+        // of `wall_now` (11 §3.5) and adds pass 0, which uploads the frame's arrays. When the snapshot's
+        // publish_sequence and alpha equal the previous frame's, the previous arrays had no motion and residency has
+        // nothing pending, residency and extraction are skipped and the previous arrays are read again.
         //
         // Views must have distinct, non-empty names without '/' and a non-zero size. An output must be an
         // RGBA8_UNORM texture of the view's size that allows copy_destination.
@@ -136,6 +158,11 @@ namespace avis::visualizer::rendering
             std::chrono::steady_clock::time_point wall_now)
         {
             build_failure_ = build_frame(frame, snapshot, views, wall_now);
+            if (build_failure_)
+            {
+                frame_data_->forget(); // nothing was copied: a later frame mustn't reuse this frame's slots
+            }
+            // A frame that fails to execute didn't copy its arrays either
             auto sender = stdexec::just() |
                           stdexec::let_value(
                               [this, &frame]()
@@ -145,6 +172,18 @@ namespace avis::visualizer::rendering
                                       throw avis::runtime_error{ *build_failure_ };
                                   }
                                   return graph_.execute(frame);
+                              }) |
+                          stdexec::let_error(
+                              [this]<typename Error>(Error&& error) noexcept
+                              {
+                                  frame_data_->forget();
+                                  return stdexec::just_error(std::forward<Error>(error));
+                              }) |
+                          stdexec::let_stopped(
+                              [this]() noexcept
+                              {
+                                  frame_data_->forget();
+                                  return stdexec::just_stopped();
                               }) |
                           threading::into_internal_error();
             static_assert(sender_of<decltype(sender), graphics::submitted_frame>);
@@ -190,6 +229,23 @@ namespace avis::visualizer::rendering
             return *materials_;
         }
 
+        // For tests: the last extraction (11.5); a frame that reused it keeps it
+        const extraction_result& extraction() const noexcept
+        {
+            return extraction_;
+        }
+
+        const extraction_state& previous_transforms() const noexcept
+        {
+            return extraction_state_;
+        }
+
+        // The frame data in the graph of the frame being built, for its passes (11.10 on)
+        const frame_buffers& frame_data() const noexcept
+        {
+            return frame_buffers_;
+        }
+
     private:
         // What create makes before the renderer exists
         struct persistent_state
@@ -209,6 +265,9 @@ namespace avis::visualizer::rendering
 
         // The passes that generate the mip chains of this frame's texture_residency::mip_requests(), outside any view
         void add_mip_passes();
+
+        // The reuse shortcut's condition (11 §3.5)
+        bool can_reuse_extraction(const scene::snapshot& snapshot, const frame_interpolation& interpolation) const;
 
         // The graph of one frame, compiled; the first failure otherwise
         std::optional<error> build_frame(
@@ -233,6 +292,12 @@ namespace avis::visualizer::rendering
         std::unique_ptr<material_table> materials_; // refers to textures_
         frame_geometry geometry_; // of the frame being built
         frame_materials frame_materials_; // of the frame being built
+        extraction_state extraction_state_; // the previous rendered worlds
+        extraction_result extraction_; // of the last extraction
+        bool extraction_reused_ = false; // by the last frame
+        std::uint64_t texture_changes_resolved_ = 0; // texture_residency::status_changes() at the last material update
+        std::unique_ptr<frame_data_upload> frame_data_;
+        frame_buffers frame_buffers_; // of the frame being built
 
         std::optional<error> build_failure_; // of the last render; thrown by its sender
         std::uint64_t frames_rendered_ = 0;

@@ -184,6 +184,7 @@ namespace avis::visualizer::rendering
             if (data.width == 0 || data.height == 0 || data.mips.empty())
             {
                 owner.failed_version = listed.texture.version;
+                ++status_changes_;
                 warn(listed.handle, owner, listed.texture.version, "it has no texels");
                 continue;
             }
@@ -205,6 +206,7 @@ namespace avis::visualizer::rendering
             {
                 // Not retried: the same data would fail again. Materials draw it as missing.
                 owner.failed_version = listed.texture.version;
+                ++status_changes_;
                 warn(listed.handle, owner, listed.texture.version, std::format("{}", texture.error()));
                 continue;
             }
@@ -247,6 +249,7 @@ namespace avis::visualizer::rendering
             {
                 // The queue refused the data itself: retrying won't help
                 owner.failed_version = item.texture.version;
+                ++status_changes_;
                 item.abandoned = true;
                 item.data.reset();
                 warn(handle, owner, item.texture.version, std::format("{}", ticket.error()));
@@ -320,6 +323,7 @@ namespace avis::visualizer::rendering
                 if (item.state == entry_state::uploading && !item.ticket && !item.data)
                 {
                     item.state = item.generate_mips ? entry_state::needs_mips : entry_state::ready;
+                    ++status_changes_;
                 }
                 if (item.state == entry_state::needs_mips)
                 {
@@ -368,6 +372,7 @@ namespace avis::visualizer::rendering
                 {
                     item.state = entry_state::ready;
                     ++mip_chains_generated_;
+                    ++status_changes_;
                 }
             }
         }

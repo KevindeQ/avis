@@ -339,6 +339,9 @@ namespace avis::tests
         world.update_world_transforms();
         scene::snapshot& target = snapshots.begin_write();
         world.make_snapshot(target);
+        target.anchor = anchor;
+        target.time_previous = time_previous;
+        target.time_current = time_current;
         snapshots.publish();
         world.end_tick();
     }
@@ -386,7 +389,7 @@ namespace avis::tests
             const scene::snapshot_reference snapshot = snapshots.acquire();
             REQUIRE(static_cast<bool>(snapshot));
             submitted = threading::sync_wait_result(
-                renderer->render(frame, *snapshot, views, std::chrono::steady_clock::now()));
+                renderer->render(frame, *snapshot, views, wall_now.value_or(std::chrono::steady_clock::now())));
         }
         if (submitted)
         {

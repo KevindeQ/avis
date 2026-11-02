@@ -230,21 +230,42 @@ flowchart LR
 ## 11.5 Extraction, interpolation, pass 0
 11 §3.5, D-42, D-56, A-15.
 
-- [ ] `extraction.h/.cpp`, `extract(snapshot, wall_now, previous_state) → extraction_result`, in four steps:
+- [x] `extraction.h/.cpp`, `extract(snapshot, wall_now, previous_state) → extraction_result`, in four steps:
   1. **Interpolation.** `alpha` and `t_render` come from the `time_anchor` (03 §5.2). `alpha` is 1 when `rate == 0`, and clamped to [0, 1].
   2. **Instances.** It builds `instance_data[]` with the interpolated world (translation lerp, rotation slerp and scale lerp of the decomposed matrices; see Open points), the previous **rendered** world, the inverse transpose for normals, the mesh range, the material slot, the flags and the object id.
   3. **Previous transforms.** The previous rendered world is kept per `object_id` in a hash map. An entry is new when its id wasn't drawn last frame, or when `history_invalid` / `world_previous == world_current` signals a pop-in or jump (task 10, Open points), and then previous equals current. Entries for ids not drawn this frame are dropped.
   4. **Lights.** It builds `light_data[]` from `snapshot.lights` (up to 4,096; more is a warning and a truncation). The first directional light is the sun.
 
   Instances whose mesh isn't resident are skipped (11 §3.5 step 2).
-- [ ] The **reuse shortcut** (11 §3.5): when `publish_sequence` and `alpha` equal the previous frame's, residency and extraction are skipped, and the previous instance-buffer slot is reused and pinned. Culling and draw lists always run.
-- [ ] Pass 0, `upload_frame_data`: the frame's `instance_data`, `instance_indices` (from 11.9) and `light_data` go into frame memory and are copied on the copy queue into persistent ring-indexed `gpu_only` buffers (*F* slots, grown on demand by doubling and reallocated when no frame uses the old buffer). Small constants (view, frame) are root CBVs from the frame allocator.
+
+  *As implemented:*
+  - Residency is reached through an `extraction_lookup` (the resident version of a mesh, the slot of a material), so extraction is CPU-only. The renderer extracts after the upload flush and `after_flush`, so a version made resident this frame is drawn this frame.
+  - `instance_data::mesh` indexes `extraction_result::meshes`, the frame's `(handle, version)` list in order of first use; 11.10 turns it into the mesh table the vertex shaders read. `instance_sources` gives each instance's index in `snapshot.instances`, for the draw lists (11.8).
+  - `interpolate_world` decomposes with `scene::transform::from_affine`; alpha 0 and 1 return the matrices exactly. The normal matrix is the inverse transpose of the upper 3 × 3 (identity for a singular one).
+  - Invisible instances are skipped, and a `screen_aligned` instance in the `world` layer fails the debug check and is skipped.
+  - Lights: the direction is the world's −Z, the colour is copied as linear RGB (`shared_types.hlsli` said "unit luminance"; the comment now says the intensity scales it), and only the sun gets `casts_shadows`. The sun is `extraction_result::sun`, an index; the lights stay in snapshot order. The truncation warning is rate-limited to once a second.
+- [x] The **reuse shortcut** (11 §3.5): when `publish_sequence` and `alpha` equal the previous frame's, residency and extraction are skipped, and the previous instance-buffer slot is reused and pinned. Culling and draw lists always run.
+
+  *As implemented:* two more conditions.
+  - **No motion.** The previous arrays must be *stationary* (every `world_previous` equals its `world`). Otherwise, while paused, the reused arrays would keep the motion of the last moving frame, and every reused frame would have that motion. So pausing extracts one more frame (now without motion) and reuses from the frame after.
+  - **Residency idle.** No mesh upload to retry, no texture uploading or waiting for its chain, no material write pending, and no texture status change since the material table's last update (`texture_residency::status_changes()`), because the material rewrite for a texture that just became ready happens one update later.
+
+  A frame that fails to build or execute `forget()`s its slots, so the next one doesn't reuse arrays that were never copied. The reused instance and light slots are marked as used by every frame that reads them, which pins them.
+- [x] Pass 0, `upload_frame_data`: the frame's `instance_data`, `instance_indices` (from 11.9) and `light_data` go into frame memory and are copied on the copy queue into persistent ring-indexed `gpu_only` buffers (*F* slots, grown on demand by doubling and reallocated when no frame uses the old buffer). Small constants (view, frame) are root CBVs from the frame allocator.
+
+  *As implemented* (`frame_data.h/.cpp`):
+  - **Staging.** The frame allocator gives a GPU address but no buffer handle, and `copy_buffer` needs one. So the renderer keeps its own `upload`-heap staging buffer per frame context (grown by doubling), reused once its context is recycled. The staging buffer isn't in the graph: the CPU writes it before submission, and a copy from an upload heap needs no barrier.
+  - **Rings.** `frame_buffer_ring` holds *F* slots per array. A slot is free once its `last_used_frame` is complete; `acquire` takes the free slot used longest ago, and adds a slot if none is free. The buffers start at 256 instances, 1,024 indices and 64 lights, so every slot has a buffer the passes can bind.
+  - **Graph.** The slots are imported every frame as `frame_instances`, `frame_instance_indices` and `frame_lights` (`frame_buffers`, with their SRVs and counts), and pass 0 writes them as `copy_destination`. A frame with nothing to copy (a reused frame until 11.9 adds the indices) has no pass 0.
+  - The instance indices are empty until 11.9. The view and frame constants come with the passes that read them (11.10).
 
 **Tests** (`test_extraction.cpp`, `[renderer][unit]` on hand-built snapshots):
-- [ ] `alpha` for an anchor at rate 1 halfway between ticks is 0.5. At rate 0 it's 1, and after the end of the tick it's clamped to 1.
-- [ ] A 90° rotation interpolates through 45° at `alpha = 0.5` (slerp, not a matrix lerp).
-- [ ] Previous transforms: the second frame's previous world equals the first frame's interpolated world, not the previous tick's. A new id, or a jumped one, has previous equal to current.
-- [ ] Reuse shortcut: two frames on the same snapshot and `alpha` write no new instance slot. A changed `alpha` does.
+- [x] `alpha` for an anchor at rate 1 halfway between ticks is 0.5. At rate 0 it's 1, and after the end of the tick it's clamped to 1.
+- [x] A 90° rotation interpolates through 45° at `alpha = 0.5` (slerp, not a matrix lerp).
+- [x] Previous transforms: the second frame's previous world equals the first frame's interpolated world, not the previous tick's. A new id, or a jumped one, has previous equal to current.
+- [x] Reuse shortcut: two frames on the same snapshot and `alpha` write no new instance slot. A changed `alpha` does.
+
+*As implemented:* the reuse tests are `[renderer]` tests through the renderer, since the shortcut lives in its prepare stage. Further tests cover the instance fields (mesh indices, material slots, flags, the split object id, skipped instances), the normal matrix, `history_invalid`, dropped ids, the lights and the sun, the light limit, the `screen_aligned` debug check, a moving instance that is extracted once more before it is reused, and pass 0 in the renderer's graph. `renderer_fixture` gained `anchor`, `time_previous` and `time_current` (copied into every publish) and `wall_now` (for `render_frame`).
 
 ## 11.6 Sort keys
 11 §4.2, §4.3.

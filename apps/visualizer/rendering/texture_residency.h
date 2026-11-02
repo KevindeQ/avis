@@ -170,6 +170,13 @@ namespace avis::visualizer::rendering
 
         texture_residency_statistics statistics() const;
 
+        // Counts the changes of a version's status that change how materials resolve it: becoming ready, or failing.
+        // The material table resolves them at its next update; the reuse shortcut waits for that (11 §3.5).
+        std::uint64_t status_changes() const noexcept
+        {
+            return status_changes_;
+        }
+
         // For tests: the versions held for a texture, oldest first
         std::vector<std::uint64_t> versions(scene::texture_handle texture) const;
 
@@ -230,6 +237,7 @@ namespace avis::visualizer::rendering
         std::uint64_t uploaded_bytes_ = 0;
         std::uint64_t failed_uploads_ = 0;
         std::uint64_t mip_chains_generated_ = 0;
+        std::uint64_t status_changes_ = 0;
     };
 } // namespace avis::visualizer::rendering
 

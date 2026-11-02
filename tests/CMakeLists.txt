@@ -128,6 +128,7 @@ target_sources(AVIS_TESTS
 		test_sender_of.cpp
 		test_thread_pool.cpp
 		test_transient_resource_pool.cpp
+		visualizer/rendering/test_extraction.cpp
 		visualizer/rendering/test_geometry_arena.cpp
 		visualizer/rendering/test_render_settings.cpp
 		visualizer/rendering/test_renderer_frames.cpp

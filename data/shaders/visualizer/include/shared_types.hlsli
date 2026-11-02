@@ -158,7 +158,7 @@ struct light_data
     float range; // metres; point and spot
     float3 direction; // world space, unit length; directional and spot
     uint kind; // light_kind_*
-    float3 color; // linear, unit luminance
+    float3 color; // linear RGB, the light's colour; intensity scales it
     float intensity; // directional: illuminance (lux); point and spot: luminous intensity (cd)
     float spot_cos_inner; // cosine of the inner cone angle
     float spot_cos_outer; // cosine of the outer cone angle
