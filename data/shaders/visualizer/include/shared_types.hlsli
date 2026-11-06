@@ -441,6 +441,26 @@ struct forward_pass_constants
     forward_lighting_constants lighting;
 };
 
+// The pass constants (b1) of taa_resolve (11 §10.2, §2.3 pass 11). The view constants (b2) are the frame's camera.
+struct taa_constants
+{
+    uint hdr_color; // Texture2D<float4> SRV, this frame's pre-exposed colour
+    uint velocity; // Texture2D<float2> SRV, current minus previous unjittered UV
+    uint linear_depth; // Texture2D<float> SRV, view-space depth, +infinity where nothing was drawn
+    uint reactive_mask; // Texture2D<float> SRV
+    uint history; // Texture2D<float4> SRV, the previous frame's taa_output; unread without history
+    uint depth_history; // Texture2D<float> SRV, the previous frame's linear depth; unread without history
+    uint output; // RWTexture2D<float4> UAV, taa_output: this frame's history slot
+    uint depth_output; // RWTexture2D<float> UAV, this frame's depth history slot
+    uint has_history; // 0: the output is this frame's colour, unaccumulated
+    uint padding0;
+    uint2 size; // pixels
+    float blend; // the base weight of this frame's colour
+    float gamma; // the variance box's half-size, in standard deviations
+    float history_exposure_scale; // this frame's exposure over the history's
+    float disocclusion_tolerance; // the relative depth difference beyond which the history is rejected
+};
+
 #ifdef __cplusplus
 
 static_assert(sizeof(float2) == 8 && sizeof(float3) == 12 && sizeof(float4) == 16);
@@ -615,6 +635,11 @@ static_assert(offsetof(forward_lighting_constants, shadow) == 48);
 static_assert(sizeof(forward_pass_constants) == 432);
 static_assert(offsetof(forward_pass_constants, scene) == 0);
 static_assert(offsetof(forward_pass_constants, lighting) == 32);
+
+static_assert(sizeof(taa_constants) == 64);
+static_assert(offsetof(taa_constants, size) == 40);
+static_assert(offsetof(taa_constants, blend) == 48);
+static_assert(offsetof(taa_constants, disocclusion_tolerance) == 60);
 
 } // namespace avis::visualizer::rendering::gpu
 

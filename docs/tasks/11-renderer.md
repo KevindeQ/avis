@@ -671,7 +671,15 @@ flowchart LR
 ## 11.15 TAA
 11 §10.2, pass 11, 10 §8.
 
-- [ ] `taa_resolve` (compute):
+*Status: implemented; the tests pass in Debug and Release.* As implemented:
+- **Pass** (`passes/taa_pass.h/.cpp`, `taa.hlsl`): `taa_resolve` runs after `forward_transparent` and writes the view's history slot of this frame directly, which is `taa_output`; the tonemap reads it. It also writes this frame's linear depth into the depth history, so no copy pass is needed. `taa_output` can be captured.
+- **Dilation.** Where the closest pixel of the 3 × 3 neighbourhood shows nothing (sky), its velocity is the camera's, from reprojecting the pixel's direction, since the G-buffer has no velocity there.
+- **Disocclusion.** The previous linear depth of the 3 × 3 texels around the previous position is compared with the surface's current depth, and with the depth the camera's motion alone gives it. With no texel within 5% of either, the history is rejected. A previous position outside the view rejects it too. A 2 × 2 footprint made a thin line's edges flicker: the line covers different pixels from one jitter sample to the next, so the history of its edges was rejected every few frames.
+- **Reactive mask.** This frame's weight is `lerp(0.1, 1, reactive)`.
+- **History.** It's used only when the previous frame ran the resolve (`view_history::taa_written`): after a frame without TAA, or one that didn't run, the next frame starts again. It's rescaled by this frame's exposure over the history's. A view that writes nothing (no output, no capture) runs no resolve, so its passes are still culled.
+- **Tests** are in `test_renderer_taa.cpp`. The convergence test measures the mean change of the 8-bit image between frames 32 and 33 (0.03 LSB), and bounds each pixel's change at 16 LSB (7 measured). A per-pixel bound of 1/255 can't hold: an edge pixel's samples change with the jitter, and the 0.1 blend passes a tenth of that change on each frame.
+
+- [x] `taa_resolve` (compute):
   - velocity dilation (closest depth in 3 × 3)
   - 5-tap Catmull-Rom history sampling
   - YCoCg variance clipping (γ = 1)
@@ -679,13 +687,13 @@ flowchart LR
   - Karis luminance weighting
 
   It writes `taa_output`, which becomes the view's history (ping-pong in `view_history`).
-- [ ] History invalidation on a camera cut, a resize and a scene reload, through `view_options::reset_history`. On a resize, the history is reallocated.
-- [ ] `taa.enabled = false` skips jitter and the resolve; `taa_output` is then `hdr_color`.
+- [x] History invalidation on a camera cut, a resize and a scene reload, through `view_options::reset_history`. On a resize, the history is reallocated.
+- [x] `taa.enabled = false` skips jitter and the resolve; `taa_output` is then `hdr_color`.
 
 **Tests** (`[renderer]`):
-- [ ] A static scene converges: after 32 frames, the image changes by less than 1/255 between frames, and a thin diagonal line's edge pixels are anti-aliased (intermediate values) where TAA off gives hard steps.
-- [ ] A cube moving one pixel per frame leaves no ghost trail past four frames behind it: pixels behind it return to the background within tolerance.
-- [ ] A history reset gives the unaccumulated, jittered frame.
+- [x] A static scene converges: after 32 frames, the image changes by less than 1/255 between frames, and a thin diagonal line's edge pixels are anti-aliased (intermediate values) where TAA off gives hard steps.
+- [x] A cube moving one pixel per frame leaves no ghost trail past four frames behind it: pixels behind it return to the background within tolerance.
+- [x] A history reset gives the unaccumulated, jittered frame.
 
 ## 11.16 Exposure and tonemapping
 11 §10.3, §10.4, passes 12, 13.

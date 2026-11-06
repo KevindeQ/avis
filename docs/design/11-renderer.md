@@ -540,6 +540,12 @@ Generic geometry features. The renderer doesn't know what the points or lines re
 - Jitter: a Halton(2,3) 16-sample sequence applied to the projection (sub-pixel), with the inverse jitter tracked for velocity.
 - Resolve (compute): reproject history using the velocity of the **closest-depth pixel in a 3×3 neighbourhood** (velocity dilation). Sample history with 5-tap Catmull-Rom. Clip the history to the neighbourhood's **YCoCg variance AABB** (γ = 1.0). Blend factor 0.1 base, raised by the reactive mask and on disocclusions (depth-rejection test with the previous depth), with luminance-weighted (Karis) blending to suppress fireflies.
 - Runs on **pre-exposed HDR**, before tonemapping. History is per view, imported, and ping-pong ([10 §8](10-render-graph.md#8-multi-view)). It's invalidated on camera cuts, resizes and scene reloads.
+- *As implemented* (task 11.15):
+  - The resolve writes the view's history slot directly as `taa_output`, plus this frame's linear depth for the next frame's disocclusion test.
+  - Where the 3 × 3 neighbourhood shows only sky, the velocity is the camera's, from reprojecting the pixel's direction.
+  - The disocclusion test compares the previous depth of the 3 × 3 texels around the previous position with both the current depth and the camera-reprojected depth, within 5%.
+  - This frame's weight is `lerp(0.1, 1, reactive)`.
+  - The history is used only when the previous frame ran the resolve, and it's rescaled by the change in pre-exposure.
 
 ### 10.3 Exposure
 - Default: **automatic exposure** from a 128-bin log-luminance histogram (compute), with an average that ignores the darkest 50% and brightest 5%, and asymmetric exponential adaptation (fast brighten, slower darken).

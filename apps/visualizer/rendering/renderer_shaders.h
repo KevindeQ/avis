@@ -58,6 +58,8 @@ namespace avis::visualizer::rendering
         inline constexpr std::string_view environment_prefilter = "environment_bake.prefilter_main.cs";
         inline constexpr std::string_view environment_irradiance = "environment_bake.irradiance_main.cs";
         inline constexpr std::string_view brdf_lut = "environment_bake.brdf_lut_main.cs";
+        // The TAA resolve into the view's history (11.15)
+        inline constexpr std::string_view taa = "taa.main.cs";
         // ldr_color from hdr_color, until exposure and tonemapping exist (11.11, 11.16)
         inline constexpr std::string_view tonemap_preview = "tonemap_preview.main.cs";
 
@@ -76,6 +78,7 @@ namespace avis::visualizer::rendering
                                          environment_prefilter,
                                          environment_irradiance,
                                          brdf_lut,
+                                         taa,
                                          tonemap_preview };
     } // namespace shader_ids
 

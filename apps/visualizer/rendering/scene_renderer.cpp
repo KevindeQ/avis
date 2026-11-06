@@ -7,6 +7,7 @@
 #include "rendering/passes/lighting_passes.h"
 #include "rendering/passes/scene_range_pass.h"
 #include "rendering/passes/shadow_pass.h"
+#include "rendering/passes/taa_pass.h"
 #include "rendering/renderer_shaders.h"
 #include "rendering/view_constants.h"
 
@@ -187,6 +188,7 @@ namespace avis::visualizer::rendering
             std::pair{ &state.gtao, shader_ids::gtao },
             std::pair{ &state.gtao_denoise, shader_ids::gtao_denoise },
             std::pair{ &state.deferred_lighting, shader_ids::deferred_lighting },
+            std::pair{ &state.taa, shader_ids::taa },
             std::pair{ &state.tonemap_preview, shader_ids::tonemap_preview },
             std::pair{ &environment.sky, shader_ids::environment_sky },
             std::pair{ &environment.prefilter, shader_ids::environment_prefilter },
@@ -280,6 +282,7 @@ namespace avis::visualizer::rendering
         gtao_denoise_pipeline_{ state.gtao_denoise },
         deferred_lighting_pipeline_{ state.deferred_lighting },
         sky_pipeline_{ state.sky },
+        taa_pipeline_{ state.taa },
         tonemap_preview_pipeline_{ state.tonemap_preview },
         environment_{ std::move(state.environment) },
         pipeline_variants_{ std::move(state.pipeline_variants) },
@@ -367,6 +370,14 @@ namespace avis::visualizer::rendering
             }
         }
         rebuilt_clusters_.clear();
+        for (const std::string& name : resolved_views_)
+        {
+            if (view_history* history = histories_.find(name))
+            {
+                history->taa_written = false;
+            }
+        }
+        resolved_views_.clear();
     }
 
     bool scene_renderer::can_reuse_extraction(
@@ -394,6 +405,7 @@ namespace avis::visualizer::rendering
     {
         graph_.reset();
         rebuilt_clusters_.clear();
+        resolved_views_.clear();
         view_cascades_.clear();
         draw_lists_.clear(); // they were in the arena
         prepared_draw_lists_.clear();
@@ -783,6 +795,8 @@ namespace avis::visualizer::rendering
         {
             (*history)->jitter_sequence = 0;
         }
+        // TAA accumulates onto the previous frame's resolve, if there was one (11 §10.2)
+        const bool taa_history = (*history)->has_previous && (*history)->taa_written;
 
         // The camera of this frame, with the TAA jitter when TAA is on for the view, and the previous frame's
         // unjittered view-projection from the history, for motion vectors; a view without a previous frame has none
@@ -798,7 +812,10 @@ namespace avis::visualizer::rendering
         ++(*history)->jitter_sequence;
 
         const graphics::view_scope scope = graph_.begin_view(view.name, view.size);
-        [[maybe_unused]] const history_imports imported = import_history(graph_, **history);
+        const history_imports imported = import_history(graph_, **history);
+
+        // A view that writes nothing has its passes culled, unless one writes its history
+        const bool writes = view.output || !view.options.captures.empty() || !view.options.buffer_captures.empty();
 
         const scene_pass_inputs inputs{
             .list = prepared_draw_lists_[index],
@@ -823,7 +840,6 @@ namespace avis::visualizer::rendering
 
         // Pass 3 on async compute, declared before the G-buffer so it overlaps it (11 §2.3). The bounds are rebuilt
         // when the projection changed; a view that writes nothing doesn't, since the build writes its history.
-        const bool writes = view.output || !view.options.captures.empty() || !view.options.buffer_captures.empty();
         const Eigen::Matrix4f projection =
             view.camera.projection(static_cast<float>(view.size.width) / static_cast<float>(view.size.height));
         const bool rebuild_clusters =
@@ -848,8 +864,8 @@ namespace avis::visualizer::rendering
               .keep_front = !inputs.list.list->range(forward_range()).empty() });
 
         // Pass 4 (11.10); passes 5 and 6 on async compute, declared after the G-buffer and before the shadow cascades
-        // (11.12), so they overlap them (11 §2.3); then lighting and the sky (11.11), the transparents (11.14), and the
-        // placeholder tonemap until 11.16
+        // (11.12), so they overlap them (11 §2.3); then lighting and the sky (11.11), the transparents (11.14), TAA
+        // (11.15), and the placeholder tonemap until 11.16
         const gbuffer_targets gbuffer = add_gbuffer_pass(graph_, inputs, depth);
         gtao_outputs ambient_occlusion;
         if (ao_parameters_.intensity > 0.0f)
@@ -910,8 +926,31 @@ namespace avis::visualizer::rendering
               .ambient_intensity = ambient_intensity_,
               .shadow_map = shadow_map,
               .shadow = make_shadow_constants(cascades, 0) });
-        const graphics::texture ldr_color =
-            add_tonemap_preview(graph_, tonemap_preview_pipeline_, transparent.hdr_color);
+        // Without TAA, taa_output is hdr_color, and the history isn't written
+        graphics::texture taa_output = transparent.hdr_color;
+        const bool resolve = taa && writes;
+        if (resolve)
+        {
+            taa_output = add_taa_resolve(
+                             graph_,
+                             { .pipeline = taa_pipeline_,
+                               .hdr_color = transparent.hdr_color,
+                               .velocity = gbuffer.velocity,
+                               .linear_depth = linearized.linear_depth,
+                               .reactive_mask = transparent.reactive_mask,
+                               .history = imported.taa_history_current,
+                               .depth_history = imported.depth_current,
+                               .previous_history = imported.taa_history_previous,
+                               .previous_depth_history = imported.depth_previous,
+                               .has_history = taa_history,
+                               .history_exposure_scale = taa_history ? exposure / (*history)->taa_exposure : 1.0f,
+                               .view_constants = inputs.view_constants })
+                             .output;
+            resolved_views_.push_back(view.name);
+        }
+        (*history)->taa_written = resolve;
+        (*history)->taa_exposure = exposure;
+        const graphics::texture ldr_color = add_tonemap_preview(graph_, tonemap_preview_pipeline_, taa_output);
 
         // Captures, for tests and tools: copies of the final versions
         const graphics::texture_extent ao_size = gtao_extent(ao_parameters_, view.size);
@@ -929,6 +968,7 @@ namespace avis::visualizer::rendering
             capturable{ "ao", ambient_occlusion.ao, rhi::format::r8_unorm, 1, ao_size },
             capturable{ "hdr_color", transparent.hdr_color, rhi::format::rgba16_float },
             capturable{ "reactive_mask", transparent.reactive_mask, rhi::format::r8_unorm },
+            capturable{ "taa_output", taa_output, rhi::format::rgba16_float },
             capturable{ "cascade_index", lit.cascade_index, rhi::format::r8_uint },
             capturable{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
         };

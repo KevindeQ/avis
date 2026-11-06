@@ -329,6 +329,7 @@ namespace avis::visualizer::rendering
             rhi::compute_pipeline_handle gtao_denoise;
             rhi::compute_pipeline_handle deferred_lighting;
             rhi::graphics_pipeline_handle sky;
+            rhi::compute_pipeline_handle taa;
             rhi::compute_pipeline_handle tonemap_preview;
             std::unique_ptr<environment_baker> environment;
             std::unique_ptr<pipeline_variant_registry> pipeline_variants;
@@ -390,12 +391,14 @@ namespace avis::visualizer::rendering
         rhi::compute_pipeline_handle gtao_denoise_pipeline_;
         rhi::compute_pipeline_handle deferred_lighting_pipeline_;
         rhi::graphics_pipeline_handle sky_pipeline_;
+        rhi::compute_pipeline_handle taa_pipeline_;
         rhi::compute_pipeline_handle tonemap_preview_pipeline_;
         std::unique_ptr<environment_baker> environment_;
         std::optional<Eigen::Vector3f> environment_override_;
         float ambient_intensity_ = 1.0f; // the snapshot's, for the frame being built
         environment_resources environment_resources_; // of the frame being built
         std::vector<std::string> rebuilt_clusters_; // the views whose cluster bounds the frame being built rebuilds
+        std::vector<std::string> resolved_views_; // the views whose TAA history the frame being built writes
         std::unique_ptr<pipeline_variant_registry> pipeline_variants_;
         std::unique_ptr<geometry_arena> arena_;
         std::unique_ptr<residency_cache> residency_; // refers to arena_ and the upload queue

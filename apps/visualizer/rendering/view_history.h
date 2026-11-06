@@ -44,6 +44,9 @@ namespace avis::visualizer::rendering
         bool has_previous = false; // the previous slots and view_projection hold this view's previous frame
         Eigen::Matrix4f view_projection = Eigen::Matrix4f::Identity(); // unjittered, of the last frame rendered
         std::uint64_t jitter_sequence = 0; // the TAA jitter's next sample (11 §10.2); 0 when the history starts again
+        // The previous slot of taa_history holds a TAA resolve: the frame before ran taa_resolve. Set by the renderer.
+        bool taa_written = false;
+        float taa_exposure = 1.0f; // the pre-exposure of the slot taa_resolve last wrote
         std::uint64_t last_used_frame = 0;
 
         std::uint32_t previous() const noexcept

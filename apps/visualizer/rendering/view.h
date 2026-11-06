@@ -62,7 +62,8 @@ namespace avis::visualizer::rendering
     // (docs/tasks/11-renderer.md §11.10). The texture must have the resource's format and the mip's size, allow
     // copy_destination, and be in `common`, where the frame leaves it. Resources: depth, linear_depth, depth_mips,
     // gbuffer_albedo, gbuffer_normal, gbuffer_material, gbuffer_emissive, velocity, hdr_color (11.11), cascade_index
-    // (R8_UINT, the sun's shadow cascade of each pixel or gpu::no_cascade, 11.12), ldr_color.
+    // (R8_UINT, the sun's shadow cascade of each pixel or gpu::no_cascade, 11.12), ao_raw, ao_edges, ao (11.13),
+    // reactive_mask (11.14), taa_output (RGBA16F; hdr_color when TAA is off, 11.15), ldr_color.
     struct resource_capture
     {
         std::string resource;
