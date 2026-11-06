@@ -138,6 +138,9 @@ AVIS_SHARED_CONSTANT(uint, brdf_lut_size, 128); // texel (i, j) is NoV = (i + 0.
 AVIS_SHARED_CONSTANT(uint, shadow_maximum_cascades, 4);
 AVIS_SHARED_CONSTANT(uint, no_cascade, 255);
 
+// GTAO (11 §8): gtao_denoise runs gtao_denoise_passes times over the raw AO
+AVIS_SHARED_CONSTANT(uint, gtao_denoise_passes, 2);
+
 // ---- Structures ----
 
 // One material slot of the renderer's material buffer (11 §3.3): glTF 2.0 metallic-roughness plus the generic extensions
@@ -357,7 +360,7 @@ struct deferred_lighting_constants
     uint cluster_lights; // StructuredBuffer<cluster_lights>
     uint light_indices; // StructuredBuffer<uint>
     uint sun; // index of the sun in lights, or no_light
-    uint ambient_occlusion; // SRV of the AO texture (R8); 0 until GTAO exists (11.13): no occlusion
+    uint ambient_occlusion; // SRV of GTAO's denoised AO (R8); 0: no occlusion
     uint irradiance; // StructuredBuffer<float4>, environment_irradiance_coefficients SH9 coefficients
     uint prefiltered; // TextureCube SRV
     uint brdf_lut; // Texture2D SRV, RG16F
@@ -366,8 +369,8 @@ struct deferred_lighting_constants
     uint2 tile_size; // pixels per cluster tile
     float exposure; // pre-exposure: hdr_color = radiance · exposure
     float ambient_intensity; // scales the image-based lighting
+    uint ambient_occlusion_scale; // pixels per AO texel along each axis: 1, or 2 at half resolution (upsampled)
     uint padding0;
-    uint padding1;
     shadow_constants shadow; // the sun's
 };
 
@@ -377,6 +380,38 @@ struct sky_pass_constants
     sky_constants sky;
     float exposure;
     uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
+// The pass constants (b1) of gtao (11 §8, §2.3 pass 5). AO texel p is centred on pixel p · scale.
+struct gtao_constants
+{
+    uint depth_mips; // SRV, RG32F: min and max linear depth (metres) per texel, every mip
+    uint normal; // gbuffer_normal SRV
+    uint ao; // UAV, R8_UNORM: the raw AO
+    uint edges; // UAV, R8_UNORM: the depth edges, 2 bits each for left, right, top and bottom
+    uint2 size; // texels of ao and edges
+    uint scale; // pixels per AO texel along each axis: 1, or 2 at half resolution
+    uint depth_mip_count;
+    uint slice_count;
+    uint steps_per_side;
+    float radius; // metres
+    float falloff; // the fraction of the radius over which occluders fade out
+    float intensity; // the power curve applied to the visibility
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
+// The draw constants (b0) of gtao_denoise (11 §8, §2.3 pass 6)
+struct gtao_denoise_constants
+{
+    uint source; // SRV, R8_UNORM
+    uint edges; // SRV, R8_UNORM, gtao's
+    uint destination; // UAV, R8_UNORM
+    uint padding0;
+    uint2 size; // texels
     uint padding1;
     uint padding2;
 };
@@ -529,10 +564,21 @@ static_assert(offsetof(deferred_lighting_constants, size) == 64);
 static_assert(offsetof(deferred_lighting_constants, tile_size) == 72);
 static_assert(offsetof(deferred_lighting_constants, exposure) == 80);
 static_assert(offsetof(deferred_lighting_constants, ambient_intensity) == 84);
+static_assert(offsetof(deferred_lighting_constants, ambient_occlusion_scale) == 88);
 
 static_assert(sizeof(sky_pass_constants) == 160);
 static_assert(offsetof(sky_pass_constants, sky) == 0);
 static_assert(offsetof(sky_pass_constants, exposure) == 144);
+
+static_assert(sizeof(gtao_constants) == 64);
+static_assert(offsetof(gtao_constants, size) == 16);
+static_assert(offsetof(gtao_constants, scale) == 24);
+static_assert(offsetof(gtao_constants, slice_count) == 32);
+static_assert(offsetof(gtao_constants, radius) == 40);
+static_assert(offsetof(gtao_constants, intensity) == 48);
+
+static_assert(sizeof(gtao_denoise_constants) == 32);
+static_assert(offsetof(gtao_denoise_constants, size) == 16);
 
 } // namespace avis::visualizer::rendering::gpu
 

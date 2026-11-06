@@ -33,7 +33,7 @@ render:
   maximum_fps: 0                 # 0 = match display refresh reported by Qt
   shader_directory: ""           # empty = <executable directory>/data/shaders/visualizer
   shadows: { cascades: 4, resolution: 2048, distance: 200.0 }
-  ao: { half_resolution: true, radius: 1.5, slices: 2, steps: 4, intensity: 1.0 }
+  ao: { half_resolution: true, radius: 1.5, falloff: 0.4, slices: 2, steps: 4, intensity: 1.0 }   # falloff: fraction of the radius
   taa: { enabled: true }
   exposure: { mode: auto, ev100: 12.0 }
   tonemapper: aces               # aces | agx
@@ -67,6 +67,7 @@ TEST_CASE("render settings default to 11 §14", "[renderer][unit]")
     CHECK(defaults.shadows.distance == 200.0f);
     CHECK(defaults.ao.half_resolution);
     CHECK(defaults.ao.radius == 1.5f);
+    CHECK(defaults.ao.falloff == 0.4f);
     CHECK(defaults.ao.slices == 2);
     CHECK(defaults.ao.steps == 4);
     CHECK(defaults.ao.intensity == 1.0f);
@@ -119,7 +120,7 @@ render:
   maximum_fps: 144.5
   shader_directory: "shaders/custom"
   shadows: { cascades: 1, resolution: 1024, distance: 50 }
-  ao: { half_resolution: false, radius: 0.5, slices: 3, steps: 6, intensity: 2.0 }
+  ao: { half_resolution: false, radius: 0.5, falloff: 0.25, slices: 3, steps: 6, intensity: 2.0 }
   taa: { enabled: false }
   exposure: { mode: manual, ev100: 9.5 }
   tonemapper: agx
@@ -140,6 +141,7 @@ render:
     CHECK(settings->shadows.distance == 50.0f);
     CHECK_FALSE(settings->ao.half_resolution);
     CHECK(settings->ao.radius == 0.5f);
+    CHECK(settings->ao.falloff == 0.25f);
     CHECK(settings->ao.slices == 3);
     CHECK(settings->ao.steps == 6);
     CHECK(settings->ao.intensity == 2.0f);

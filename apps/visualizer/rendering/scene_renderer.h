@@ -201,6 +201,18 @@ namespace avis::visualizer::rendering
             return settings_;
         }
 
+        // The GTAO parameters (11 §8), render.ao at creation; for the debug UI (12 §6). Takes effect with the next
+        // frame. An intensity of 0 turns GTAO off: its passes aren't added.
+        void set_ao_parameters(const ambient_occlusion_settings& parameters) noexcept
+        {
+            ao_parameters_ = parameters;
+        }
+
+        const ambient_occlusion_settings& ao_parameters() const noexcept
+        {
+            return ao_parameters_;
+        }
+
         // For tests and tools: replaces the snapshot's environment with a uniform radiance (linear RGB, cd/m²) in every
         // direction, for the image-based lighting and the sky; none restores the sky. Takes effect with the next frame.
         void set_environment_override(std::optional<Eigen::Vector3f> uniform_radiance)
@@ -313,6 +325,8 @@ namespace avis::visualizer::rendering
             rhi::compute_pipeline_handle depth_mips;
             rhi::compute_pipeline_handle cluster_build;
             rhi::compute_pipeline_handle light_cull;
+            rhi::compute_pipeline_handle gtao;
+            rhi::compute_pipeline_handle gtao_denoise;
             rhi::compute_pipeline_handle deferred_lighting;
             rhi::graphics_pipeline_handle sky;
             rhi::compute_pipeline_handle tonemap_preview;
@@ -363,6 +377,7 @@ namespace avis::visualizer::rendering
         renderer_dependencies dependencies_;
         graphics::render_graph& graph_;
         render_settings settings_;
+        ambient_occlusion_settings ao_parameters_; // settings_.ao until set_ao_parameters
         graphics::shader_library& shaders_;
         rhi::root_signature_handle standard_signature_;
         view_history_store histories_;
@@ -371,6 +386,8 @@ namespace avis::visualizer::rendering
         rhi::compute_pipeline_handle depth_mips_pipeline_;
         rhi::compute_pipeline_handle cluster_build_pipeline_;
         rhi::compute_pipeline_handle light_cull_pipeline_;
+        rhi::compute_pipeline_handle gtao_pipeline_;
+        rhi::compute_pipeline_handle gtao_denoise_pipeline_;
         rhi::compute_pipeline_handle deferred_lighting_pipeline_;
         rhi::graphics_pipeline_handle sky_pipeline_;
         rhi::compute_pipeline_handle tonemap_preview_pipeline_;

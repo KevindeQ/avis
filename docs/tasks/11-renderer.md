@@ -545,7 +545,7 @@ flowchart LR
 - **Deferred lighting** (`deferred_lighting.hlsl`, `lighting.hlsli`, `brdf.hlsli`, `environment.hlsli`):
   - Pixels with nothing drawn are 0, and the sky pass fills them.
   - The image-based diffuse is weighted by `(1 − specular albedo)(1 − metallic)`, so a white furnace is exact.
-  - Material AO applies to the ambient term, with Lagarde's specular occlusion. `ambient_occlusion` (GTAO) and `shadow_map` are 0 until 11.13 and 11.12.
+  - Material AO applies to the ambient term, with Lagarde's specular occlusion. `ambient_occlusion` (GTAO) and `shadow_map` were 0 until 11.13 and 11.12.
   - The pre-exposure is `manual_exposure(exposure.ev100)` in both exposure modes until 11.16.
   - The Toksvig term widens the G-buffer's roughness where the normal map's texel is shorter than 1.
 - **Environment** (`environment_baker.h/.cpp`, `environment_bake.hlsl`):
@@ -592,7 +592,7 @@ flowchart LR
 
 *Status: implemented; the tests pass in Debug and Release.* Only the progressive LOD stays open, for 11.18. As implemented:
 - **CPU** (`cascades.h/.cpp`). Each cascade's sphere is the smallest one centred on the view axis that holds its frustum slice, so its radius only depends on the projection. The light's view has a fixed rotation, and the sphere's light-space x and y are rounded to whole texels. Depth 1 is 200 m (`caster_extension`) beyond the sphere towards the sun, depth 0 its far side. The renderer computes the cascades per view before the draw lists, which cull the casters into them, and only when the frame's sun casts shadows. `scene_renderer::view_cascades()` exposes them for tests.
-- **Pass** (`passes/shadow_pass.h/.cpp`): `shadow_cascades` walks `scene/shadow_cascade[0 … count − 1]/world/opaque` into `shadow_map`, cascade *c* into layer *c* with its own view constants (orthographic, near plane 0, no jitter). `scene_range_pass` gained per-viewport bindings (`scene_viewport`). The shadow PSO has a slope-scaled bias of −1.5 and no depth clipping, so casters in front of the cascade are flattened onto it. The pass is declared after the G-buffer; it moves after GTAO with 11.13.
+- **Pass** (`passes/shadow_pass.h/.cpp`): `shadow_cascades` walks `scene/shadow_cascade[0 … count − 1]/world/opaque` into `shadow_map`, cascade *c* into layer *c* with its own view constants (orthographic, near plane 0, no jitter). `scene_range_pass` gained per-viewport bindings (`scene_viewport`). The shadow PSO has a slope-scaled bias of −1.5 and no depth clipping, so casters in front of the cascade are flattened onto it. The pass was declared after the G-buffer; since 11.13 it comes after GTAO.
 - **Clears.** The graph's `write_flags::needs_clear` only declares the need: nothing recorded a clear, so 11.10's depth prepass and G-buffer weren't cleared either. `scene_range_pass`'s first part now records the clears of the attachments that ask for one, over every layer.
 - **Receiver** (`shadows.hlsli`, read by `deferred_lighting`): the normal offset is 1 texel × sin of the normal–sun angle, the Poisson disk's radius 1 texel. The cascade constants travel in `deferred_lighting_constants::shadow` (`shadow_constants`, the cascades as four members, since shared structs have no arrays). The last cascade blends into "lit". `cascade_index` (R8_UINT, `gpu::no_cascade` where none applies) is written only when a view captures it, until 11.20.
 - **Progressive LOD in shadow viewports** waits for 11.18, which brings progressive meshes.
@@ -620,7 +620,15 @@ flowchart LR
 ## 11.13 GTAO
 11 §8, passes 5, 6.
 
-- [ ] `gtao.hlsl`, written from scratch per 11 §8:
+*Status: implemented; the tests pass in Debug and Release.* As implemented:
+- **Passes** (`passes/gtao_pass.h/.cpp`, `gtao.hlsl`, both on async compute, declared after the G-buffer and before `shadow_cascades`): `gtao` writes `ao_raw` and `ao_edges` (two R8_UNORM textures; the edges are 2 bits per side). Then `gtao_denoise_0` and `gtao_denoise_1` (`gpu::gtao_denoise_passes` = 2) write `ao_denoised_0` and `ao`. At half resolution the textures are the view's size halved and rounded up, and AO texel *t* is centred on pixel 2*t*. `deferred_lighting` upsamples them: bilinear weights times depth similarity (5% of the depth), or the texel closest in depth when none is similar.
+- **Slices around the view vector.** The slices are spaced evenly around the view vector, and each slice's screen direction comes from the projection's derivative. XeGTAO spaces them evenly by their angle on screen. That isn't uniform around the view vector for off-axis pixels, and it biases the integral even with many slices: a plane facing the camera read 0.95 near the view's corners.
+- **Depth samples.** Each sample interpolates its depth mip bilinearly at the sample's position, so it stays on the slice's line. A texel's depth is the middle of its min and max, which is exact at its centre for a plane. A sample next to "nothing drawn" takes the nearest texel's depth. The mip is `round(log2(step pixels) − 3.3)`.
+- **Parameters.** `render.ao` gained `falloff` (default 0.4, in (0, 1]). `scene_renderer::set_ao_parameters` replaces the whole `ambient_occlusion_settings`. An intensity of 0 leaves the passes out, and a capture of `ao` then fails. `ao`, `ao_raw` and `ao_edges` can be captured at the AO resolution (`gtao_extent`).
+- **The white furnace test (11.11) turns GTAO off.** With two slices, GTAO darkens a sphere's silhouette, which it sees at grazing angles, by up to 15%. That test checks the lighting's energy balance.
+- **Tests** are in `test_renderer_gtao.cpp`. The corner is a V-shaped trough facing the camera, two planes at 45° meeting in a vertical crease 4 m away. Its depth is analytic, so the reference is the estimator of `gtao.hlsl` run on the CPU with exact depths, averaged over a grid of noise values. That replaces a WARP-rendered PNG and works on any adapter. The GPU's AO, binned by distance to the crease, is within 0.02 of it at full resolution and 0.064 at half resolution, with the largest gap at the crease. The benchmark measured 0.13 ms for `gtao` plus the denoise at 1920 × 1080 on the development machine's GPU (not the RTX 3060 reference).
+
+- [x] `gtao.hlsl`, written from scratch per 11 §8:
   - half resolution by default
   - `slice_count` slices and `steps_per_side` steps with quadratic distribution
   - radius and falloff
@@ -629,15 +637,15 @@ flowchart LR
   - Hilbert × R2 spatio-temporal noise from the frame index
 
   Its output is AO (R8) plus packed edges (R8).
-- [ ] `gtao_denoise`: an edge-aware 3 × 3 filter, run once or twice. The lighting pass does the optional depth-aware upsample. Both GTAO passes run on async compute, declared after the G-buffer.
-- [ ] Specular occlusion uses Lagarde's approximation in `deferred_lighting`; `diffuse_ao = min(gtao, material_ao)`.
-- [ ] The AO parameters come from `render_settings.ao` and can be changed at runtime through `scene_renderer::set_ao_parameters`, for 12's debug UI.
+- [x] `gtao_denoise`: an edge-aware 3 × 3 filter, run once or twice. The lighting pass does the optional depth-aware upsample. Both GTAO passes run on async compute, declared after the G-buffer.
+- [x] Specular occlusion uses Lagarde's approximation in `deferred_lighting`; `diffuse_ao = min(gtao, material_ao)`.
+- [x] The AO parameters come from `render_settings.ao` and can be changed at runtime through `scene_renderer::set_ao_parameters`, for 12's debug UI.
 
 **Tests** (`[renderer]`):
-- [ ] A flat plane facing the camera gives AO ≥ 0.98 everywhere away from the edges.
-- [ ] A 90° concave corner (two planes) gives AO that falls towards the crease, and matches the reference image within tolerance (Conventions).
-- [ ] Half and full resolution give the same mean AO within 3% on the corner scene.
-- [ ] `[!benchmark]`: under 0.8 ms at 1920 × 1080 half resolution on the reference GPU.
+- [x] A flat plane facing the camera gives AO ≥ 0.98 everywhere away from the edges.
+- [x] A 90° concave corner (two planes) gives AO that falls towards the crease, and matches the reference image within tolerance (Conventions).
+- [x] Half and full resolution give the same mean AO within 3% on the corner scene.
+- [x] `[!benchmark]`: under 0.8 ms at 1920 × 1080 half resolution on the reference GPU.
 
 ## 11.14 Forward transparent pass
 11 §10.1, pass 10.

@@ -13,6 +13,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	material_table.cpp
 	passes/depth_passes.cpp
 	passes/gbuffer_pass.cpp
+	passes/gtao_pass.cpp
 	passes/lighting_passes.cpp
 	passes/scene_range_pass.cpp
 	passes/shadow_pass.cpp

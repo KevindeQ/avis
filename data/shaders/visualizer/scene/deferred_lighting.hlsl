@@ -4,12 +4,13 @@
 // thread in 8 × 8 groups. It reconstructs the world position from the depth buffer, then sums
 //   - the sun, with its shadow from the cascaded shadow maps (shadows.hlsli, 11.12);
 //   - the point and spot lights of the pixel's cluster;
-//   - the image-based ambient light of the baked environment, with ambient occlusion (the material's, and GTAO's once
-//     it exists, 11.13) and Lagarde's specular occlusion;
+//   - the image-based ambient light of the baked environment, with ambient occlusion (the lower of the material's and
+//     GTAO's, 11.13) and Lagarde's specular occlusion from it;
 //   - the emissive radiance.
 // Unlit pixels pass their base colour through. The result is pre-exposed: hdr_color = radiance · exposure. Pixels with
 // nothing drawn (depth 0) are left at 0 for the sky pass. When constants.cascade_index names a UAV, each pixel's shadow
-// cascade goes there (no_cascade where none applies), for the debug blit (11.20) and the tests.
+// cascade goes there (no_cascade where none applies), for the debug blit (11.20) and the tests. A half-resolution GTAO
+// result is upsampled here, with bilinear weights scaled by depth similarity (11 §8).
 
 #include "bindless.hlsli"
 #include "brdf.hlsli"
@@ -29,6 +30,52 @@ void write_cascade_index(uint2 pixel, uint index)
         RWTexture2D<uint> cascade_index = ResourceDescriptorHeap[constants.cascade_index];
         cascade_index[pixel] = index;
     }
+}
+
+// GTAO's ambient occlusion at `pixel`, whose linear depth is `view_depth`. At half resolution, AO texel t is centred
+// on pixel t · scale: the four texels around the pixel are weighted bilinearly and by how close their depth is to the
+// pixel's, so occlusion doesn't bleed across depth edges. Without any similar texel, the closest in depth wins.
+float gtao_occlusion(uint2 pixel, float view_depth)
+{
+    Texture2D<float> gtao = ResourceDescriptorHeap[constants.ambient_occlusion];
+    const uint scale = constants.ambient_occlusion_scale;
+    if (scale <= 1)
+    {
+        return gtao.Load(int3(pixel, 0));
+    }
+    Texture2D<float> linear_depth = ResourceDescriptorHeap[constants.linear_depth];
+    uint width;
+    uint height;
+    gtao.GetDimensions(width, height);
+    const int2 last = int2(width, height) - 1;
+    const int2 last_pixel = int2(constants.size) - 1;
+    const float2 position = float2(pixel) / float(scale);
+    const int2 base = int2(floor(position));
+    const float2 fraction = position - float2(base);
+
+    float sum = 0.0;
+    float total = 0.0;
+    float closest = 0.0;
+    float closest_difference = 1.0e30;
+    [unroll] for (uint corner = 0; corner < 4; ++corner)
+    {
+        const int2 offset = int2(corner & 1, corner >> 1);
+        const int2 texel = min(base + offset, last);
+        const float bilinear =
+            (offset.x != 0 ? fraction.x : 1.0 - fraction.x) * (offset.y != 0 ? fraction.y : 1.0 - fraction.y);
+        const float depth = linear_depth.Load(int3(min(texel * int(scale), last_pixel), 0));
+        const float difference = abs(depth - view_depth);
+        const float value = gtao.Load(int3(texel, 0));
+        const float weight = bilinear * saturate(1.0 - difference / (0.05 * view_depth));
+        sum += weight * value;
+        total += weight;
+        if (difference < closest_difference)
+        {
+            closest_difference = difference;
+            closest = value;
+        }
+    }
+    return total > 1.0e-4 ? sum / total : closest;
 }
 
 [numthreads(8, 8, 1)] void main(uint3 thread : SV_DispatchThreadID)
@@ -105,8 +152,7 @@ void write_cascade_index(uint2 pixel, uint index)
     float ambient_occlusion = albedo.a;
     if (avis_has_descriptor(constants.ambient_occlusion))
     {
-        Texture2D<float> gtao = ResourceDescriptorHeap[constants.ambient_occlusion];
-        ambient_occlusion = min(ambient_occlusion, gtao.Load(texel));
+        ambient_occlusion = min(ambient_occlusion, gtao_occlusion(thread.xy, view_depth));
     }
     environment_lighting environment;
     environment.irradiance = constants.irradiance;

@@ -2,6 +2,7 @@
 
 #include "rendering/passes/depth_passes.h"
 #include "rendering/passes/gbuffer_pass.h"
+#include "rendering/passes/gtao_pass.h"
 #include "rendering/passes/lighting_passes.h"
 #include "rendering/passes/scene_range_pass.h"
 #include "rendering/passes/shadow_pass.h"
@@ -90,6 +91,7 @@ namespace avis::visualizer::rendering
             graphics::texture texture;
             rhi::format format;
             std::uint32_t mips = 1;
+            graphics::texture_extent size{ 0, 0 }; // of mip 0; 0 × 0: the view's
         };
 
         struct buffer_capture_data
@@ -181,6 +183,8 @@ namespace avis::visualizer::rendering
             std::pair{ &state.depth_mips, shader_ids::depth_mips },
             std::pair{ &state.cluster_build, shader_ids::cluster_build },
             std::pair{ &state.light_cull, shader_ids::light_cull },
+            std::pair{ &state.gtao, shader_ids::gtao },
+            std::pair{ &state.gtao_denoise, shader_ids::gtao_denoise },
             std::pair{ &state.deferred_lighting, shader_ids::deferred_lighting },
             std::pair{ &state.tonemap_preview, shader_ids::tonemap_preview },
             std::pair{ &environment.sky, shader_ids::environment_sky },
@@ -262,6 +266,7 @@ namespace avis::visualizer::rendering
         dependencies_{ dependencies },
         graph_{ dependencies.graph },
         settings_{ settings },
+        ao_parameters_{ settings.ao },
         shaders_{ shaders },
         standard_signature_{ state.standard_signature },
         histories_{ dependencies.resources },
@@ -270,6 +275,8 @@ namespace avis::visualizer::rendering
         depth_mips_pipeline_{ state.depth_mips },
         cluster_build_pipeline_{ state.cluster_build },
         light_cull_pipeline_{ state.light_cull },
+        gtao_pipeline_{ state.gtao },
+        gtao_denoise_pipeline_{ state.gtao_denoise },
         deferred_lighting_pipeline_{ state.deferred_lighting },
         sky_pipeline_{ state.sky },
         tonemap_preview_pipeline_{ state.tonemap_preview },
@@ -838,9 +845,22 @@ namespace avis::visualizer::rendering
               .depth_mip_count = depth_mips,
               .view_constants = inputs.view_constants });
 
-        // Pass 4 (11.10), the shadow cascades (11.12; declared after GTAO once it exists, 11 §2.3), then lighting and
-        // the sky (11.11), then the placeholder tonemap until 11.16
+        // Pass 4 (11.10); passes 5 and 6 on async compute, declared after the G-buffer and before the shadow cascades
+        // (11.12), so they overlap them (11 §2.3); then lighting and the sky (11.11), and the placeholder tonemap until
+        // 11.16
         const gbuffer_targets gbuffer = add_gbuffer_pass(graph_, inputs, depth);
+        gtao_outputs ambient_occlusion;
+        if (ao_parameters_.intensity > 0.0f)
+        {
+            ambient_occlusion = add_gtao(
+                graph_,
+                { .pipelines = { .gtao = gtao_pipeline_, .denoise = gtao_denoise_pipeline_ },
+                  .depth_mips = linearized.depth_mips,
+                  .depth_mip_count = depth_mips,
+                  .normal = gbuffer.normal,
+                  .view_constants = inputs.view_constants,
+                  .parameters = ao_parameters_ });
+        }
         const shadow_cascades& cascades = view_cascades_[index];
         graphics::texture shadow_map;
         if (cascades.count > 0)
@@ -864,6 +884,8 @@ namespace avis::visualizer::rendering
               .ambient_intensity = ambient_intensity_,
               .view_constants = inputs.view_constants,
               .shadow_map = shadow_map,
+              .ambient_occlusion = ambient_occlusion.ao,
+              .ambient_occlusion_scale = ambient_occlusion.scale,
               .shadow = make_shadow_constants(cascades, 0),
               .cascade_index = wants_cascade_index });
         const sky_outputs sky = add_sky_pass(
@@ -877,6 +899,7 @@ namespace avis::visualizer::rendering
         const graphics::texture ldr_color = add_tonemap_preview(graph_, tonemap_preview_pipeline_, sky.hdr_color);
 
         // Captures, for tests and tools: copies of the final versions
+        const graphics::texture_extent ao_size = gtao_extent(ao_parameters_, view.size);
         const std::array resources{
             capturable{ "depth", sky.depth, rhi::format::d32_float },
             capturable{ "linear_depth", linearized.linear_depth, rhi::format::r32_float },
@@ -886,6 +909,9 @@ namespace avis::visualizer::rendering
             capturable{ "gbuffer_material", gbuffer.material, rhi::format::rgba8_unorm },
             capturable{ "gbuffer_emissive", gbuffer.emissive, rhi::format::r11g11b10_float },
             capturable{ "velocity", gbuffer.velocity, rhi::format::rg16_float },
+            capturable{ "ao_raw", ambient_occlusion.raw, rhi::format::r8_unorm, 1, ao_size },
+            capturable{ "ao_edges", ambient_occlusion.edges, rhi::format::r8_unorm, 1, ao_size },
+            capturable{ "ao", ambient_occlusion.ao, rhi::format::r8_unorm, 1, ao_size },
             capturable{ "hdr_color", sky.hdr_color, rhi::format::rgba16_float },
             capturable{ "cascade_index", lit.cascade_index, rhi::format::r8_uint },
             capturable{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
@@ -899,8 +925,13 @@ namespace avis::visualizer::rendering
                 return invalid_view(view.name, std::format("no resource '{}' to capture", capture.resource));
             }
             const rhi::texture_description& target = dependencies_.resources.description(capture.texture);
-            const std::uint32_t width = std::max(view.size.width >> capture.mip, 1u);
-            const std::uint32_t height = std::max(view.size.height >> capture.mip, 1u);
+            if (!found->texture.valid())
+            {
+                return invalid_view(view.name, std::format("'{}' isn't rendered this frame", capture.resource));
+            }
+            const graphics::texture_extent base = found->size.width != 0 ? found->size : view.size;
+            const std::uint32_t width = std::max(base.width >> capture.mip, 1u);
+            const std::uint32_t height = std::max(base.height >> capture.mip, 1u);
             if (capture.mip >= found->mips || target.format != found->format || target.width != width ||
                 target.height != height || !(target.usage & rhi::texture_usage::copy_destination))
             {

@@ -314,6 +314,11 @@ TEST_CASE("white furnace: a white sphere under a uniform environment reflects th
     fixture.publish();
     constexpr float radiance = 2.0f;
     fixture.renderer->set_environment_override(Eigen::Vector3f::Constant(radiance));
+    // Without GTAO: with two slices it darkens the silhouette, seen at grazing angles, by up to 15%. The test checks
+    // the lighting's energy balance; test_renderer_gtao.cpp checks GTAO.
+    ambient_occlusion_settings no_ao = fixture.renderer->ao_parameters();
+    no_ao.intensity = 0.0f;
+    fixture.renderer->set_ao_parameters(no_ao);
 
     view_description main = steady_view(fixture);
     const rhi::texture_handle hdr = capture(fixture, main, "hdr_color", rhi::format::rgba16_float);

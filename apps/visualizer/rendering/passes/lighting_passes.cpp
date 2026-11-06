@@ -84,6 +84,7 @@ namespace avis::visualizer::rendering
             graphics::texture prefiltered;
             graphics::texture brdf_lut;
             graphics::texture shadow_map;
+            graphics::texture ambient_occlusion;
             graphics::texture hdr_color;
             graphics::texture cascade_index;
         };
@@ -217,6 +218,10 @@ namespace avis::visualizer::rendering
                 {
                     data.shadow_map = builder.read(inputs.shadow_map, srv);
                 }
+                if (inputs.ambient_occlusion.valid())
+                {
+                    data.ambient_occlusion = builder.read(inputs.ambient_occlusion, srv);
+                }
                 data.hdr_color = builder.write(
                     builder.create_texture(
                         "hdr_color", { .size = graphics::view_relative(1.0f), .format = rhi::format::rgba16_float }),
@@ -236,6 +241,7 @@ namespace avis::visualizer::rendering
              ambient_intensity = inputs.ambient_intensity,
              tile,
              shadow = inputs.shadow,
+             ao_scale = inputs.ambient_occlusion_scale,
              view_constants = inputs.view_constants](
                 const deferred_lighting_data& data,
                 const graphics::resource_bag& resources,
@@ -255,7 +261,9 @@ namespace avis::visualizer::rendering
                 constants.cluster_lights = resources.srv(data.cluster_lights).value;
                 constants.light_indices = resources.srv(data.light_indices).value;
                 constants.sun = sun;
-                constants.ambient_occlusion = 0; // GTAO comes with 11.13
+                constants.ambient_occlusion =
+                    data.ambient_occlusion.valid() ? resources.srv(data.ambient_occlusion).value : 0;
+                constants.ambient_occlusion_scale = ao_scale;
                 constants.irradiance = resources.srv(data.irradiance).value;
                 constants.prefiltered = resources.srv(data.prefiltered).value;
                 constants.brdf_lut = resources.srv(data.brdf_lut).value;

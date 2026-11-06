@@ -502,6 +502,11 @@ Based on Jimenez et al. 2016, "Practical Real-Time Strategies for Accurate Indir
 | Denoise | `gtao_denoise`: one or two passes of an edge-aware 3×3 spatial filter using the packed edges. Optional depth-aware upsampling to full resolution happens in the lighting pass. |
 | Queue | Async compute, declared after the G-buffer and before `shadow_cascades`, so it overlaps the shadow pass (§2.3) |
 
+*As implemented* (task 11.13):
+- The slices are spaced evenly around the view vector, not by their angle on screen, which biases off-axis pixels.
+- Each sample interpolates its depth mip bilinearly, so it stays on its slice.
+- The raw AO and the edges are two R8 textures (`ao_raw`, `ao_edges`), and the denoiser runs twice.
+
 Parameters are exposed in the debug UI: radius, falloff, slice count, step count, intensity (power curve), and half/full resolution.
 
 ## 9. Points, lines and progressive meshes
@@ -604,7 +609,7 @@ render:
   maximum_fps: 0                 # 0 = match display refresh reported by Qt
   shader_directory: ""           # empty = <executable directory>/data/shaders/visualizer
   shadows: { cascades: 4, resolution: 2048, distance: 200.0 }   # cascades ≤ 4: they use viewport slots 1–4 of the sort key (§4.2)
-  ao: { half_resolution: true, radius: 1.5, slices: 2, steps: 4, intensity: 1.0 }
+  ao: { half_resolution: true, radius: 1.5, falloff: 0.4, slices: 2, steps: 4, intensity: 1.0 }   # falloff: fraction of the radius
   taa: { enabled: true }
   exposure: { mode: auto, ev100: 12.0 }
   tonemapper: aces               # aces | agx

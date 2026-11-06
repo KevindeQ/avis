@@ -45,6 +45,9 @@ namespace avis::visualizer::rendering
         // The light clusters' bounds and their lights (11.11)
         inline constexpr std::string_view cluster_build = "clusters.build_main.cs";
         inline constexpr std::string_view light_cull = "clusters.cull_main.cs";
+        // GTAO and its edge-aware denoise (11.13)
+        inline constexpr std::string_view gtao = "gtao.main.cs";
+        inline constexpr std::string_view gtao_denoise = "gtao.denoise_main.cs";
         // hdr_color from the G-buffer, the lights and the baked environment (11.11)
         inline constexpr std::string_view deferred_lighting = "deferred_lighting.main.cs";
         // The sky where nothing was drawn (11.11)
@@ -58,10 +61,22 @@ namespace avis::visualizer::rendering
         // ldr_color from hdr_color, until exposure and tonemapping exist (11.11, 11.16)
         inline constexpr std::string_view tonemap_preview = "tonemap_preview.main.cs";
 
-        inline constexpr std::array all{ binding_probe, generate_mips,   linearize_depth,       depth_mips,
-                                         cluster_build, light_cull,      deferred_lighting,     sky_vertex,
-                                         sky_pixel,     environment_sky, environment_prefilter, environment_irradiance,
-                                         brdf_lut,      tonemap_preview };
+        inline constexpr std::array all{ binding_probe,
+                                         generate_mips,
+                                         linearize_depth,
+                                         depth_mips,
+                                         cluster_build,
+                                         light_cull,
+                                         gtao,
+                                         gtao_denoise,
+                                         deferred_lighting,
+                                         sky_vertex,
+                                         sky_pixel,
+                                         environment_sky,
+                                         environment_prefilter,
+                                         environment_irradiance,
+                                         brdf_lut,
+                                         tonemap_preview };
     } // namespace shader_ids
 
     // Where the build deploys the shaders, relative to the executable's directory

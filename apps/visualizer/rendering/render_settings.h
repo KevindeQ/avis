@@ -39,6 +39,7 @@ namespace avis::visualizer::rendering
     {
         bool half_resolution = true;
         float radius = 1.5f; // metres
+        float falloff = 0.4f; // the fraction of the radius over which occluders fade out, in (0, 1]
         std::uint32_t slices = 2;
         std::uint32_t steps = 4; // per side
         float intensity = 1.0f;

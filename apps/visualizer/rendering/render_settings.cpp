@@ -249,6 +249,8 @@ namespace avis::visualizer::rendering
         ao.read("half_resolution", settings.ao.half_resolution);
         ao.read("radius", settings.ao.radius);
         ao.check("radius", settings.ao.radius > 0.0f, "expected a positive radius");
+        ao.read("falloff", settings.ao.falloff);
+        ao.check("falloff", settings.ao.falloff > 0.0f && settings.ao.falloff <= 1.0f, "expected a value in (0, 1]");
         ao.read("slices", settings.ao.slices);
         ao.check("slices", settings.ao.slices >= 1, "expected at least 1");
         ao.read("steps", settings.ao.steps);

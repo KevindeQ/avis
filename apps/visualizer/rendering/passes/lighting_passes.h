@@ -6,8 +6,9 @@
 //   cluster_build      compute, async: the clusters' view-space bounds, into the view's history; only added when the
 //                      projection or the size changed since the bounds were built
 //   light_cull         compute, async: cluster_lights (offset, count, dropped per cluster) and light_indices
-//   deferred_lighting  compute, 8 × 8: hdr_color (RGBA16F), pre-exposed, with the sun's shadow from shadow_map;
-//                      optionally cascade_index (R8_UINT), each pixel's shadow cascade, for debugging and tests
+//   deferred_lighting  compute, 8 × 8: hdr_color (RGBA16F), pre-exposed, with the sun's shadow from shadow_map and
+//                      GTAO's occlusion (upsampled when at half resolution); optionally cascade_index (R8_UINT), each
+//                      pixel's shadow cascade, for debugging and tests
 //   sky                graphics: hdr_color where depth == 0
 //   tonemap            compute: ldr_color (RGBA8_UNORM) = sRGB(x / (1 + x)) of hdr_color, a placeholder for 11.16
 
@@ -73,6 +74,8 @@ namespace avis::visualizer::rendering
         float ambient_intensity = 1.0f;
         gpu::view_constants view_constants;
         graphics::texture shadow_map; // invalid: no shadows, everything is lit
+        graphics::texture ambient_occlusion; // GTAO's (R8); invalid: no occlusion beyond the material's
+        std::uint32_t ambient_occlusion_scale = 1; // pixels per AO texel along each axis (gtao_scale)
         gpu::shadow_constants shadow{}; // the cascades of shadow_map; its shadow_map index is set when recording
         bool cascade_index = false; // write the cascade_index output
     };
