@@ -110,6 +110,9 @@ namespace avis::visualizer::rendering
         std::span<const scene_viewport> viewports; // empty: the camera, layer 0, with inputs.view_constants
         scene_pass_reads reads; // read as srv_pixel by every part
         scene_pass_extension extension; // empty: b1 is scene_pass_constants alone
+        // Runs to walk instead of the range's: a subset of the list's runs in key order, valid until the graph is
+        // reset (the selection mask's, 11.17)
+        std::optional<std::span<const draw_run>> runs;
     };
 
     // Adds the parts of `pass` to the open view of `graph`. The attachments' formats must be attachment_formats(kind).

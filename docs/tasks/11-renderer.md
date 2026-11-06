@@ -723,18 +723,31 @@ flowchart LR
 ## 11.17 Overlay pass and selection outline
 11 §3.4, §10.5, pass 14.
 
-- [ ] `overlay` (graphics) walks `scene/camera/overlay…overlay_on_top` into `ldr_color`, after tonemapping:
+*Status: implemented; the tests pass in Debug and Release.* As implemented:
+- **Passes** (`passes/overlay_pass.h/.cpp`), after the tonemap: `selection_mask` and `selection_mask_on_top`, then `selection_outline` (compute, `selection_outline.hlsl`), then `overlay` and `overlay_on_top`, which walk `scene/camera/overlay/*` and `scene/camera/overlay_on_top/*` with each set's overlay PSOs. The overlay PSOs bind the scene depth, which they don't write. `ldr_color`'s final version is the one the views present and capture.
+- **Colour** (`overlay.hlsl`). An overlay draws its material's base colour (factor × texture × vertex colour), with no exposure and no tonemap. The colour is sRGB-encoded with the exact transfer function, because `ldr_color` holds sRGB values, so a linear 0.25 gives 137. Every overlay PSO blends premultiplied, opaque materials too, so the edges of opaque lines and points fade with their coverage. The overlay passes give lines a 1 px margin for that falloff. Mask materials are alpha-tested as in the other passes. The picking target now gets the object id, as the forward pass writes it (11.19).
+- **Depth bias.** The overlay and selection PSOs have a constant depth bias of 4096 (`overlay_depth_bias`), towards the camera. For D32_FLOAT, that's about 2⁻¹¹ of the depth: 0.05% to 0.1% of the distance with reverse-Z. An overlay in a wall's plane, turned 60° from the camera, covers the same pixels with and without the depth test.
+- **Screen-aligned.** The vertex variant from 11.7 needed no change: it projects the anchor and adds the offset in pixels × the device pixel ratio, at the anchor's depth.
+- **Selection mask: a separate pass, not an extra target.** The task asked for an extra target in the G-buffer, forward and overlay passes. Instead, on frames with a selected instance, the runs of the camera's `world` and `overlay` groups that hold one are drawn again into `selection_mask` (R8_UNORM, cleared to 0) with each set's `selection` PSO. That PSO is the overlay's depth test without blending. The `overlay_on_top` runs then use `selection_on_top`, which has no depth test. The pixel shader (`selection_mask.hlsl`) discards the unselected instances that share a run, and cut-away mask pixels. There are two reasons:
+  - The extra-target design needs a selection variant of every G-buffer, forward and overlay PSO, picking ones included. The two new pass kinds add PSOs only for the mask.
+  - In that design, an overlay's mask is written by the overlay pass, so it doesn't exist yet when the outline is drawn at the start of that pass.
+
+  Selected instances are few, so drawing them twice costs little. On a frame with no selected instance, neither the mask nor the outline is added, and a capture of `selection_mask` fails.
+- **Outline.** Each pixel outside the mask that is within 2 px of a pixel inside it (`selection_outline_radius`, a disc) becomes the selection colour. The pass writes `ldr_color` without reading it. The colour is `default_selection_color` (linear orange), and `scene_renderer::set_selection_color` changes it for the UI. The mask follows the TAA jitter, so with TAA on, an outline edge can move by a pixel between frames.
+- **Tests** are in `test_renderer_overlay.cpp`. The range walker's test harness now binds a material buffer of white vertex-colour materials, because the overlay shader reads the material.
+
+- [x] `overlay` (graphics) walks `scene/camera/overlay…overlay_on_top` into `ldr_color`, after tonemapping:
   - `overlay` tests depth (read-only) against the scene depth with a small bias
   - `overlay_on_top` ignores depth
   - unlit material colour
-- [ ] The screen-aligned vertex variant (11 §10.5) projects the instance's origin and adds the vertex offset in pixels × the device pixel ratio. The depth is the anchor's depth.
-- [ ] Selection outline: selected instances write a `selection_mask` (R8) in the passes that draw them (G-buffer, forward and overlay, through the picking-style extra target). An edge-detect at the start of `overlay` draws a 2 px outline in the selection colour into `ldr_color`. See Open points for the mask's cost.
+- [x] The screen-aligned vertex variant (11 §10.5) projects the instance's origin and adds the vertex offset in pixels × the device pixel ratio. The depth is the anchor's depth.
+- [x] Selection outline: selected instances write a `selection_mask` (R8) in the passes that draw them (G-buffer, forward and overlay, through the picking-style extra target). *Done as a separate pass: see above.* An edge-detect at the start of `overlay` draws a 2 px outline in the selection colour into `ldr_color`. See Open points for the mask's cost.
 
 **Tests** (`[renderer]`):
-- [ ] An overlay line behind a cube is hidden; with `overlay_on_top` it's visible. Overlay colours are exact (unlit, not tonemapped).
-- [ ] A screen-aligned quad of 20 × 10 px covers 20 × 10 px at 5 m and at 50 m, and 40 × 20 px with a device pixel ratio of 2.
-- [ ] `layer_priority` orders two overlapping overlay quads.
-- [ ] A selected cube has an outline; an unselected one doesn't.
+- [x] An overlay line behind a cube is hidden; with `overlay_on_top` it's visible. Overlay colours are exact (unlit, not tonemapped).
+- [x] A screen-aligned quad of 20 × 10 px covers 20 × 10 px at 5 m and at 50 m, and 40 × 20 px with a device pixel ratio of 2.
+- [x] `layer_priority` orders two overlapping overlay quads.
+- [x] A selected cube has an outline; an unselected one doesn't.
 
 ## 11.18 Progressive meshes
 11 §9.3.
@@ -842,7 +855,7 @@ flowchart LR
 - **Interpolating matrices.** The snapshot carries `Matrix4f`s, so interpolation decomposes them into TRS each frame (slerp for rotation). That's about 10k decompositions per frame, which is cheap. The alternative is carrying TRS in the snapshot, which would change 08 §6.1.
 - **`depth_mips` layout.** 11 says "min/max per tile" for clusters but "view-space Z, 5 mips" for GTAO. Proposed: an RG32F chain with min in R and max in G. GTAO reads R. Alternative: two R32F chains.
 - **Arena split.** `geometry.arena_mib` is one number, but there are two buffers. Proposed: 80% vertices, 20% indices, with a log line when either fills first. Alternative: one buffer holding both as raw ranges, which avoids the split; the index buffer view can point anywhere in a raw buffer. *Done in 11.3: 80% / 20%. The residency warning names the buffer that filled, its use and its largest free block.*
-- **Selection mask.** 11 §10.5 describes "a stencil-like mask written by the selected instances". A stencil bit would need stencil in the depth format (D32_S8) and the new `set_stencil_reference`. An R8 extra target in the passes that draw selected instances needs no RHI change. Recommended: the R8 target, written only on frames with a selection, the same way as picking. In that case `set_stencil_reference` and `clear_depth_stencil` stay unused and can be left out of 11.9. *11.9 follows the recommendation: the RHI is unchanged, and both stencil uses fail a debug check in the walker.*
+- **Selection mask.** 11 §10.5 describes "a stencil-like mask written by the selected instances". A stencil bit would need stencil in the depth format (D32_S8) and the new `set_stencil_reference`. An R8 extra target in the passes that draw selected instances needs no RHI change. Recommended: the R8 target, written only on frames with a selection, the same way as picking. In that case `set_stencil_reference` and `clear_depth_stencil` stay unused and can be left out of 11.9. *11.9 follows the recommendation: the RHI is unchanged, and both stencil uses fail a debug check in the walker. 11.17 writes the R8 mask in its own pass, which draws only the selected instances again, rather than as an extra target.*
 - **Pick and inspector results.** How results reach 12: a `take_pick_results()` poll on the frame chain, or a sender completed per request. Recommended: the poll. The frame chain posts results to the GUI with the rest of its per-frame state.
 - **Hosek–Wilkie data.** The model's published coefficient tables (from the authors' reference implementation, under a BSD-style licence) need to be vendored, either as a header under `apps/visualizer/rendering/third_party/` or in `external/`. Check the licence first. Alternative: Preetham, which is simpler, analytic and lower quality. *11.11 uses Preetham for now; vendoring Hosek–Wilkie only replaces `sky_model.cpp` and `sky.hlsli`.*
 - **Blue-noise texture.** The dithering and possibly GTAO want a 64² blue-noise texture. Either generate one offline (void-and-cluster, a `dt` command) or vendor a CC0 one. *Done in 11.16: generated at startup by void-and-cluster (`blue_noise.h`), so nothing is checked in.*

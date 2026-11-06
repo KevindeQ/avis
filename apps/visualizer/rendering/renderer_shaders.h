@@ -66,6 +66,8 @@ namespace avis::visualizer::rendering
         inline constexpr std::string_view exposure_adapt = "exposure.adapt_main.cs";
         // ldr_color from taa_output: ACES or AgX, sRGB and the blue-noise dither (11.16)
         inline constexpr std::string_view tonemap = "tonemap.main.cs";
+        // The selection outline into ldr_color, from selection_mask (11.17)
+        inline constexpr std::string_view selection_outline = "selection_outline.main.cs";
 
         inline constexpr std::array all{ binding_probe,
                                          generate_mips,
@@ -85,7 +87,8 @@ namespace avis::visualizer::rendering
                                          taa,
                                          exposure_histogram,
                                          exposure_adapt,
-                                         tonemap };
+                                         tonemap,
+                                         selection_outline };
     } // namespace shader_ids
 
     // Where the build deploys the shaders, relative to the executable's directory

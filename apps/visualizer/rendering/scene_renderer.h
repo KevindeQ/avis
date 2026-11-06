@@ -6,8 +6,9 @@
 //
 // Each view's frame (11 §2.3) is, so far: depth_prepass, linearize_depth with the depth_mips chain, cluster_build and
 // light_cull on async compute, gbuffer (11.10), shadow_cascades when the sun casts shadows (11.12), deferred_lighting
-// and sky into hdr_color (11.11), then a placeholder tonemap (Reinhard and sRGB, until 11.16), and present_to_shared,
-// which copies ldr_color into the view's output. The cascades are computed per view before the draw lists, which cull
+// and sky into hdr_color (11.11), forward_transparent (11.14), taa_resolve (11.15), exposure and the tonemap into
+// ldr_color (11.16), the selection outline and the overlays (11.17), and present_to_shared, which copies ldr_color into
+// the view's output. The cascades are computed per view before the draw lists, which cull
 // the shadow casters into them. Before the views, the environment baker bakes the sky cubemap, the prefiltered cubemap
 // and the SH9 irradiance when the snapshot's environment changes, and the BRDF LUT once (11 §6.4). Residency runs in
 // every frame's prepare stage: the snapshot's meshes are uploaded into the geometry arena (11.3), its textures into
@@ -25,6 +26,7 @@
 #include "rendering/frame_data.h"
 #include "rendering/geometry_arena.h"
 #include "rendering/material_table.h"
+#include "rendering/passes/overlay_pass.h"
 #include "rendering/pipeline_variant_registry.h"
 #include "rendering/range_walker.h"
 #include "rendering/render_settings.h"
@@ -237,6 +239,17 @@ namespace avis::visualizer::rendering
             return tonemapper_;
         }
 
+        // The selection outline's colour (11 §10.5), linear; its alpha is ignored. Takes effect with the next frame.
+        void set_selection_color(const scene::color color) noexcept
+        {
+            selection_color_ = color;
+        }
+
+        scene::color selection_color() const noexcept
+        {
+            return selection_color_;
+        }
+
         // For tests and tools: replaces the snapshot's environment with a uniform radiance (linear RGB, cd/m²) in every
         // direction, for the image-based lighting and the sky; none restores the sky. Takes effect with the next frame.
         void set_environment_override(std::optional<Eigen::Vector3f> uniform_radiance)
@@ -357,6 +370,7 @@ namespace avis::visualizer::rendering
             rhi::compute_pipeline_handle exposure_histogram;
             rhi::compute_pipeline_handle exposure_adapt;
             rhi::compute_pipeline_handle tonemap;
+            rhi::compute_pipeline_handle selection_outline;
             rhi::texture_handle blue_noise; // the tonemap's dither (blue_noise.h)
             graphics::upload_ticket blue_noise_upload;
             std::unique_ptr<environment_baker> environment;
@@ -415,6 +429,7 @@ namespace avis::visualizer::rendering
         ambient_occlusion_settings ao_parameters_; // settings_.ao until set_ao_parameters
         exposure_settings exposure_parameters_; // settings_.exposure until set_exposure_parameters
         tonemap_operator tonemapper_; // settings_.tonemapper until set_tonemapper
+        scene::color selection_color_ = default_selection_color;
         graphics::shader_library& shaders_;
         rhi::root_signature_handle standard_signature_;
         view_history_store histories_;
@@ -431,6 +446,7 @@ namespace avis::visualizer::rendering
         rhi::compute_pipeline_handle exposure_histogram_pipeline_;
         rhi::compute_pipeline_handle exposure_adapt_pipeline_;
         rhi::compute_pipeline_handle tonemap_pipeline_;
+        rhi::compute_pipeline_handle selection_outline_pipeline_;
         rhi::texture_handle blue_noise_texture_;
         // The blue noise's upload, queued at creation and flushed by the first frame, which resolves it into
         // blue_noise_ready_; every frame's import waits on that point

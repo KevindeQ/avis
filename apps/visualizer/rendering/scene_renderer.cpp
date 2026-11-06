@@ -195,6 +195,7 @@ namespace avis::visualizer::rendering
             std::pair{ &state.exposure_histogram, shader_ids::exposure_histogram },
             std::pair{ &state.exposure_adapt, shader_ids::exposure_adapt },
             std::pair{ &state.tonemap, shader_ids::tonemap },
+            std::pair{ &state.selection_outline, shader_ids::selection_outline },
             std::pair{ &environment.sky, shader_ids::environment_sky },
             std::pair{ &environment.prefilter, shader_ids::environment_prefilter },
             std::pair{ &environment.irradiance, shader_ids::environment_irradiance },
@@ -317,6 +318,7 @@ namespace avis::visualizer::rendering
         exposure_histogram_pipeline_{ state.exposure_histogram },
         exposure_adapt_pipeline_{ state.exposure_adapt },
         tonemap_pipeline_{ state.tonemap },
+        selection_outline_pipeline_{ state.selection_outline },
         blue_noise_texture_{ state.blue_noise },
         blue_noise_upload_{ state.blue_noise_upload },
         environment_{ std::move(state.environment) },
@@ -1045,7 +1047,7 @@ namespace avis::visualizer::rendering
                   .settings = exposure_parameters_,
                   .frame_time = frame_time });
         }
-        const graphics::texture ldr_color = add_tonemap(
+        const graphics::texture tonemapped = add_tonemap(
             graph_,
             { .pipeline = tonemap_pipeline_,
               .color = taa_output,
@@ -1053,10 +1055,20 @@ namespace avis::visualizer::rendering
               .blue_noise = blue_noise_,
               .tonemapper = tonemapper_ });
 
+        // Pass 14 (11.17): the selection outline, then the overlays, unlit, into ldr_color
+        const overlay_outputs overlays = add_overlay(
+            graph_,
+            inputs,
+            { .outline = selection_outline_pipeline_,
+              .ldr_color = tonemapped,
+              .depth = transparent.depth,
+              .selection_color = selection_color_ });
+        const graphics::texture ldr_color = overlays.ldr_color;
+
         // Captures, for tests and tools: copies of the final versions
         const graphics::texture_extent ao_size = gtao_extent(ao_parameters_, view.size);
         const std::array resources{
-            capturable{ "depth", transparent.depth, rhi::format::d32_float },
+            capturable{ "depth", overlays.depth, rhi::format::d32_float },
             capturable{ "linear_depth", linearized.linear_depth, rhi::format::r32_float },
             capturable{ "depth_mips", linearized.depth_mips, rhi::format::rg32_float, depth_mips },
             capturable{ "gbuffer_albedo", gbuffer.albedo, rhi::format::rgba8_unorm_srgb },
@@ -1071,6 +1083,7 @@ namespace avis::visualizer::rendering
             capturable{ "reactive_mask", transparent.reactive_mask, rhi::format::r8_unorm },
             capturable{ "taa_output", taa_output, rhi::format::rgba16_float },
             capturable{ "cascade_index", lit.cascade_index, rhi::format::r8_uint },
+            capturable{ "selection_mask", overlays.selection_mask, rhi::format::r8_unorm },
             capturable{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
         };
         for (std::size_t capture_index = 0; capture_index < view.options.captures.size(); ++capture_index)

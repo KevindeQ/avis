@@ -18,6 +18,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	passes/gbuffer_pass.cpp
 	passes/gtao_pass.cpp
 	passes/lighting_passes.cpp
+	passes/overlay_pass.cpp
 	passes/scene_range_pass.cpp
 	passes/shadow_pass.cpp
 	passes/taa_pass.cpp

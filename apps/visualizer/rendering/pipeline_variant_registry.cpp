@@ -46,6 +46,11 @@ namespace avis::visualizer::rendering
                    kind == pass_kind::overlay_on_top || kind == pass_kind::overlay_on_top_picking;
         }
 
+        bool is_selection(const pass_kind kind) noexcept
+        {
+            return kind == pass_kind::selection || kind == pass_kind::selection_on_top;
+        }
+
         bool is_depth_only(const pass_kind kind) noexcept
         {
             return kind == pass_kind::depth || kind == pass_kind::shadow;
@@ -72,6 +77,12 @@ namespace avis::visualizer::rendering
             }
             // The G-buffer writes the shading model as a value (11 §5); overlays are always unlit (11 §3.4)
             result.shading_model = scene::shading_model::lit;
+            if (is_selection(kind) && result.alpha_mode == scene::alpha_mode::blend)
+            {
+                // The mask isn't blended
+                result.alpha_mode = scene::alpha_mode::opaque;
+                result.blend_operation = scene::blend_operation::normal;
+            }
             if (is_depth_only(kind) && result.alpha_mode == scene::alpha_mode::opaque)
             {
                 result.attributes = attribute_flags{ avis::empty }; // positions only
@@ -138,11 +149,6 @@ namespace avis::visualizer::rendering
 
         // ---- pipeline state ----
 
-        rhi::blend_state opaque_blend() noexcept
-        {
-            return {};
-        }
-
         // Premultiplied colour (11 §10.1); the overlay pixel shader premultiplies too
         rhi::blend_state translucent_blend(const scene::blend_operation operation) noexcept
         {
@@ -186,6 +192,7 @@ namespace avis::visualizer::rendering
                                                       rhi::format::rg32_uint };
         constexpr std::array overlay_targets{ rhi::format::rgba8_unorm };
         constexpr std::array overlay_picking_targets{ rhi::format::rgba8_unorm, rhi::format::rg32_uint };
+        constexpr std::array selection_targets{ rhi::format::r8_unorm };
 
         // A recipe: the reduced key of one pass kind, with a write mask. Equal recipes have equal PSO descriptions.
         struct recipe
@@ -254,6 +261,10 @@ namespace avis::visualizer::rendering
             return "overlay_on_top";
         case pass_kind::overlay_on_top_picking:
             return "overlay_on_top_picking";
+        case pass_kind::selection:
+            return "selection";
+        case pass_kind::selection_on_top:
+            return "selection_on_top";
         }
         return "invalid";
     }
@@ -279,6 +290,9 @@ namespace avis::visualizer::rendering
         case pass_kind::overlay_picking:
         case pass_kind::overlay_on_top_picking:
             return { overlay_picking_targets };
+        case pass_kind::selection:
+        case pass_kind::selection_on_top:
+            return { selection_targets };
         }
         return {};
     }
@@ -362,7 +376,7 @@ namespace avis::visualizer::rendering
 
     bool draws(const pass_kind kind, const pipeline_set_key& key) noexcept
     {
-        if (is_overlay(kind))
+        if (is_overlay(kind) || is_selection(kind))
         {
             return true;
         }
@@ -415,6 +429,14 @@ namespace avis::visualizer::rendering
                 { topology_part(reduced_key.topology),
                   reduced_key.shading_model == scene::shading_model::unlit ? "UNLIT" : "",
                   picking },
+                "ps");
+        }
+        else if (is_selection(kind))
+        {
+            ids.pixel = shader_id(
+                "selection_mask",
+                "pixel_main",
+                { topology_part(reduced_key.topology), mask ? "ALPHA_MASK" : "" },
                 "ps");
         }
         else
@@ -492,12 +514,17 @@ namespace avis::visualizer::rendering
             break;
         case pass_kind::forward:
         case pass_kind::forward_picking:
+            state.depth = { .test = true, .write = false, .compare = rhi::comparison::greater_equal };
+            break;
         case pass_kind::overlay:
         case pass_kind::overlay_picking:
+        case pass_kind::selection:
             state.depth = { .test = true, .write = false, .compare = rhi::comparison::greater_equal };
+            state.rasterizer.depth_bias = overlay_depth_bias; // reverse-Z: towards the camera
             break;
         case pass_kind::overlay_on_top:
         case pass_kind::overlay_on_top_picking:
+        case pass_kind::selection_on_top:
             state.depth = { .test = false, .write = false, .compare = rhi::comparison::always };
             break;
         }
@@ -516,9 +543,8 @@ namespace avis::visualizer::rendering
         }
         else if (is_overlay(kind))
         {
-            state.blend[0] = canonical_key.alpha_mode == scene::alpha_mode::blend ?
-                                 translucent_blend(canonical_key.blend_operation) :
-                                 opaque_blend();
+            // Premultiplied for every material: opaque lines and points fade at their edges by their coverage
+            state.blend[0] = translucent_blend(canonical_key.blend_operation);
         }
         // The picking target is never blended (11 §5.1); the blend states default to disabled
 

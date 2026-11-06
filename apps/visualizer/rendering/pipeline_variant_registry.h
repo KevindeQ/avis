@@ -9,6 +9,7 @@
 //   depth, shadow, gbuffer(_picking)       opaque and mask keys, not screen-aligned
 //   forward(_picking)                      blend keys, not screen-aligned
 //   overlay(_picking), overlay_on_top(_picking)  every key: an overlay instance may use any material
+//   selection, selection_on_top            every key: the selection mask of selected instances in any layer (11.17)
 // Picking kinds add the picking_id target (11 §5.1). A pass kind that doesn't draw a key leaves its slot empty.
 //
 // Startup creates the base sets: every key the material model produces (2 shading models × 5 alpha modes and blend
@@ -18,8 +19,9 @@
 // key (a screen-aligned one, for instance) gets the next free index on first use, which is logged.
 //
 // Shaders: scene_vertex.hlsl for every pass, permuted by screen alignment, topology and the uv0 and color0 attributes,
-// and one pixel shader per pass family (depth_prepass, gbuffer, forward_transparent, overlay), permuted by topology,
-// alpha mask, shading model and picking. Their permutation names are built here and in the shaders' annotations.
+// and one pixel shader per pass family (depth_prepass, gbuffer, forward_transparent, overlay, selection_mask), permuted
+// by topology, alpha mask, shading model and picking. Their permutation names are built here and in the shaders'
+// annotations.
 //
 // Threads: find and the startup run on the frame chain's prepare stage, never during parallel recording.
 // write_mask_variant is thread-safe, so a range walker may ask for one while recording.
@@ -64,13 +66,15 @@ namespace avis::visualizer::rendering
         gbuffer_picking, // plus picking_id
         forward, // forward_transparent: depth test, no write; hdr_color and reactive_mask
         forward_picking,
-        overlay, // depth test against the scene, no write; ldr_color
+        overlay, // depth test against the scene with overlay_depth_bias, no write; ldr_color
         overlay_picking,
         overlay_on_top, // no depth test
         overlay_on_top_picking,
+        selection, // selection_mask (R8) of selected instances: the overlay's depth test, no blending
+        selection_on_top, // selection_mask of selected overlay_on_top instances: no depth test
     };
 
-    inline constexpr std::size_t pass_kind_count = 10;
+    inline constexpr std::size_t pass_kind_count = 12;
 
     inline constexpr std::array<pass_kind, pass_kind_count> all_pass_kinds{
         pass_kind::depth,          pass_kind::shadow,
@@ -78,7 +82,14 @@ namespace avis::visualizer::rendering
         pass_kind::forward,        pass_kind::forward_picking,
         pass_kind::overlay,        pass_kind::overlay_picking,
         pass_kind::overlay_on_top, pass_kind::overlay_on_top_picking,
+        pass_kind::selection,      pass_kind::selection_on_top,
     };
+
+    // The constant depth bias of the overlay and selection PSOs, towards the camera: in units of 2^(e − 23) for a
+    // primitive whose largest depth has exponent e (D3D12's rule for float depth), so about 2^-11 of the depth, which
+    // keeps an overlay on the surface it is drawn on visible (11 §10.5). With reverse-Z that is 0.05 to 0.1% of the
+    // distance.
+    inline constexpr std::int32_t overlay_depth_bias = 4096;
 
     std::string_view to_string(pass_kind kind) noexcept;
 

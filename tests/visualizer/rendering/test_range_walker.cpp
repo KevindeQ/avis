@@ -321,8 +321,25 @@ namespace
             vertices{ resources, 0, false },
             indices{ resources, 0, true },
             instances{ resources, sizeof(gpu::instance_data), false },
-            instance_indices{ resources, sizeof(std::uint32_t), false }
-        {}
+            instance_indices{ resources, sizeof(std::uint32_t), false },
+            materials{ resources, sizeof(gpu::material_data), false }
+        {
+            // The material slots, by handle index: white, unlit, with the vertex colour (overlay.hlsl)
+            std::array<gpu::material_data, 4> slots{};
+            for (std::uint32_t slot = 0; slot < slots.size(); ++slot)
+            {
+                gpu::material_data& data = slots[slot];
+                data.base_color_factor = { 1.0f, 1.0f, 1.0f, 1.0f };
+                data.shading_model = gpu::shading_model_unlit;
+                data.alpha_mode = slot == blended_material ? gpu::alpha_mode_blend : gpu::alpha_mode_opaque;
+                data.flags = gpu::material_flag_use_vertex_color |
+                             (slot == double_sided_material ? gpu::material_flag_double_sided : 0u);
+                data.sampler_index = 1;
+                data.point_size = 1.0f;
+                data.line_width = 1.0f;
+            }
+            materials.write(std::as_bytes(std::span{ slots }));
+        }
 
         ~walker_harness()
         {
@@ -420,7 +437,7 @@ namespace
                                                             .instance_indices = instance_indices.srv().value,
                                                             .vertices = vertices.srv().value,
                                                             .indices = indices.srv().value,
-                                                            .materials = 0,
+                                                            .materials = materials.srv().value,
                                                             .line_margin = 0.0f,
                                                             .padding1 = 0,
                                                             .padding2 = 0 };
@@ -580,6 +597,7 @@ namespace
         upload_buffer indices;
         upload_buffer instances;
         upload_buffer instance_indices;
+        upload_buffer materials; // the material slots, written once
 
     private:
         static gpu::view_constants view_constants_of(const Eigen::Matrix4f& clip_from_world)

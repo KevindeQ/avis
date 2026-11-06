@@ -225,14 +225,17 @@ TEST_CASE("pipeline state per pass kind", "[renderer][unit]")
             "forward_transparent.pixel_main.lines_unlit_picking.ps");
     }
 
-    SECTION("overlay: depth test without writes; on top: no test")
+    SECTION("overlay: depth test with a bias, without writes; on top: no test")
     {
         const rhi::graphics_pipeline_state overlay = pipeline_state_for(pass_kind::overlay, opaque, write_mask::all);
         CHECK(overlay.depth.test);
         CHECK_FALSE(overlay.depth.write);
+        CHECK(overlay.rasterizer.depth_bias == overlay_depth_bias);
         REQUIRE(overlay.render_target_count == 1);
         CHECK(overlay.render_target_formats[0] == rhi::format::rgba8_unorm);
-        CHECK_FALSE(overlay.blend[0].enable);
+        // Premultiplied even for opaque materials, so line and point edges fade by their coverage
+        CHECK(overlay.blend[0].enable);
+        CHECK(overlay.blend[0].destination_color == rhi::blend_factor::inverse_source_alpha);
 
         const rhi::graphics_pipeline_state on_top =
             pipeline_state_for(pass_kind::overlay_on_top, { .alpha_mode = scene::alpha_mode::blend }, write_mask::all);
@@ -246,6 +249,32 @@ TEST_CASE("pipeline state per pass kind", "[renderer][unit]")
         CHECK(
             shader_ids_for(pass_kind::overlay, label).vertex == "scene_vertex.vertex_main.screen_aligned_uv_color.vs");
         CHECK(shader_ids_for(pass_kind::overlay_picking, label).pixel == "overlay.pixel_main.picking.ps");
+    }
+
+    SECTION("selection: the overlay's depth test into R8, unblended; on top: no test")
+    {
+        const pipeline_set_key additive{ .alpha_mode = scene::alpha_mode::blend,
+                                         .blend_operation = scene::blend_operation::additive,
+                                         .topology = scene::mesh_topology::lines };
+        CHECK(draws(pass_kind::selection, opaque));
+        CHECK(draws(pass_kind::selection, additive));
+        CHECK(draws(pass_kind::selection_on_top, { .screen_aligned = true }));
+
+        const rhi::graphics_pipeline_state selection =
+            pipeline_state_for(pass_kind::selection, additive, write_mask::all);
+        CHECK(selection.depth.test);
+        CHECK_FALSE(selection.depth.write);
+        CHECK(selection.rasterizer.depth_bias == overlay_depth_bias);
+        REQUIRE(selection.render_target_count == 1);
+        CHECK(selection.render_target_formats[0] == rhi::format::r8_unorm);
+        CHECK_FALSE(selection.blend[0].enable);
+        CHECK_FALSE(pipeline_state_for(pass_kind::selection_on_top, opaque, write_mask::all).depth.test);
+
+        // A blended set's mask isn't blended: it shares the opaque set's pixel shader
+        CHECK(shader_ids_for(pass_kind::selection, additive).pixel == "selection_mask.pixel_main.lines.ps");
+        pipeline_set_key masked = opaque;
+        masked.alpha_mode = scene::alpha_mode::mask;
+        CHECK(shader_ids_for(pass_kind::selection_on_top, masked).pixel == "selection_mask.pixel_main.alpha_mask.ps");
     }
 
     SECTION("sidedness and write masks")

@@ -569,6 +569,11 @@ Generic geometry features. The renderer doesn't know what the points or lines re
 - **Screen-aligned instances** use a vertex shader variant: it projects the origin of the instance's interpolated world matrix to clip space, then adds each vertex's position as an offset in pixels (scaled by the output's device pixel ratio and converted to clip units). The mesh keeps a constant size on screen and faces the camera, whatever the instance's rotation. The depth of an `overlay` instance is the anchor's depth. The variant is a pipeline variant of the overlay pipeline set, selected by the flag (§4.4).
 - Draws the outline for `selected` instances (a screen-space edge detect on a stencil-like mask written by the selected instances).
 - What appears in the overlays (box edges, trajectories, grid, frusta, …) is decided entirely by the scene representation ([12 §9](12-visualizer.md#9-scene-representation)).
+- *As implemented* (task 11.17):
+  - Overlay colours are sRGB-encoded in the shader, because `ldr_color` holds sRGB values. Every overlay PSO blends premultiplied, so the edges of opaque lines fade with their coverage.
+  - The small bias is a constant depth bias of about 2⁻¹¹ of the depth.
+  - The selection mask is an R8 target, written by a pass that draws only the runs holding a selected instance again, before the outline. The overlays draw over the outline.
+  - The outline covers the pixels within 2 px of the mask.
 
 ## 11. Debug blit pass
 - Driven by the selection in the Visualizer's *Render Debug* panel ([12 §6](12-visualizer.md#6-panels-and-controls)): `{qualified resource name, mip, slice, channel mask, visualisation mode, value range, layout: fullscreen | picture-in-picture (corner, scale)}`.

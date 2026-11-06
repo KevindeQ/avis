@@ -159,6 +159,9 @@ AVIS_SHARED_CONSTANT(uint, tonemapper_agx, 1);
 // The tonemap's dither (11 §10.4): a blue-noise texture of this many texels per side, tiled over the view
 AVIS_SHARED_CONSTANT(uint, blue_noise_size, 64);
 
+// The selection outline (11 §10.5): pixels within this many pixels of a selected one (a disc) are outlined
+AVIS_SHARED_CONSTANT(uint, selection_outline_radius, 2);
+
 // The sun's shadow cascades (11 §7): at most shadow_maximum_cascades slices of the shadow map. cascade_index (the
 // debug output of deferred_lighting) is no_cascade for a pixel no cascade covers.
 AVIS_SHARED_CONSTANT(uint, shadow_maximum_cascades, 4);
@@ -504,6 +507,14 @@ struct exposure_constants
 };
 
 // The pass constants (b1) of the tonemap (11 §10.4, §2.3 pass 13)
+struct selection_outline_constants
+{
+    uint selection_mask; // Texture2D<float> SRV, R8_UNORM: 1 where a selected instance is visible
+    uint ldr_color; // RWTexture2D<float4> UAV, RGBA8_UNORM
+    uint2 size; // pixels
+    float4 color; // the outline's, sRGB-encoded, alpha 1
+};
+
 struct tonemap_constants
 {
     uint color; // Texture2D<float4> SRV, taa_output
@@ -703,6 +714,7 @@ static_assert(offsetof(exposure_constants, frame_time) == 28);
 static_assert(offsetof(exposure_constants, maximum_exposure) == 44);
 
 static_assert(sizeof(tonemap_constants) == 32);
+static_assert(sizeof(selection_outline_constants) == 32);
 static_assert(offsetof(tonemap_constants, size) == 16);
 static_assert(offsetof(tonemap_constants, tonemapper) == 24);
 

@@ -61,7 +61,8 @@ namespace avis::visualizer::rendering
         const scene_pass_inputs& inputs,
         const scene_attachments& attachments)
     {
-        const std::span<const draw_run> runs = inputs.list.runs_of(inputs.list.list->range(pass.range));
+        const std::span<const draw_run> runs =
+            pass.runs ? *pass.runs : inputs.list.runs_of(inputs.list.list->range(pass.range));
         const std::uint32_t part_count = recording_part_count(item_count(runs), inputs.split);
         std::vector<std::span<const draw_run>> parts = split_runs(runs, part_count);
         if (parts.empty())
