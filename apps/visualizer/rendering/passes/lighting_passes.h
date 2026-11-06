@@ -1,8 +1,8 @@
 #ifndef AVIS_VISUALIZER_RENDERING_PASSES_LIGHTING_PASSES_H
 #define AVIS_VISUALIZER_RENDERING_PASSES_LIGHTING_PASSES_H
 
-// The lighting passes of a view (docs/design/11-renderer.md §2.3 passes 3, 8, 9, §6, docs/tasks/11-renderer.md §11.11),
-// and the placeholder tonemap until 11.16:
+// The lighting passes of a view (docs/design/11-renderer.md §2.3 passes 3, 8, 9, §6, docs/tasks/11-renderer.md §11.11).
+// Both writers of hdr_color pre-expose with the current exposure of the view's exposure buffer (11.16):
 //   cluster_build      compute, async: the clusters' view-space bounds, into the view's history; only added when the
 //                      projection or the size changed since the bounds were built
 //   light_cull         compute, async: cluster_lights (offset, count, dropped per cluster) and light_indices
@@ -10,7 +10,6 @@
 //                      GTAO's occlusion (upsampled when at half resolution); optionally cascade_index (R8_UINT), each
 //                      pixel's shadow cascade, for debugging and tests
 //   sky                graphics: hdr_color where depth == 0
-//   tonemap            compute: ldr_color (RGBA8_UNORM) = sRGB(x / (1 + x)) of hdr_color, a placeholder for 11.16
 
 #include "rendering/environment_baker.h"
 #include "rendering/frame_data.h"
@@ -73,7 +72,7 @@ namespace avis::visualizer::rendering
         const frame_buffers& frame;
         std::uint32_t sun = gpu::no_light; // index in the frame's lights
         const environment_resources& environment;
-        float exposure = 1.0f;
+        graphics::buffer exposure; // the view's exposure buffer (exposure_passes.h)
         float ambient_intensity = 1.0f;
         gpu::view_constants view_constants;
         graphics::texture shadow_map; // invalid: no shadows, everything is lit
@@ -98,7 +97,7 @@ namespace avis::visualizer::rendering
         graphics::texture hdr_color;
         graphics::texture depth;
         gpu::sky_constants sky;
-        float exposure = 1.0f;
+        graphics::buffer exposure; // the view's exposure buffer
         gpu::view_constants view_constants;
     };
 
@@ -113,10 +112,6 @@ namespace avis::visualizer::rendering
     rhi::graphics_pipeline_state sky_pipeline_state() noexcept;
 
     sky_outputs add_sky_pass(graphics::render_graph& graph, const sky_inputs& inputs);
-
-    // ldr_color, RGBA8_UNORM
-    graphics::texture add_tonemap_preview(
-        graphics::render_graph& graph, rhi::compute_pipeline_handle pipeline, graphics::texture hdr_color);
 } // namespace avis::visualizer::rendering
 
 #endif

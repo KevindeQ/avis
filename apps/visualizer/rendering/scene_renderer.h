@@ -38,6 +38,7 @@
 #include "avis/graphics/frame_token.h"
 #include "avis/graphics/graph_debug_information.h"
 #include "avis/graphics/render_graph.h"
+#include "avis/graphics/upload_ticket.h"
 #include "avis/rhi/pipeline.h"
 #include "avis/rhi/resources.h"
 #include "avis/rhi/synchronization.h"
@@ -213,6 +214,29 @@ namespace avis::visualizer::rendering
             return ao_parameters_;
         }
 
+        // The exposure (11 §10.3), render.exposure at creation; for the debug UI's manual EV100 (12 §6). Takes effect
+        // with the next frame, whose tonemap already shows a manual exposure's change.
+        void set_exposure_parameters(const exposure_settings& parameters) noexcept
+        {
+            exposure_parameters_ = parameters;
+        }
+
+        const exposure_settings& exposure_parameters() const noexcept
+        {
+            return exposure_parameters_;
+        }
+
+        // The tonemap curve (11 §10.4), render.tonemapper at creation; takes effect with the next frame
+        void set_tonemapper(const tonemap_operator tonemapper) noexcept
+        {
+            tonemapper_ = tonemapper;
+        }
+
+        tonemap_operator tonemapper() const noexcept
+        {
+            return tonemapper_;
+        }
+
         // For tests and tools: replaces the snapshot's environment with a uniform radiance (linear RGB, cd/m²) in every
         // direction, for the image-based lighting and the sky; none restores the sky. Takes effect with the next frame.
         void set_environment_override(std::optional<Eigen::Vector3f> uniform_radiance)
@@ -330,7 +354,11 @@ namespace avis::visualizer::rendering
             rhi::compute_pipeline_handle deferred_lighting;
             rhi::graphics_pipeline_handle sky;
             rhi::compute_pipeline_handle taa;
-            rhi::compute_pipeline_handle tonemap_preview;
+            rhi::compute_pipeline_handle exposure_histogram;
+            rhi::compute_pipeline_handle exposure_adapt;
+            rhi::compute_pipeline_handle tonemap;
+            rhi::texture_handle blue_noise; // the tonemap's dither (blue_noise.h)
+            graphics::upload_ticket blue_noise_upload;
             std::unique_ptr<environment_baker> environment;
             std::unique_ptr<pipeline_variant_registry> pipeline_variants;
             std::unique_ptr<geometry_arena> arena;
@@ -347,8 +375,8 @@ namespace avis::visualizer::rendering
         // The passes that generate the mip chains of this frame's texture_residency::mip_requests(), outside any view
         void add_mip_passes();
 
-        // The frame being built didn't run: its frame data slots, its environment bake and its cluster bounds are
-        // done again by the next frame
+        // The frame being built didn't run: its frame data slots, its environment bake, its cluster bounds and its
+        // exposure resets are done again by the next frame
         void forget_frame() noexcept;
 
         // The reuse shortcut's condition (11 §3.5)
@@ -362,11 +390,17 @@ namespace avis::visualizer::rendering
             std::chrono::steady_clock::time_point wall_now);
 
         std::optional<error> check_view(const view_description& view) const;
-        // `index` is the view's position in the frame: its draw list
-        std::optional<error>
-            add_view(const graphics::frame_token& frame, const view_description& view, std::size_t index);
+        // `index` is the view's position in the frame: its draw list. `wall_now` times the exposure's adaptation.
+        std::optional<error> add_view(
+            const graphics::frame_token& frame,
+            const view_description& view,
+            std::size_t index,
+            std::chrono::steady_clock::time_point wall_now);
         std::optional<error> add_buffer_captures(
-            const view_description& view, graphics::buffer cluster_lights, graphics::buffer light_indices);
+            const view_description& view,
+            graphics::buffer cluster_lights,
+            graphics::buffer light_indices,
+            graphics::buffer exposure);
 
         // The view's shadow cascades (11 §7): none without a sun that casts shadows
         shadow_cascades compute_view_cascades(const view_description& view) const;
@@ -379,6 +413,8 @@ namespace avis::visualizer::rendering
         graphics::render_graph& graph_;
         render_settings settings_;
         ambient_occlusion_settings ao_parameters_; // settings_.ao until set_ao_parameters
+        exposure_settings exposure_parameters_; // settings_.exposure until set_exposure_parameters
+        tonemap_operator tonemapper_; // settings_.tonemapper until set_tonemapper
         graphics::shader_library& shaders_;
         rhi::root_signature_handle standard_signature_;
         view_history_store histories_;
@@ -392,13 +428,22 @@ namespace avis::visualizer::rendering
         rhi::compute_pipeline_handle deferred_lighting_pipeline_;
         rhi::graphics_pipeline_handle sky_pipeline_;
         rhi::compute_pipeline_handle taa_pipeline_;
-        rhi::compute_pipeline_handle tonemap_preview_pipeline_;
+        rhi::compute_pipeline_handle exposure_histogram_pipeline_;
+        rhi::compute_pipeline_handle exposure_adapt_pipeline_;
+        rhi::compute_pipeline_handle tonemap_pipeline_;
+        rhi::texture_handle blue_noise_texture_;
+        // The blue noise's upload, queued at creation and flushed by the first frame, which resolves it into
+        // blue_noise_ready_; every frame's import waits on that point
+        std::optional<graphics::upload_ticket> blue_noise_upload_;
+        rhi::synchronization_point blue_noise_ready_{};
+        graphics::texture blue_noise_; // imported into the frame being built
         std::unique_ptr<environment_baker> environment_;
         std::optional<Eigen::Vector3f> environment_override_;
         float ambient_intensity_ = 1.0f; // the snapshot's, for the frame being built
         environment_resources environment_resources_; // of the frame being built
         std::vector<std::string> rebuilt_clusters_; // the views whose cluster bounds the frame being built rebuilds
         std::vector<std::string> resolved_views_; // the views whose TAA history the frame being built writes
+        std::vector<std::string> reset_exposures_; // the views whose exposure buffer the frame being built resets
         std::unique_ptr<pipeline_variant_registry> pipeline_variants_;
         std::unique_ptr<geometry_arena> arena_;
         std::unique_ptr<residency_cache> residency_; // refers to arena_ and the upload queue

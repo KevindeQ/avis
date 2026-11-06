@@ -40,12 +40,24 @@ namespace avis::visualizer::rendering
                 history.last_used_frame = frame_index;
                 return &history;
             }
-            // Resized: the old content doesn't match the new size
+            // Resized: the old content doesn't match the new size, except the exposure's
+            view_history kept;
+            kept.exposure = std::exchange(history.exposure, {});
+            kept.exposure_initialized = history.exposure_initialized;
+            kept.last_adaptation = history.last_adaptation;
             destroy_resources(history);
             histories_.erase(found);
+            return insert(name, size, frame_index, std::move(kept));
         }
+        return insert(name, size, frame_index, {});
+    }
 
-        view_history created;
+    result<view_history*> view_history_store::insert(
+        const std::string_view name,
+        const graphics::texture_extent size,
+        const std::uint64_t frame_index,
+        view_history created)
+    {
         if (auto made = create_resources(name, size, created); !made)
         {
             destroy_resources(created);
@@ -118,17 +130,22 @@ namespace avis::visualizer::rendering
             history.depth[slot] = *depth;
         }
 
-        const std::string exposure_name = std::format("{}/exposure", name);
-        auto exposure = resources_.create_buffer(
-            { .size = exposure_buffer_size,
-              .usage = rhi::buffer_usage::shader_resource | rhi::buffer_usage::unordered_access,
-              .memory = rhi::memory_type::gpu_only,
-              .debug_name = exposure_name });
-        if (!exposure)
+        if (!history.exposure.is_valid())
         {
-            return std::unexpected{ std::move(exposure).error() };
+            const std::string exposure_name = std::format("{}/exposure", name);
+            auto exposure = resources_.create_buffer(
+                { .size = gpu::exposure_buffer_bytes,
+                  .usage = rhi::buffer_usage::shader_resource | rhi::buffer_usage::unordered_access,
+                  .memory = rhi::memory_type::gpu_only,
+                  .debug_name = exposure_name });
+            if (!exposure)
+            {
+                return std::unexpected{ std::move(exposure).error() };
+            }
+            history.exposure = *exposure;
+            history.exposure_initialized = false;
+            history.last_adaptation.reset();
         }
-        history.exposure = *exposure;
 
         const std::string clusters_name = std::format("{}/cluster_bounds", name);
         auto clusters = resources_.create_buffer(

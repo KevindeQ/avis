@@ -46,15 +46,6 @@ namespace avis::visualizer::rendering
             std::uint32_t tile_height;
         };
 
-        // tonemap_preview.hlsl's draw constants
-        struct preview_constants
-        {
-            std::uint32_t hdr_color;
-            std::uint32_t ldr_color;
-            std::uint32_t width;
-            std::uint32_t height;
-        };
-
         struct cluster_build_data
         {
             graphics::buffer bounds;
@@ -85,6 +76,7 @@ namespace avis::visualizer::rendering
             graphics::texture brdf_lut;
             graphics::texture shadow_map;
             graphics::texture ambient_occlusion;
+            graphics::buffer exposure;
             graphics::texture hdr_color;
             graphics::texture cascade_index;
         };
@@ -93,12 +85,7 @@ namespace avis::visualizer::rendering
         {
             graphics::texture hdr_color;
             graphics::texture depth;
-        };
-
-        struct preview_data
-        {
-            graphics::texture hdr_color;
-            graphics::texture ldr_color;
+            graphics::buffer exposure;
         };
     } // namespace
 
@@ -213,6 +200,7 @@ namespace avis::visualizer::rendering
                 data.cluster_lights = builder.read(inputs.clusters.lights, graphics::buffer_read::srv_compute);
                 data.light_indices = builder.read(inputs.clusters.indices, graphics::buffer_read::srv_compute);
                 data.irradiance = builder.read(inputs.environment.irradiance, graphics::buffer_read::srv_compute);
+                data.exposure = builder.read(inputs.exposure, graphics::buffer_read::srv_compute);
                 data.prefiltered = builder.read(inputs.environment.prefiltered, srv);
                 data.brdf_lut = builder.read(inputs.environment.brdf_lut, srv);
                 if (inputs.shadow_map.valid())
@@ -238,7 +226,6 @@ namespace avis::visualizer::rendering
             [pipeline = inputs.pipeline,
              lights_srv = inputs.frame.lights_srv,
              sun = inputs.sun,
-             exposure = inputs.exposure,
              ambient_intensity = inputs.ambient_intensity,
              tile,
              shadow = inputs.shadow,
@@ -271,7 +258,7 @@ namespace avis::visualizer::rendering
                 constants.cascade_index = data.cascade_index.valid() ? resources.uav(data.cascade_index).value : 0;
                 constants.size = { width, height };
                 constants.tile_size = { tile.width, tile.height };
-                constants.exposure = exposure;
+                constants.exposure_buffer = resources.srv(data.exposure).value;
                 constants.ambient_intensity = ambient_intensity;
                 constants.shadow = shadow;
                 constants.shadow.shadow_map = data.shadow_map.valid() ? resources.srv(data.shadow_map).value : 0;
@@ -306,12 +293,13 @@ namespace avis::visualizer::rendering
                 data.hdr_color = builder.write(inputs.hdr_color, graphics::texture_write::render_target);
                 // Written although the PSO doesn't: the RHI's depth views are writable (scene_range_pass.h)
                 data.depth = builder.write(inputs.depth, graphics::texture_write::depth_write);
+                data.exposure = builder.read(inputs.exposure, graphics::buffer_read::srv_pixel);
             },
-            [pipeline = inputs.pipeline,
-             constants = gpu::sky_pass_constants{ .sky = inputs.sky, .exposure = inputs.exposure },
-             view_constants = inputs.view_constants](
+            [pipeline = inputs.pipeline, sky = inputs.sky, view_constants = inputs.view_constants](
                 const sky_data& data, const graphics::resource_bag& resources, graphics::graphics_pass_context& context)
             {
+                const gpu::sky_pass_constants constants{ .sky = sky,
+                                                         .exposure_buffer = resources.srv(data.exposure).value };
                 const std::uint32_t width = resources.width(data.hdr_color);
                 const std::uint32_t height = resources.height(data.hdr_color);
                 const rhi::texture_view target = resources.render_target_view(data.hdr_color);
@@ -326,36 +314,5 @@ namespace avis::visualizer::rendering
                 recorder.draw(3);
             });
         return { .hdr_color = written.hdr_color, .depth = written.depth };
-    }
-
-    graphics::texture add_tonemap_preview(
-        graphics::render_graph& graph, const rhi::compute_pipeline_handle pipeline, const graphics::texture hdr_color)
-    {
-        return graph
-            .add_compute_pass<preview_data>(
-                "tonemap",
-                [&](graphics::render_pass_builder& builder, preview_data& data)
-                {
-                    data.hdr_color = builder.read(hdr_color, graphics::texture_read::srv_compute);
-                    data.ldr_color = builder.write(
-                        builder.create_texture(
-                            "ldr_color", { .size = graphics::view_relative(1.0f), .format = rhi::format::rgba8_unorm }),
-                        graphics::texture_write::uav);
-                },
-                [pipeline](
-                    const preview_data& data,
-                    const graphics::resource_bag& resources,
-                    graphics::compute_pass_context& context)
-                {
-                    const preview_constants constants{ .hdr_color = resources.srv(data.hdr_color).value,
-                                                       .ldr_color = resources.uav(data.ldr_color).value,
-                                                       .width = resources.width(data.ldr_color),
-                                                       .height = resources.height(data.ldr_color) };
-                    rhi::compute_recorder& recorder = context.recorder();
-                    recorder.set_pipeline(pipeline);
-                    graphics::binding_layout::push_draw_constants(recorder, constants);
-                    recorder.dispatch(groups(constants.width), groups(constants.height), 1);
-                })
-            .ldr_color;
     }
 } // namespace avis::visualizer::rendering

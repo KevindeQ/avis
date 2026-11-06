@@ -1,6 +1,8 @@
 #include "rendering/scene_renderer.h"
 
+#include "rendering/blue_noise.h"
 #include "rendering/passes/depth_passes.h"
+#include "rendering/passes/exposure_passes.h"
 #include "rendering/passes/forward_pass.h"
 #include "rendering/passes/gbuffer_pass.h"
 #include "rendering/passes/gtao_pass.h"
@@ -11,6 +13,7 @@
 #include "rendering/renderer_shaders.h"
 #include "rendering/view_constants.h"
 
+#include "avis/detail/check.h"
 #include "avis/graphics/binding_layout.h"
 #include "avis/graphics/buffer.h"
 #include "avis/graphics/error.h"
@@ -189,7 +192,9 @@ namespace avis::visualizer::rendering
             std::pair{ &state.gtao_denoise, shader_ids::gtao_denoise },
             std::pair{ &state.deferred_lighting, shader_ids::deferred_lighting },
             std::pair{ &state.taa, shader_ids::taa },
-            std::pair{ &state.tonemap_preview, shader_ids::tonemap_preview },
+            std::pair{ &state.exposure_histogram, shader_ids::exposure_histogram },
+            std::pair{ &state.exposure_adapt, shader_ids::exposure_adapt },
+            std::pair{ &state.tonemap, shader_ids::tonemap },
             std::pair{ &environment.sky, shader_ids::environment_sky },
             std::pair{ &environment.prefilter, shader_ids::environment_prefilter },
             std::pair{ &environment.irradiance, shader_ids::environment_irradiance },
@@ -257,6 +262,30 @@ namespace avis::visualizer::rendering
         }
         state.materials = std::move(*materials);
 
+        // The tonemap's dither (11 §10.4), uploaded with the first frame's flush like the default textures
+        rhi::resources resources = dependencies.resources;
+        auto blue_noise = resources.create_texture(
+            { .width = gpu::blue_noise_size,
+              .height = gpu::blue_noise_size,
+              .format = rhi::format::r8_unorm,
+              .usage = rhi::texture_usage::shader_resource | rhi::texture_usage::copy_destination,
+              .initial_layout = rhi::texture_layout::common,
+              .debug_name = "blue_noise" });
+        if (!blue_noise)
+        {
+            return std::unexpected{ std::move(blue_noise).error() };
+        }
+        state.blue_noise = *blue_noise;
+        const graphics::subresource_data texels{ .bytes = std::as_bytes(blue_noise_texels()),
+                                                 .row_pitch = gpu::blue_noise_size };
+        auto upload = dependencies.uploads.upload_texture(state.blue_noise, std::span{ &texels, 1 });
+        if (!upload)
+        {
+            resources.destroy(state.blue_noise);
+            return std::unexpected{ std::move(upload).error() };
+        }
+        state.blue_noise_upload = *upload;
+
         return std::unique_ptr<scene_renderer>{ new scene_renderer{
             dependencies, settings, shaders, std::move(state) } };
     }
@@ -270,6 +299,8 @@ namespace avis::visualizer::rendering
         graph_{ dependencies.graph },
         settings_{ settings },
         ao_parameters_{ settings.ao },
+        exposure_parameters_{ settings.exposure },
+        tonemapper_{ settings.tonemapper },
         shaders_{ shaders },
         standard_signature_{ state.standard_signature },
         histories_{ dependencies.resources },
@@ -283,7 +314,11 @@ namespace avis::visualizer::rendering
         deferred_lighting_pipeline_{ state.deferred_lighting },
         sky_pipeline_{ state.sky },
         taa_pipeline_{ state.taa },
-        tonemap_preview_pipeline_{ state.tonemap_preview },
+        exposure_histogram_pipeline_{ state.exposure_histogram },
+        exposure_adapt_pipeline_{ state.exposure_adapt },
+        tonemap_pipeline_{ state.tonemap },
+        blue_noise_texture_{ state.blue_noise },
+        blue_noise_upload_{ state.blue_noise_upload },
         environment_{ std::move(state.environment) },
         pipeline_variants_{ std::move(state.pipeline_variants) },
         arena_{ std::move(state.arena) },
@@ -294,7 +329,10 @@ namespace avis::visualizer::rendering
             dependencies.resources, dependencies.frames.frames_in_flight()) }
     {}
 
-    scene_renderer::~scene_renderer() = default;
+    scene_renderer::~scene_renderer()
+    {
+        dependencies_.resources.destroy(blue_noise_texture_); // deferred by the RHI until the GPU is done with it
+    }
 
     void scene_renderer::retire(const std::uint64_t completed_frame_index)
     {
@@ -378,6 +416,14 @@ namespace avis::visualizer::rendering
             }
         }
         resolved_views_.clear();
+        for (const std::string& name : reset_exposures_)
+        {
+            if (view_history* history = histories_.find(name))
+            {
+                history->exposure_initialized = false;
+            }
+        }
+        reset_exposures_.clear();
     }
 
     bool scene_renderer::can_reuse_extraction(
@@ -406,6 +452,7 @@ namespace avis::visualizer::rendering
         graph_.reset();
         rebuilt_clusters_.clear();
         resolved_views_.clear();
+        reset_exposures_.clear();
         view_cascades_.clear();
         draw_lists_.clear(); // they were in the arena
         prepared_draw_lists_.clear();
@@ -446,6 +493,15 @@ namespace avis::visualizer::rendering
             residency_->after_flush();
             textures_->after_flush();
             materials_->after_flush();
+            if (blue_noise_upload_)
+            {
+                if (const std::optional<rhi::synchronization_point> point =
+                        dependencies_.uploads.point(*blue_noise_upload_))
+                {
+                    blue_noise_ready_ = *point;
+                    blue_noise_upload_.reset();
+                }
+            }
 
             // Extraction (11 §3.5 steps 1 and 3): the instances of resident meshes, at this frame's time
             const extraction_lookup lookup{
@@ -513,6 +569,12 @@ namespace avis::visualizer::rendering
                 common,
                 wait_for(rhi::latest(materials_->frame_ready_after(), textures_->frame_ready_after()))),
         };
+        AVIS_CHECK(
+            logger_name,
+            !blue_noise_upload_,
+            "the blue-noise texture's upload ticket is unresolved: the first frame flushes the upload queue (11 §3.6)");
+        blue_noise_ =
+            graph_.import_texture("blue_noise", blue_noise_texture_, common, common, wait_for(blue_noise_ready_));
         add_mip_passes();
 
         // The baked environment (11 §6.4). The bake passes write imported textures, which the graph never culls: they
@@ -545,7 +607,7 @@ namespace avis::visualizer::rendering
 
         for (std::size_t index = 0; index < views.size(); ++index)
         {
-            if (auto failed = add_view(frame, views[index], index))
+            if (auto failed = add_view(frame, views[index], index, wall_now))
             {
                 return failed;
             }
@@ -780,7 +842,10 @@ namespace avis::visualizer::rendering
     }
 
     std::optional<error> scene_renderer::add_view(
-        const graphics::frame_token& frame, const view_description& view, const std::size_t index)
+        const graphics::frame_token& frame,
+        const view_description& view,
+        const std::size_t index,
+        const std::chrono::steady_clock::time_point wall_now)
     {
         auto history = histories_.acquire(view.name, view.size, frame.index());
         if (!history)
@@ -816,6 +881,17 @@ namespace avis::visualizer::rendering
 
         // A view that writes nothing has its passes culled, unless one writes its history
         const bool writes = view.output || !view.options.captures.empty() || !view.options.buffer_captures.empty();
+
+        // The exposure buffer holds an exposure from the view's first frame on (11.16): the reset comes before any
+        // pass reads it. A view that writes nothing adds no exposure pass, since they write its history.
+        graphics::buffer exposure = imported.exposure;
+        if (writes && !(*history)->exposure_initialized)
+        {
+            exposure = add_exposure_reset(
+                graph_, exposure_adapt_pipeline_, exposure, manual_exposure(exposure_parameters_.ev100));
+            (*history)->exposure_initialized = true;
+            reset_exposures_.push_back(view.name);
+        }
 
         const scene_pass_inputs inputs{
             .list = prepared_draw_lists_[index],
@@ -865,7 +941,7 @@ namespace avis::visualizer::rendering
 
         // Pass 4 (11.10); passes 5 and 6 on async compute, declared after the G-buffer and before the shadow cascades
         // (11.12), so they overlap them (11 §2.3); then lighting and the sky (11.11), the transparents (11.14), TAA
-        // (11.15), and the placeholder tonemap until 11.16
+        // (11.15), exposure and the tonemap (11.16)
         const gbuffer_targets gbuffer = add_gbuffer_pass(graph_, inputs, depth);
         gtao_outputs ambient_occlusion;
         if (ao_parameters_.intensity > 0.0f)
@@ -887,7 +963,6 @@ namespace avis::visualizer::rendering
         }
         const bool wants_cascade_index = std::ranges::any_of(
             view.options.captures, [](const resource_capture& capture) { return capture.resource == "cascade_index"; });
-        const float exposure = manual_exposure(settings_.exposure.ev100); // until the exposure pass (11.16)
         const deferred_lighting_outputs lit = add_deferred_lighting(
             graph_,
             { .pipeline = deferred_lighting_pipeline_,
@@ -943,14 +1018,40 @@ namespace avis::visualizer::rendering
                                .previous_history = imported.taa_history_previous,
                                .previous_depth_history = imported.depth_previous,
                                .has_history = taa_history,
-                               .history_exposure_scale = taa_history ? exposure / (*history)->taa_exposure : 1.0f,
+                               .exposure = exposure,
                                .view_constants = inputs.view_constants })
                              .output;
             resolved_views_.push_back(view.name);
         }
         (*history)->taa_written = resolve;
-        (*history)->taa_exposure = exposure;
-        const graphics::texture ldr_color = add_tonemap_preview(graph_, tonemap_preview_pipeline_, taa_output);
+
+        // Passes 12 and 13: the next frame's exposure from taa_output, timed by the wall time since the view's last
+        // adaptation, then the tonemap, rescaled to that exposure
+        graphics::buffer adapted = exposure;
+        if (writes)
+        {
+            const std::optional<std::chrono::steady_clock::time_point> last = (*history)->last_adaptation;
+            const float frame_time =
+                last ? std::clamp(
+                           std::chrono::duration<float>(wall_now - *last).count(), 0.0f, exposure_maximum_frame_time) :
+                       0.0f;
+            (*history)->last_adaptation = wall_now;
+            adapted = add_exposure_adaptation(
+                graph_,
+                { .histogram = exposure_histogram_pipeline_,
+                  .adapt = exposure_adapt_pipeline_,
+                  .color = taa_output,
+                  .exposure = exposure,
+                  .settings = exposure_parameters_,
+                  .frame_time = frame_time });
+        }
+        const graphics::texture ldr_color = add_tonemap(
+            graph_,
+            { .pipeline = tonemap_pipeline_,
+              .color = taa_output,
+              .exposure = adapted,
+              .blue_noise = blue_noise_,
+              .tonemapper = tonemapper_ });
 
         // Captures, for tests and tools: copies of the final versions
         const graphics::texture_extent ao_size = gtao_extent(ao_parameters_, view.size);
@@ -1044,7 +1145,7 @@ namespace avis::visualizer::rendering
             }
         }
 
-        if (auto failed = add_buffer_captures(view, clusters.lights, clusters.indices))
+        if (auto failed = add_buffer_captures(view, clusters.lights, clusters.indices, adapted))
         {
             return failed;
         }
@@ -1074,7 +1175,10 @@ namespace avis::visualizer::rendering
     }
 
     std::optional<error> scene_renderer::add_buffer_captures(
-        const view_description& view, const graphics::buffer cluster_lights, const graphics::buffer light_indices)
+        const view_description& view,
+        const graphics::buffer cluster_lights,
+        const graphics::buffer light_indices,
+        const graphics::buffer exposure)
     {
         struct capturable_buffer
         {
@@ -1086,6 +1190,7 @@ namespace avis::visualizer::rendering
             capturable_buffer{
                 "cluster_lights", cluster_lights, std::uint64_t{ gpu::cluster_count } * sizeof(gpu::cluster_lights) },
             capturable_buffer{ "light_indices", light_indices, cluster_light_index_count * 4 },
+            capturable_buffer{ "exposure", exposure, gpu::exposure_buffer_bytes },
         };
         for (std::size_t capture_index = 0; capture_index < view.options.buffer_captures.size(); ++capture_index)
         {

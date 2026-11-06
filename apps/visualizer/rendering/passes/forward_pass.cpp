@@ -24,6 +24,7 @@ namespace avis::visualizer::rendering
             buffer_cluster_lights,
             buffer_light_indices,
             buffer_irradiance,
+            buffer_exposure,
         };
     } // namespace
 
@@ -59,6 +60,7 @@ namespace avis::visualizer::rendering
         pass.reads.buffers[buffer_cluster_lights] = forward.clusters.lights;
         pass.reads.buffers[buffer_light_indices] = forward.clusters.indices;
         pass.reads.buffers[buffer_irradiance] = forward.environment.irradiance;
+        pass.reads.buffers[buffer_exposure] = forward.exposure;
 
         const graphics::texture_extent tile = cluster_tile_size(
             { static_cast<std::uint32_t>(inputs.view_constants.size.x),
@@ -66,7 +68,6 @@ namespace avis::visualizer::rendering
         gpu::forward_lighting_constants lighting{};
         lighting.sun = forward.sun;
         lighting.tile_size = { tile.width, tile.height };
-        lighting.exposure = forward.exposure;
         lighting.ambient_intensity = forward.ambient_intensity;
         lighting.shadow = forward.shadow;
         pass.extension = [lighting](const scene_pass_read_srvs& srvs)
@@ -76,6 +77,7 @@ namespace avis::visualizer::rendering
             bound.cluster_lights = srvs.buffers[buffer_cluster_lights];
             bound.light_indices = srvs.buffers[buffer_light_indices];
             bound.irradiance = srvs.buffers[buffer_irradiance];
+            bound.exposure_buffer = srvs.buffers[buffer_exposure];
             bound.prefiltered = srvs.textures[texture_prefiltered];
             bound.brdf_lut = srvs.textures[texture_brdf_lut];
             bound.shadow.shadow_map = srvs.textures[texture_shadow_map];

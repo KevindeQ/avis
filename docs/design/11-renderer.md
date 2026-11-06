@@ -550,10 +550,18 @@ Generic geometry features. The renderer doesn't know what the points or lines re
 ### 10.3 Exposure
 - Default: **automatic exposure** from a 128-bin log-luminance histogram (compute), with an average that ignores the darkest 50% and brightest 5%, and asymmetric exponential adaptation (fast brighten, slower darken).
 - Manual EV100 override in the UI. Exposure is stored in a persistent 1-element buffer, read the next frame for pre-exposure.
+- *As implemented* (task 11.16):
+  - The buffer holds this frame's exposure and the previous frame's, then the histogram. Lighting, the sky, forward and TAA read it on the GPU.
+  - The histogram bins pre-exposed luminance over ±8 stops around the key (0.18). Each bin also sums its pixels' positions within the bin, so the average isn't rounded to a bin.
+  - The adaptation runs at 3/s while the exposure rises (the image brightens) and 1/s while it falls, timed by the wall time between the view's frames.
+  - The tonemap rescales by the new exposure over the one the frame was pre-exposed with, so an exposure change shows in the same frame.
 
 ### 10.4 Tonemapping
 - **ACES fitted** (Hill's RRT+ODT approximation) by default, with **AgX** selectable for comparison.
 - Output is sRGB-encoded in the shader into `RGBA8_UNORM`, with blue-noise dithering (±0.5 LSB) to prevent banding. HDR output is out of scope.
+- *As implemented* (task 11.16):
+  - AgX is Sobotka's, with the polynomial fit of its default contrast, decoded with a 2.2 gamma before the sRGB encoding.
+  - The 64² blue noise is generated at startup by void-and-cluster, not checked in. It isn't animated, so a still image stays still.
 
 ### 10.5 Overlay pass
 - Walks the `overlay` and then the `overlay_on_top` groups of the draw list into `ldr_color`, after tonemapping, so overlays stay crisp and unaffected by TAA.

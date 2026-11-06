@@ -7,7 +7,8 @@
 //   - the image-based ambient light of the baked environment, with ambient occlusion (the lower of the material's and
 //     GTAO's, 11.13) and Lagarde's specular occlusion from it;
 //   - the emissive radiance.
-// Unlit pixels pass their base colour through. The result is pre-exposed: hdr_color = radiance · exposure. Pixels with
+// Unlit pixels pass their base colour through. The result is pre-exposed: hdr_color = radiance · exposure, with the
+// frame's exposure from the view's exposure buffer (exposure.hlsli, 11.16). Pixels with
 // nothing drawn (depth 0) are left at 0 for the sky pass. When constants.cascade_index names a UAV, each pixel's shadow
 // cascade goes there (no_cascade where none applies), for the debug blit (11.20) and the tests. A half-resolution GTAO
 // result is upsampled here, with bilinear weights scaled by depth similarity (11 §8).
@@ -15,6 +16,7 @@
 #include "bindless.hlsli"
 #include "brdf.hlsli"
 #include "environment.hlsli"
+#include "exposure.hlsli"
 #include "lighting.hlsli"
 #include "packing.hlsli"
 #include "shadows.hlsli"
@@ -108,7 +110,7 @@ float gtao_occlusion(uint2 pixel, float view_depth)
     if (material.b > 0.5)
     {
         // Unlit: the base colour, as it is
-        hdr_color[thread.xy] = float4(albedo.rgb * constants.exposure, 1.0);
+        hdr_color[thread.xy] = float4(albedo.rgb * load_current_exposure(constants.exposure_buffer), 1.0);
         write_cascade_index(thread.xy, no_cascade);
         return;
     }
@@ -164,5 +166,5 @@ float gtao_occlusion(uint2 pixel, float view_depth)
     const float specular_ao = specular_occlusion(saturate(dot(normal, to_view)), ambient_occlusion, s.roughness);
     radiance += constants.ambient_intensity * (ambient_diffuse * ambient_occlusion + ambient_specular * specular_ao);
 
-    hdr_color[thread.xy] = float4(radiance * constants.exposure, 1.0);
+    hdr_color[thread.xy] = float4(radiance * load_current_exposure(constants.exposure_buffer), 1.0);
 }

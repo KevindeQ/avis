@@ -3,6 +3,7 @@
 # Visualizer data under data/shaders/visualizer/ (11 §13), compiled by avis_add_shaders next to the executable.
 
 add_library(AVIS_VISUALIZER_RENDERING STATIC
+	blue_noise.cpp
 	cascades.cpp
 	clusters.cpp
 	draw_lists.cpp
@@ -12,6 +13,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	geometry_arena.cpp
 	material_table.cpp
 	passes/depth_passes.cpp
+	passes/exposure_passes.cpp
 	passes/forward_pass.cpp
 	passes/gbuffer_pass.cpp
 	passes/gtao_pass.cpp

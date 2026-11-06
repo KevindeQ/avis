@@ -133,6 +133,32 @@ AVIS_SHARED_CONSTANT(uint, environment_prefiltered_mips, 6); // mip m is for rou
 AVIS_SHARED_CONSTANT(uint, environment_irradiance_coefficients, 9); // SH9, one float4 (RGB) each
 AVIS_SHARED_CONSTANT(uint, brdf_lut_size, 128); // texel (i, j) is NoV = (i + 0.5) / 128, roughness = (j + 0.5) / 128
 
+// The view's exposure buffer (11 §10.3, view_history), a raw buffer: a 16-byte header, then the histogram's 128 bin
+// counts and 128 sums. A pixel's position in the histogram is (log2(pre-exposed luminance / key) − minimum) · bins per
+// stop, clamped to [0, 128): its bin is the integer part, and its sum adds the fraction in 1/256ths.
+AVIS_SHARED_CONSTANT(uint, exposure_offset_current, 0); // float: the pre-exposure of the frame being rendered
+AVIS_SHARED_CONSTANT(uint, exposure_offset_previous, 4); // float: the previous frame's, which the TAA history has
+AVIS_SHARED_CONSTANT(uint, exposure_offset_luminance, 8); // float: the luminance the last adaptation measured; 0: none
+AVIS_SHARED_CONSTANT(uint, exposure_offset_counts, 16); // uint per bin
+AVIS_SHARED_CONSTANT(uint, exposure_offset_sums, 16 + 128 * 4); // uint per bin
+AVIS_SHARED_CONSTANT(uint, exposure_buffer_bytes, 16 + 2 * 128 * 4);
+AVIS_SHARED_CONSTANT(uint, exposure_histogram_bins, 128);
+AVIS_SHARED_CONSTANT(float, exposure_histogram_minimum, -8.0f); // stops below the key of bin 0's start
+AVIS_SHARED_CONSTANT(float, exposure_histogram_bins_per_stop, 8.0f); // so the bins span 16 stops around the key
+AVIS_SHARED_CONSTANT(uint, exposure_histogram_fraction_steps, 256);
+
+// exposure_constants::mode
+AVIS_SHARED_CONSTANT(uint, exposure_mode_automatic, 0); // adapt towards the histogram's average
+AVIS_SHARED_CONSTANT(uint, exposure_mode_manual, 1); // the next exposure is manual_exposure
+AVIS_SHARED_CONSTANT(uint, exposure_mode_reset, 2); // both header exposures become manual_exposure, the bins 0
+
+// tonemap_constants::tonemapper
+AVIS_SHARED_CONSTANT(uint, tonemapper_aces, 0);
+AVIS_SHARED_CONSTANT(uint, tonemapper_agx, 1);
+
+// The tonemap's dither (11 §10.4): a blue-noise texture of this many texels per side, tiled over the view
+AVIS_SHARED_CONSTANT(uint, blue_noise_size, 64);
+
 // The sun's shadow cascades (11 §7): at most shadow_maximum_cascades slices of the shadow map. cascade_index (the
 // debug output of deferred_lighting) is no_cascade for a pixel no cascade covers.
 AVIS_SHARED_CONSTANT(uint, shadow_maximum_cascades, 4);
@@ -367,7 +393,7 @@ struct deferred_lighting_constants
     uint cascade_index; // UAV of the cascade_index debug output (R8_UINT); 0: not written
     uint2 size; // pixels
     uint2 tile_size; // pixels per cluster tile
-    float exposure; // pre-exposure: hdr_color = radiance · exposure
+    uint exposure_buffer; // ByteAddressBuffer SRV, the view's exposure: hdr_color = radiance · its current exposure
     float ambient_intensity; // scales the image-based lighting
     uint ambient_occlusion_scale; // pixels per AO texel along each axis: 1, or 2 at half resolution (upsampled)
     uint padding0;
@@ -378,7 +404,7 @@ struct deferred_lighting_constants
 struct sky_pass_constants
 {
     sky_constants sky;
-    float exposure;
+    uint exposure_buffer; // ByteAddressBuffer SRV, the view's exposure
     uint padding0;
     uint padding1;
     uint padding2;
@@ -430,7 +456,7 @@ struct forward_lighting_constants
     uint brdf_lut; // Texture2D SRV, RG16F
     uint padding0;
     uint2 tile_size; // pixels per cluster tile
-    float exposure; // pre-exposure: hdr_color = radiance · exposure
+    uint exposure_buffer; // ByteAddressBuffer SRV, the view's exposure: hdr_color = radiance · its current exposure
     float ambient_intensity; // scales the image-based lighting
     shadow_constants shadow; // the sun's
 };
@@ -457,8 +483,36 @@ struct taa_constants
     uint2 size; // pixels
     float blend; // the base weight of this frame's colour
     float gamma; // the variance box's half-size, in standard deviations
-    float history_exposure_scale; // this frame's exposure over the history's
+    uint exposure_buffer; // ByteAddressBuffer SRV: the history is rescaled by the current over the previous exposure
     float disocclusion_tolerance; // the relative depth difference beyond which the history is rejected
+};
+
+// The pass constants (b1) of exposure_histogram and exposure_adapt (11 §10.3, §2.3 pass 12)
+struct exposure_constants
+{
+    uint exposure_buffer; // RWByteAddressBuffer UAV, the view's exposure
+    uint color; // Texture2D<float4> SRV, taa_output (pre-exposed); histogram only
+    uint2 size; // pixels of color; histogram only
+    uint mode; // adapt: exposure_mode_*
+    float key; // the pre-exposed luminance the average is brought to
+    float manual_exposure; // adapt: the exposure of exposure_mode_manual and exposure_mode_reset
+    float frame_time; // adapt: seconds since the view's previous adaptation
+    float brighten_rate; // adapt: per second, while the exposure rises (the image brightens)
+    float darken_rate; // adapt: per second, while it falls
+    float minimum_exposure; // adapt: the range the exposure is kept in
+    float maximum_exposure;
+};
+
+// The pass constants (b1) of the tonemap (11 §10.4, §2.3 pass 13)
+struct tonemap_constants
+{
+    uint color; // Texture2D<float4> SRV, taa_output
+    uint ldr_color; // RWTexture2D<float4> UAV, RGBA8_UNORM: sRGB-encoded
+    uint exposure_buffer; // ByteAddressBuffer SRV: color is rescaled by the current over the previous exposure
+    uint blue_noise; // Texture2D<float> SRV, R8_UNORM, blue_noise_size²: the dither, a rank in 1/256ths
+    uint2 size; // pixels
+    uint tonemapper; // tonemapper_*
+    uint padding0;
 };
 
 #ifdef __cplusplus
@@ -607,13 +661,13 @@ static_assert(offsetof(deferred_lighting_constants, cascade_index) == 60);
 static_assert(offsetof(deferred_lighting_constants, shadow) == 96);
 static_assert(offsetof(deferred_lighting_constants, size) == 64);
 static_assert(offsetof(deferred_lighting_constants, tile_size) == 72);
-static_assert(offsetof(deferred_lighting_constants, exposure) == 80);
+static_assert(offsetof(deferred_lighting_constants, exposure_buffer) == 80);
 static_assert(offsetof(deferred_lighting_constants, ambient_intensity) == 84);
 static_assert(offsetof(deferred_lighting_constants, ambient_occlusion_scale) == 88);
 
 static_assert(sizeof(sky_pass_constants) == 160);
 static_assert(offsetof(sky_pass_constants, sky) == 0);
-static_assert(offsetof(sky_pass_constants, exposure) == 144);
+static_assert(offsetof(sky_pass_constants, exposure_buffer) == 144);
 
 static_assert(sizeof(gtao_constants) == 64);
 static_assert(offsetof(gtao_constants, size) == 16);
@@ -628,7 +682,7 @@ static_assert(offsetof(gtao_denoise_constants, size) == 16);
 static_assert(sizeof(forward_lighting_constants) == 400);
 static_assert(offsetof(forward_lighting_constants, irradiance) == 16);
 static_assert(offsetof(forward_lighting_constants, tile_size) == 32);
-static_assert(offsetof(forward_lighting_constants, exposure) == 40);
+static_assert(offsetof(forward_lighting_constants, exposure_buffer) == 40);
 static_assert(offsetof(forward_lighting_constants, ambient_intensity) == 44);
 static_assert(offsetof(forward_lighting_constants, shadow) == 48);
 
@@ -639,7 +693,18 @@ static_assert(offsetof(forward_pass_constants, lighting) == 32);
 static_assert(sizeof(taa_constants) == 64);
 static_assert(offsetof(taa_constants, size) == 40);
 static_assert(offsetof(taa_constants, blend) == 48);
+static_assert(offsetof(taa_constants, exposure_buffer) == 56);
 static_assert(offsetof(taa_constants, disocclusion_tolerance) == 60);
+
+static_assert(sizeof(exposure_constants) == 48);
+static_assert(offsetof(exposure_constants, size) == 8);
+static_assert(offsetof(exposure_constants, mode) == 16);
+static_assert(offsetof(exposure_constants, frame_time) == 28);
+static_assert(offsetof(exposure_constants, maximum_exposure) == 44);
+
+static_assert(sizeof(tonemap_constants) == 32);
+static_assert(offsetof(tonemap_constants, size) == 16);
+static_assert(offsetof(tonemap_constants, tonemapper) == 24);
 
 } // namespace avis::visualizer::rendering::gpu
 

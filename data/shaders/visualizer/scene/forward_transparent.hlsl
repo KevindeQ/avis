@@ -24,6 +24,7 @@
 #include "bindless.hlsli"
 #include "brdf.hlsli"
 #include "environment.hlsli"
+#include "exposure.hlsli"
 #include "lighting.hlsli"
 #include "scene_material.hlsli"
 #include "scene_varyings.hlsli"
@@ -156,7 +157,7 @@ forward_output pixel_main(scene_varyings input, bool front_face : SV_IsFrontFace
 #endif
 
     forward_output output = (forward_output)0;
-    output.color = float4(radiance * (forward.lighting.exposure * alpha), alpha);
+    output.color = float4(radiance * (load_current_exposure(forward.lighting.exposure_buffer) * alpha), alpha);
     output.reactive =
         saturate(material.blend_operation == blend_operation_normal ? alpha : luminance(output.color.rgb));
 #if AVIS_PICKING

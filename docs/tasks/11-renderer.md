@@ -698,14 +698,27 @@ flowchart LR
 ## 11.16 Exposure and tonemapping
 11 §10.3, §10.4, passes 12, 13.
 
-- [ ] `exposure` (compute): a 128-bin log-luminance histogram of `taa_output` (accounting for pre-exposure), the average ignoring the darkest 50% and brightest 5%, and asymmetric adaptation with frame time. It writes a persistent per-view buffer (`view_history`) read next frame by lighting, forward and tonemap. Manual EV100 bypasses the histogram.
-- [ ] `tonemap` (compute): ACES fitted (Hill) or AgX, with sRGB encoding in the shader into `ldr_color` RGBA8_UNORM and ±0.5 LSB blue-noise dithering (a checked-in 64² blue-noise texture under `data/assets/textures/`; see Open points).
+*Status: implemented; the tests pass in Debug and Release.* As implemented:
+- **The exposure buffer** (`view_history::exposure`, layout in `shared_types.hlsli`) holds the current exposure, the previous one, the last measured luminance, then the 128 bin counts and 128 bin sums. Lighting, the sky, forward and TAA read the current exposure from it on the GPU (`exposure.hlsli`), so nothing waits on a readback. A view's first frame adds `exposure_reset`, which writes the initial exposure (the EV100's) before anything reads it. A resize keeps the buffer, so the exposure carries on.
+- **Passes** (`passes/exposure_passes.h/.cpp`, `exposure.hlsl`, `tonemap.hlsl`), after `taa_resolve`:
+  - `exposure_histogram` (automatic mode only) bins `taa_output`'s pre-exposed luminance relative to the key (0.18), 8 bins per stop over ±8 stops, so the range follows the exposure.
+  - `exposure_adapt` (one group) averages the bins between the darkest 50% and the brightest 5%, which gives the exposure that brings that average to the key. It moves there exponentially at 3/s while the exposure rises (the image brightens) and 1/s while it falls, within EV100 −4 to 20. The frame time is the wall time since the view's last adaptation, at most 1 s. In manual mode it writes the EV100's exposure. Either way, the exposure this frame used becomes the previous one, and the bins are cleared for the next frame.
+  - `tonemap` rescales `taa_output` by the new exposure over the one it was pre-exposed with, so an exposure change shows in the frame that makes it, rather than one frame later. TAA's history is rescaled the same way.
+  A view that writes nothing adds none of them, since they write its history.
+- **Sub-bin precision.** Each bin also sums its pixels' positions within the bin, in 1/256ths, so the average isn't rounded to a bin centre. With counts only, a uniform grey would settle up to half a bin (1/16 stop, 4.4%) from the key.
+- **Curves.** ACES fitted is Hill's matrices and RRT + ODT fit. AgX is Sobotka's inset and outset matrices with the polynomial fit of the default contrast; its display output is decoded with a 2.2 gamma, then sRGB-encoded like ACES. `tests/helpers/tonemap_reference.h` holds the CPU references.
+- **Blue noise** (`blue_noise.h/.cpp`) is generated at startup by void-and-cluster (σ = 1.5, deterministic) instead of being checked in, which resolves the Open point: there's no asset to deploy or load. The 64² R8 texture holds rank / 16. The dither isn't animated, so a still image stays still.
+- `scene_renderer::set_exposure_parameters` and `set_tonemapper` change them at run time, for 12's debug UI. The `exposure` buffer can be captured.
+- **Tests** are in `test_renderer_tonemap.cpp` and `test_blue_noise.cpp`. The test fixture now defaults to manual exposure, which is what every earlier test ran with. Measured: a 100 cd/m² sky converges to 0.1788 (key 0.18). After 10 frames of a 4-stop step, 0.368 is left brightening and 0.715 darkening. Both curves are within 0.998 LSB of their references, which is the dither plus rounding. The dither moves a flat region's mean by 0.0015 LSB at most.
+
+- [x] `exposure` (compute): a 128-bin log-luminance histogram of `taa_output` (accounting for pre-exposure), the average ignoring the darkest 50% and brightest 5%, and asymmetric adaptation with frame time. It writes a persistent per-view buffer (`view_history`) read next frame by lighting, forward and tonemap. Manual EV100 bypasses the histogram.
+- [x] `tonemap` (compute): ACES fitted (Hill) or AgX, with sRGB encoding in the shader into `ldr_color` RGBA8_UNORM and ±0.5 LSB blue-noise dithering (a checked-in 64² blue-noise texture under `data/assets/textures/`; see Open points).
 
 **Tests** (`[renderer]`):
-- [ ] Manual EV100: a surface of known luminance maps to the expected exposure-scaled value before the tonemap.
-- [ ] Auto exposure converges on a uniform grey scene to the key value within 5% after 60 frames. It brightens faster than it darkens.
-- [ ] Tonemap curves: ACES and AgX match CPU reference implementations at 16 luminances within 1/255. sRGB encoding matches the exact transfer function.
-- [ ] Dithering doesn't change the mean of a flat region by more than 0.25 LSB.
+- [x] Manual EV100: a surface of known luminance maps to the expected exposure-scaled value before the tonemap.
+- [x] Auto exposure converges on a uniform grey scene to the key value within 5% after 60 frames. It brightens faster than it darkens.
+- [x] Tonemap curves: ACES and AgX match CPU reference implementations at 16 luminances within 1/255. sRGB encoding matches the exact transfer function.
+- [x] Dithering doesn't change the mean of a flat region by more than 0.25 LSB.
 
 ## 11.17 Overlay pass and selection outline
 11 §3.4, §10.5, pass 14.
@@ -832,6 +845,6 @@ flowchart LR
 - **Selection mask.** 11 §10.5 describes "a stencil-like mask written by the selected instances". A stencil bit would need stencil in the depth format (D32_S8) and the new `set_stencil_reference`. An R8 extra target in the passes that draw selected instances needs no RHI change. Recommended: the R8 target, written only on frames with a selection, the same way as picking. In that case `set_stencil_reference` and `clear_depth_stencil` stay unused and can be left out of 11.9. *11.9 follows the recommendation: the RHI is unchanged, and both stencil uses fail a debug check in the walker.*
 - **Pick and inspector results.** How results reach 12: a `take_pick_results()` poll on the frame chain, or a sender completed per request. Recommended: the poll. The frame chain posts results to the GUI with the rest of its per-frame state.
 - **Hosek–Wilkie data.** The model's published coefficient tables (from the authors' reference implementation, under a BSD-style licence) need to be vendored, either as a header under `apps/visualizer/rendering/third_party/` or in `external/`. Check the licence first. Alternative: Preetham, which is simpler, analytic and lower quality. *11.11 uses Preetham for now; vendoring Hosek–Wilkie only replaces `sky_model.cpp` and `sky.hlsli`.*
-- **Blue-noise texture.** The dithering and possibly GTAO want a 64² blue-noise texture. Either generate one offline (void-and-cluster, a `dt` command) or vendor a CC0 one.
+- **Blue-noise texture.** The dithering and possibly GTAO want a 64² blue-noise texture. Either generate one offline (void-and-cluster, a `dt` command) or vendor a CC0 one. *Done in 11.16: generated at startup by void-and-cluster (`blue_noise.h`), so nothing is checked in.*
 - **Point and spot shadows.** These are out of iteration 1 (11 §6.2). Nothing to do; it's listed so 11.11 doesn't grow them.
 - **Reference GPU.** 11 §15's targets are for an RTX 3060-class GPU. Record which machine the numbers come from; CI runs on WARP and doesn't check them.

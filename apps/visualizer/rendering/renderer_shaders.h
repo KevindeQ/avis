@@ -60,8 +60,12 @@ namespace avis::visualizer::rendering
         inline constexpr std::string_view brdf_lut = "environment_bake.brdf_lut_main.cs";
         // The TAA resolve into the view's history (11.15)
         inline constexpr std::string_view taa = "taa.main.cs";
-        // ldr_color from hdr_color, until exposure and tonemapping exist (11.11, 11.16)
-        inline constexpr std::string_view tonemap_preview = "tonemap_preview.main.cs";
+        // Automatic exposure: taa_output's histogram, then the adaptation (also the manual exposure and the
+        // reset, 11.16)
+        inline constexpr std::string_view exposure_histogram = "exposure.histogram_main.cs";
+        inline constexpr std::string_view exposure_adapt = "exposure.adapt_main.cs";
+        // ldr_color from taa_output: ACES or AgX, sRGB and the blue-noise dither (11.16)
+        inline constexpr std::string_view tonemap = "tonemap.main.cs";
 
         inline constexpr std::array all{ binding_probe,
                                          generate_mips,
@@ -79,7 +83,9 @@ namespace avis::visualizer::rendering
                                          environment_irradiance,
                                          brdf_lut,
                                          taa,
-                                         tonemap_preview };
+                                         exposure_histogram,
+                                         exposure_adapt,
+                                         tonemap };
     } // namespace shader_ids
 
     // Where the build deploys the shaders, relative to the executable's directory

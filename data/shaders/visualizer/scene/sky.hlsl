@@ -5,6 +5,7 @@
 // drawn into. Each pixel is the analytic sky (sky.hlsli) in its view direction, pre-exposed like deferred lighting.
 
 #include "bindless.hlsli"
+#include "exposure.hlsli"
 #include "shared_types.hlsli"
 #include "sky.hlsli"
 
@@ -33,5 +34,5 @@ float4 pixel_main(sky_varyings input) : SV_Target0
     const float4 near_point = mul(view.view_projection_inverse, float4(input.ndc, 1.0, 1.0));
     const float4 far_point = mul(view.view_projection_inverse, float4(input.ndc, 0.5, 1.0));
     const float3 direction = normalize(far_point.xyz / far_point.w - near_point.xyz / near_point.w);
-    return float4(sky_radiance(constants.sky, direction) * constants.exposure, 1.0);
+    return float4(sky_radiance(constants.sky, direction) * load_current_exposure(constants.exposure_buffer), 1.0);
 }

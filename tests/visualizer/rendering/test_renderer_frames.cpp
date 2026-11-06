@@ -3,6 +3,7 @@
 // GPU-based validation: the RHI capture fails a test on any validation message.
 
 #include "helpers/renderer_fixture.h"
+#include "helpers/tonemap_reference.h"
 #include "rendering/passes/lighting_passes.h"
 #include "rendering/scene_renderer.h"
 #include "rendering/sky_model.h"
@@ -40,18 +41,25 @@ namespace
         return found == information.graph->passes.end() ? nullptr : &*found;
     }
 
-    // The placeholder tonemap of a pre-exposed radiance (tonemap_preview.hlsl): x / (1 + x), then sRGB, in RGBA8
-    int tonemapped(const double value)
-    {
-        const double mapped = std::clamp(value / (1.0 + value), 0.0, 1.0);
-        const double encoded = mapped <= 0.0031308 ? mapped * 12.92 : 1.055 * std::pow(mapped, 1.0 / 2.4) - 0.055;
-        return static_cast<int>(std::lround(encoded * 255.0));
-    }
-
-    // Whether every pixel of an image is the same
+    // Whether an image is flat: every channel of every pixel within the tonemap's dither (1 LSB) of the first pixel's
     bool uniform(const tests::rgba8_image& image)
     {
-        return image.count_different(image.at(0, 0)) == 0;
+        const tests::rgba8 first = image.at(0, 0);
+        for (std::uint32_t y = 0; y < image.height; ++y)
+        {
+            for (std::uint32_t x = 0; x < image.width; ++x)
+            {
+                const tests::rgba8 pixel = image.at(x, y);
+                for (std::size_t channel = 0; channel < 4; ++channel)
+                {
+                    if (std::abs(static_cast<int>(pixel[channel]) - static_cast<int>(first[channel])) > 1)
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 } // namespace
 
@@ -75,8 +83,8 @@ TEST_CASE_METHOD(renderer_fixture, "an empty snapshot with a sun renders the sky
     CHECK(images[0].width == output_size.width);
     CHECK(images[0].height == output_size.height);
 
-    // Every pixel is the sky model in its direction, pre-exposed with the manual EV100, through the placeholder
-    // tonemap. Pixels on the horizon may fall on either side of it.
+    // Every pixel is the sky model in its direction, pre-exposed with the manual EV100, through the tonemap (ACES,
+    // within the dither's LSB). Pixels on the horizon may fall on either side of it.
     const gpu::sky_constants sky = make_sky_constants({ .settings = world.environment() });
     const float exposure = manual_exposure(settings.exposure.ev100);
     const float aspect = static_cast<float>(output_size.width) / static_cast<float>(output_size.height);
@@ -91,10 +99,11 @@ TEST_CASE_METHOD(renderer_fixture, "an empty snapshot with a sun renders the sky
             const Eigen::Vector3f direction =
                 (rotation * Eigen::Vector3f{ ndc_x * scale * aspect, ndc_y * scale, -1.0f }).normalized();
             const Eigen::Vector3f radiance = sky_radiance(sky, direction) * exposure;
+            const Eigen::Vector3d expected = tests::tonemapped_lsb(radiance.cast<double>(), settings.tonemapper);
             const tests::rgba8 pixel = images[0].at(x, y);
             for (int channel = 0; channel < 3; ++channel)
             {
-                if (std::abs(pixel[channel] - tonemapped(radiance[channel])) > 2)
+                if (std::abs(static_cast<double>(pixel[channel]) - expected[channel]) > 2.0)
                 {
                     ++different;
                     break;

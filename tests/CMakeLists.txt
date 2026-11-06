@@ -128,6 +128,7 @@ target_sources(AVIS_TESTS
 		test_sender_of.cpp
 		test_thread_pool.cpp
 		test_transient_resource_pool.cpp
+		visualizer/rendering/test_blue_noise.cpp
 		visualizer/rendering/test_cascades.cpp
 		visualizer/rendering/test_draw_lists.cpp
 		visualizer/rendering/test_extraction.cpp
@@ -139,6 +140,7 @@ target_sources(AVIS_TESTS
 		visualizer/rendering/test_render_settings.cpp
 		visualizer/rendering/test_renderer_forward.cpp
 		visualizer/rendering/test_renderer_taa.cpp
+		visualizer/rendering/test_renderer_tonemap.cpp
 		visualizer/rendering/test_renderer_frames.cpp
 		visualizer/rendering/test_renderer_gtao.cpp
 		visualizer/rendering/test_renderer_lighting.cpp

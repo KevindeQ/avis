@@ -53,12 +53,14 @@ namespace avis::tests
         std::size_t count_different(rgba8 value) const;
     };
 
-    // The defaults of 11 §14, with a 16 MiB geometry arena: the default 768 MiB is sized for the Visualizer's
-    // geometry budget, and the tests' scenes are small
+    // The defaults of 11 §14, with a 16 MiB geometry arena (the default 768 MiB is sized for the Visualizer's
+    // geometry budget, and the tests' scenes are small) and a manual exposure at the default EV100, so frames don't
+    // depend on the wall time between them; the automatic exposure's tests ask for it (11.16)
     inline visualizer::rendering::render_settings test_render_settings()
     {
         visualizer::rendering::render_settings settings;
         settings.geometry.arena_mib = 16;
+        settings.exposure.mode = visualizer::rendering::exposure_mode::manual;
         return settings;
     }
 

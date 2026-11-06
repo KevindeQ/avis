@@ -73,7 +73,8 @@ namespace avis::visualizer::rendering
 
     // The same for one of the view's buffers (docs/tasks/11-renderer.md §11.11), copied whole into the start of
     // `buffer`, which must be at least as large and allow copy_destination (a readback buffer can be read once the
-    // frame completes). Resources: cluster_lights, light_indices.
+    // frame completes). Resources: cluster_lights, light_indices, exposure (11.16: the view's exposure buffer after the
+    // frame's adaptation, its layout in shared_types.hlsli).
     struct buffer_capture
     {
         std::string resource;

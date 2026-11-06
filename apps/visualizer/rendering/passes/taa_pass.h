@@ -35,7 +35,9 @@ namespace avis::visualizer::rendering
         graphics::texture previous_history; // the previous frame's slots; only read with has_history
         graphics::texture previous_depth_history;
         bool has_history = false;
-        float history_exposure_scale = 1.0f; // this frame's exposure over the history's
+        // The view's exposure buffer: with has_history, the history is rescaled by its current over its previous
+        // exposure (exposure_passes.h)
+        graphics::buffer exposure;
         gpu::view_constants view_constants;
     };
 

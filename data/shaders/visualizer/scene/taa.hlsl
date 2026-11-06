@@ -4,7 +4,8 @@
 // HDR colour, one pixel per thread in 8 × 8 groups:
 // 1. Velocity dilation: the velocity of the closest pixel (smallest linear depth) of the 3 × 3 neighbourhood. Where
 //    nothing was drawn there, the velocity is the camera's, by reprojecting the pixel's direction.
-// 2. The history at the previous position, from 5-tap Catmull-Rom sampling, rescaled to this frame's exposure.
+// 2. The history at the previous position, from 5-tap Catmull-Rom sampling, rescaled to this frame's exposure (the
+//    current exposure of the view's exposure buffer over the previous one, which the history was pre-exposed with).
 // 3. Disocclusion: the previous linear depth of the 3 × 3 texels around the previous position is compared with the
 //    surface's, both its current depth and the depth the camera's motion alone gives it. With no texel within
 //    disocclusion_tolerance of either, the surface wasn't visible there, and the history is rejected. A previous
@@ -16,6 +17,7 @@
 // It writes taa_output into the view's history slot, and this frame's linear depth into the depth history.
 
 #include "bindless.hlsli"
+#include "exposure.hlsli"
 #include "shared_types.hlsli"
 
 AVIS_PASS_CONSTANTS(taa_constants, constants);
@@ -187,7 +189,7 @@ bool depth_matches(float previous, float expected)
     float3 previous = current;
     if (!rejected)
     {
-        previous = sample_history(history, previous_uv) * constants.history_exposure_scale;
+        previous = sample_history(history, previous_uv) * exposure_change(constants.exposure_buffer);
         const float3 mean = first_moment / 9.0;
         const float3 deviation = sqrt(max(second_moment / 9.0 - mean * mean, 0.0));
         previous = ycocg_to_rgb(clip_to_box(rgb_to_ycocg(previous), mean, constants.gamma * deviation));

@@ -30,7 +30,7 @@ namespace avis::visualizer::rendering
         const light_clusters& clusters;
         std::uint32_t sun = gpu::no_light; // index in the frame's lights
         const environment_resources& environment;
-        float exposure = 1.0f;
+        graphics::buffer exposure; // the view's exposure buffer (exposure_passes.h)
         float ambient_intensity = 1.0f;
         graphics::texture shadow_map; // invalid: no shadows, everything is lit
         gpu::shadow_constants shadow{}; // the cascades of shadow_map; its shadow_map index is set when recording

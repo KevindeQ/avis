@@ -24,6 +24,7 @@ namespace avis::visualizer::rendering
             graphics::texture reactive_mask;
             graphics::texture previous_history;
             graphics::texture previous_depth_history;
+            graphics::buffer exposure;
             graphics::texture output;
             graphics::texture depth_output;
         };
@@ -44,14 +45,12 @@ namespace avis::visualizer::rendering
                     data.previous_history = builder.read(inputs.previous_history, graphics::texture_read::srv_compute);
                     data.previous_depth_history =
                         builder.read(inputs.previous_depth_history, graphics::texture_read::srv_compute);
+                    data.exposure = builder.read(inputs.exposure, graphics::buffer_read::srv_compute);
                 }
                 data.output = builder.write(inputs.history, graphics::texture_write::uav);
                 data.depth_output = builder.write(inputs.depth_history, graphics::texture_write::uav);
             },
-            [pipeline = inputs.pipeline,
-             has_history = inputs.has_history,
-             exposure_scale = inputs.history_exposure_scale,
-             view_constants = inputs.view_constants](
+            [pipeline = inputs.pipeline, has_history = inputs.has_history, view_constants = inputs.view_constants](
                 const taa_data& data, const graphics::resource_bag& resources, graphics::compute_pass_context& context)
             {
                 gpu::taa_constants constants{};
@@ -63,6 +62,7 @@ namespace avis::visualizer::rendering
                     constants.reactive_mask = resources.srv(data.reactive_mask).value;
                     constants.history = resources.srv(data.previous_history).value;
                     constants.depth_history = resources.srv(data.previous_depth_history).value;
+                    constants.exposure_buffer = resources.srv(data.exposure).value;
                 }
                 constants.output = resources.uav(data.output).value;
                 constants.depth_output = resources.uav(data.depth_output).value;
@@ -70,7 +70,6 @@ namespace avis::visualizer::rendering
                 constants.size = { resources.width(data.output), resources.height(data.output) };
                 constants.blend = taa_blend;
                 constants.gamma = taa_gamma;
-                constants.history_exposure_scale = exposure_scale;
                 constants.disocclusion_tolerance = taa_disocclusion_tolerance;
 
                 rhi::compute_recorder& recorder = context.recorder();

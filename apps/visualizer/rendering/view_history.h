@@ -13,6 +13,7 @@
 #include <Eigen/Core>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -26,16 +27,17 @@ namespace avis::visualizer::rendering
     // A history unused for this many frames is released (10 §8)
     inline constexpr std::uint64_t view_history_release_frames = 60;
 
-    // The exposure buffer: the exposure, three spare floats, then the 128-bin luminance histogram (11 §10.3)
-    inline constexpr std::uint32_t exposure_histogram_bins = 128;
-    inline constexpr std::uint64_t exposure_buffer_size = 16 + exposure_histogram_bins * 4;
-
     struct view_history
     {
         graphics::texture_extent size; // the view size the textures have
         std::array<rhi::texture_handle, 2> taa_history{}; // RGBA16F: pre-exposed HDR colour after TAA (11 §10.2)
         std::array<rhi::texture_handle, 2> depth{}; // R32F: view-space linear depth, for TAA's disocclusion test
-        rhi::buffer_handle exposure; // exposure_buffer_size bytes, raw; one buffer, read and then written each frame
+        // gpu::exposure_buffer_bytes, raw (layout in shared_types.hlsli); one buffer, read and then written each frame.
+        // A resize keeps it, with the two fields below, so the exposure carries on.
+        rhi::buffer_handle exposure;
+        bool exposure_initialized = false; // the buffer holds an exposure; set by the renderer once it adds the reset
+        // The wall time of the view's last exposure adaptation, for the next one's frame time; none before the first
+        std::optional<std::chrono::steady_clock::time_point> last_adaptation;
         rhi::buffer_handle cluster_bounds; // cluster_count gpu::cluster_bounds (11 §6.3), structured
         // The unjittered projection the cluster bounds were built for; none before the first build. A projection change
         // rebuilds them (a resize makes a new history).
@@ -45,8 +47,8 @@ namespace avis::visualizer::rendering
         Eigen::Matrix4f view_projection = Eigen::Matrix4f::Identity(); // unjittered, of the last frame rendered
         std::uint64_t jitter_sequence = 0; // the TAA jitter's next sample (11 §10.2); 0 when the history starts again
         // The previous slot of taa_history holds a TAA resolve: the frame before ran taa_resolve. Set by the renderer.
+        // Its pre-exposure is the exposure buffer's previous exposure.
         bool taa_written = false;
-        float taa_exposure = 1.0f; // the pre-exposure of the slot taa_resolve last wrote
         std::uint64_t last_used_frame = 0;
 
         std::uint32_t previous() const noexcept
@@ -64,7 +66,8 @@ namespace avis::visualizer::rendering
         view_history_store& operator=(const view_history_store&) = delete;
 
         // The history of view `name` for frame `frame_index`. A new name, or a new size, creates the resources and
-        // starts without a previous frame; otherwise the ping-pong slots swap and has_previous is set. Fails with the
+        // starts without a previous frame (a new size keeps the exposure); otherwise the ping-pong slots swap and
+        // has_previous is set. Fails with the
         // RHI's error (nothing is kept then), or with invalid_argument when the name was already acquired this frame.
         // The pointer stays valid until release_unused or the store's destruction.
         result<view_history*> acquire(std::string_view name, graphics::texture_extent size, std::uint64_t frame_index);
@@ -80,6 +83,9 @@ namespace avis::visualizer::rendering
         }
 
     private:
+        // Creates the resources `created` doesn't have yet and adds it; on failure, destroys them and adds nothing
+        result<view_history*> insert(
+            std::string_view name, graphics::texture_extent size, std::uint64_t frame_index, view_history created);
         result<void> create_resources(std::string_view name, graphics::texture_extent size, view_history& history);
         void destroy_resources(view_history& history) noexcept;
 
