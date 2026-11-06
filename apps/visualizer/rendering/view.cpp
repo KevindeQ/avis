@@ -32,4 +32,30 @@ namespace avis::visualizer::rendering
         }
         return matrix;
     }
+
+    std::string_view to_string(const debug_blit_mode mode) noexcept
+    {
+        switch (mode)
+        {
+        case debug_blit_mode::raw:
+            return "raw";
+        case debug_blit_mode::depth_linear:
+            return "depth_linear";
+        case debug_blit_mode::normal_octahedral:
+            return "normal_octahedral";
+        case debug_blit_mode::velocity:
+            return "velocity";
+        case debug_blit_mode::ao:
+            return "ao";
+        case debug_blit_mode::cascade_index:
+            return "cascade_index";
+        case debug_blit_mode::cluster_light_count:
+            return "cluster_light_count";
+        case debug_blit_mode::luminance_heat:
+            return "luminance_heat";
+        case debug_blit_mode::alpha_only:
+            return "alpha_only";
+        }
+        return "unknown";
+    }
 } // namespace avis::visualizer::rendering

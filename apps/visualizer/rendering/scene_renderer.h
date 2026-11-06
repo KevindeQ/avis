@@ -7,30 +7,33 @@
 // Each view's frame (11 §2.3) is, so far: depth_prepass, linearize_depth with the depth_mips chain, cluster_build and
 // light_cull on async compute, gbuffer (11.10), shadow_cascades when the sun casts shadows (11.12), deferred_lighting
 // and sky into hdr_color (11.11), forward_transparent (11.14), taa_resolve (11.15), exposure and the tonemap into
-// ldr_color (11.16), the selection outline and the overlays (11.17), and present_to_shared, which copies ldr_color into
-// the view's output. The cascades are computed per view before the draw lists, which cull
-// the shadow casters into them. Before the views, the environment baker bakes the sky cubemap, the prefiltered cubemap
-// and the SH9 irradiance when the snapshot's environment changes, and the BRDF LUT once (11 §6.4). Residency runs in
-// every frame's prepare stage: the snapshot's meshes are uploaded into the geometry arena (11.3), its textures into
-// their own RHI textures and its materials into the material table (11.4). The arena and the material table are
-// imported into the graph, and the frame generates the mip chains of newly uploaded images. Extraction (11.5) then
-// builds the frame's instance and light arrays, interpolated at the frame's time, and pass 0 (upload_frame_data) copies
-// them into persistent ring-indexed buffers. Startup creates the pipeline sets the passes draw with (11.7). Each view's
-// draw list (11.8) is cut into runs before pass 0, which uploads their instance indices; the passes record their key
-// ranges with the range walker (11.9).
+// ldr_color (11.16), the selection outline and the overlays (11.17), picking on a click frame (11.19), the debug blits
+// and the pixel inspector (11.20), and present_to_shared, which copies ldr_color into the view's output. The cascades
+// are computed per view before the draw lists, which cull the shadow casters into them. Before the views, the
+// environment baker bakes the sky cubemap, the prefiltered cubemap and the SH9 irradiance when the snapshot's
+// environment changes, and the BRDF LUT once (11 §6.4). Residency runs in every frame's prepare stage: the snapshot's
+// meshes are uploaded into the geometry arena (11.3), its textures into their own RHI textures and its materials into
+// the material table (11.4). The arena and the material table are imported into the graph, and the frame generates the
+// mip chains of newly uploaded images. Extraction (11.5) then builds the frame's instance and light arrays,
+// interpolated at the frame's time, and pass 0 (upload_frame_data) copies them into persistent ring-indexed buffers.
+// Startup creates the pipeline sets the passes draw with (11.7). Each view's draw list (11.8) is cut into runs before
+// pass 0, which uploads their instance indices; the passes record their key ranges with the range walker (11.9).
 
 #include "rendering/cascades.h"
+#include "rendering/debug_blit.h"
 #include "rendering/draw_lists.h"
 #include "rendering/environment_baker.h"
 #include "rendering/extraction.h"
 #include "rendering/frame_data.h"
 #include "rendering/geometry_arena.h"
 #include "rendering/material_table.h"
+#include "rendering/pass_statistics.h"
 #include "rendering/passes/overlay_pass.h"
 #include "rendering/picking.h"
 #include "rendering/pipeline_variant_registry.h"
 #include "rendering/progressive_lod.h"
 #include "rendering/range_walker.h"
+#include "rendering/readback_ring.h"
 #include "rendering/render_settings.h"
 #include "rendering/residency_cache.h"
 #include "rendering/texture_residency.h"
@@ -52,6 +55,7 @@
 
 #include <stdexec/execution.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -62,6 +66,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace avis::graphics
@@ -93,7 +98,25 @@ namespace avis::visualizer::rendering
         graphics::upload_queue& uploads; // per frame: residency uploads, flushed by the renderer's prepare stage
     };
 
-    // For 12's Render Debug panel (11.20 adds the counters of the passes)
+    // The items of one group of a view's draw list (11 §4.5)
+    struct draw_group_items
+    {
+        std::string group; // group_name: "scene/camera/world/opaque"
+        std::size_t items = 0;
+    };
+
+    // A view's light clusters (11 §6.3), read back from light_cull's output
+    struct view_cluster_statistics
+    {
+        std::string view;
+        std::uint64_t frame_index = 0; // of the frame it was read back from
+        std::uint32_t dropped_lights = 0; // light references dropped past cluster_maximum_lights (overflow)
+        std::uint32_t overflowing_clusters = 0; // clusters that dropped any
+        std::uint32_t most_lights = 0; // the most lights a cluster touched, dropped ones included
+        std::uint32_t light_references = 0; // kept in the light index list
+    };
+
+    // For 12's Render Debug panel (11.20): the graph's information and the renderer's counters
     struct renderer_debug_information
     {
         const graphics::graph_debug_information* graph = nullptr; // the last frame's; valid until the next render
@@ -129,6 +152,17 @@ namespace avis::visualizer::rendering
         std::vector<progressive_lod_statistics> progressive;
         std::vector<std::uint64_t> progressive_vertices;
         environment_statistics environment; // the environment bakes (11.11)
+
+        // The scene passes of the last frame, in declaration order: their parts' draws, instances, pipeline changes
+        // and the rest of the range walker's counters (11.9). Complete once that frame's sender has completed.
+        std::vector<pass_draw_statistics> passes;
+        // The items of each group of the last frame's draw lists, one list per view in view order
+        std::vector<std::vector<draw_group_items>> draw_groups;
+        // The latest cluster statistics read back for each view of the last frame that writes something; a view
+        // whose frames haven't completed yet has none
+        std::vector<view_cluster_statistics> clusters;
+        // The sum of the GPU times graph.passes carry (frame N - F, from the profiler); none without timings
+        std::optional<double> gpu_milliseconds;
     };
 
     class scene_renderer
@@ -172,10 +206,10 @@ namespace avis::visualizer::rendering
             if (build_failure_)
             {
                 forget_frame(); // nothing was copied or baked: a later frame mustn't rely on this one
-                drop_picks(frame_index);
+                drop_readbacks(frame_index);
             }
-            // A frame that fails to execute didn't copy its arrays either, nor read back its picks. A submitted frame's
-            // picks wait for its submissions to complete (take_pick_results).
+            // A frame that fails to execute didn't copy its arrays either, nor read anything back. A submitted frame's
+            // readbacks wait for its submissions to complete (take_pick_results, take_inspector_results).
             auto sender = stdexec::just() |
                           stdexec::let_value(
                               [this, &frame]()
@@ -189,21 +223,21 @@ namespace avis::visualizer::rendering
                           stdexec::then(
                               [this, frame_index](graphics::submitted_frame submitted)
                               {
-                                  picks_submitted(frame_index, submitted);
+                                  readbacks_submitted(frame_index, submitted);
                                   return submitted;
                               }) |
                           stdexec::let_error(
                               [this, frame_index]<typename Error>(Error&& error) noexcept
                               {
                                   forget_frame();
-                                  drop_picks(frame_index);
+                                  drop_readbacks(frame_index);
                                   return stdexec::just_error(std::forward<Error>(error));
                               }) |
                           stdexec::let_stopped(
                               [this, frame_index]() noexcept
                               {
                                   forget_frame();
-                                  drop_picks(frame_index);
+                                  drop_readbacks(frame_index);
                                   return stdexec::just_stopped();
                               }) |
                           threading::into_internal_error();
@@ -221,6 +255,13 @@ namespace avis::visualizer::rendering
         // warning).
         std::vector<pick_result> take_pick_results();
 
+        // The results of the inspector requests (view_options::inspect, 11 §11) whose frames are complete on the GPU,
+        // in request order, each once, like take_pick_results. A request whose blit can't be shown, or whose cursor is
+        // outside the blit, gets a result without a value at once; one made while every readback slot was in use
+        // gets none.
+        std::vector<inspector_result> take_inspector_results();
+
+        // Also collects the cluster statistics whose frames are complete
         renderer_debug_information debug_information() const;
 
         const render_settings& settings() const noexcept
@@ -396,6 +437,9 @@ namespace avis::visualizer::rendering
             rhi::compute_pipeline_handle tonemap;
             rhi::compute_pipeline_handle selection_outline;
             rhi::compute_pipeline_handle pick_window;
+            rhi::graphics_pipeline_handle debug_blit;
+            rhi::compute_pipeline_handle debug_inspect;
+            rhi::compute_pipeline_handle cluster_statistics;
             rhi::texture_handle blue_noise; // the tonemap's dither (blue_noise.h)
             graphics::upload_ticket blue_noise_upload;
             std::unique_ptr<environment_baker> environment;
@@ -418,30 +462,62 @@ namespace avis::visualizer::rendering
         // exposure resets are done again by the next frame
         void forget_frame() noexcept;
 
-        // Picking's readback ring (11 §5.1). A slot holds one pick from its request until its result is taken; the
-        // ring grows to maximum_pick_slots.
-        static constexpr std::size_t maximum_pick_slots = 8;
+        // The readback ring of picks (11 §5.1) and inspector texels (11 §11): maximum_readback_slots buffers of
+        // readback_slot_bytes. A slot holds one request until its result is taken.
+        static constexpr std::size_t maximum_readback_slots = 8;
+        static constexpr std::uint64_t readback_slot_bytes =
+            std::max<std::uint64_t>(pick_window_bytes, gpu::debug_inspector_bytes);
 
-        struct pending_pick
+        struct pick_payload
         {
             std::string view;
             pick_request request;
-            std::uint64_t frame_index = 0;
-            std::uint64_t sequence = 0; // the request's place in take_pick_results' order
-            std::optional<graphics::submitted_frame> submitted; // set once the frame's work is submitted
         };
 
-        struct pick_slot
+        struct inspection_payload
         {
-            rhi::buffer_handle readback; // pick_window_bytes, memory_type::readback
-            std::optional<pending_pick> pending;
+            std::string view;
+            inspector_request request;
+            std::string resource; // qualified
+            std::uint32_t mip = 0;
+            std::uint32_t slice = 0;
+            texel_position texel;
         };
 
-        // A free slot for a pick of `view` in frame `frame_index`, or nullptr when every slot is in use. Fails when a
-        // new slot's buffer can't be created.
-        result<pick_slot*> acquire_pick_slot(const view_description& view, std::uint64_t frame_index);
-        void picks_submitted(std::uint64_t frame_index, const graphics::submitted_frame& submitted);
-        void drop_picks(std::uint64_t frame_index) noexcept;
+        using readback_payload = std::variant<pick_payload, inspection_payload>;
+
+        // The cluster statistics' ring (debug_information): a slot per view and frame in flight
+        static constexpr std::size_t maximum_cluster_statistics_slots = 16;
+
+        // The frame's readbacks were submitted, or its frame failed and its requests get no result
+        void readbacks_submitted(std::uint64_t frame_index, const graphics::submitted_frame& submitted);
+        void drop_readbacks(std::uint64_t frame_index) noexcept;
+
+        // A slot of the shared ring for a request of frame `frame_index`, or nullptr after a rate-limited warning that
+        // every slot is in use; fails when a slot's buffer can't be created
+        result<readback_ring<readback_payload>::slot*>
+            acquire_readback(const view_description& view, std::uint64_t frame_index, readback_payload payload);
+
+        // The view's debug blits and inspector after the overlays and picking (11 §11); returns the ldr_color they
+        // wrote. `resources` are the view's textures a selection may name.
+        struct debug_resource;
+        result<graphics::texture> add_view_debug_blits(
+            const graphics::frame_token& frame,
+            const view_description& view,
+            std::span<const debug_resource> resources,
+            graphics::buffer cluster_lights,
+            graphics::texture ldr_color,
+            graphics::texture linear_depth,
+            const gpu::view_constants& view_constants);
+
+        // An inspector result without a value, at once (none for a frame that fails)
+        void inspect_without_value(std::uint64_t frame_index, const view_description& view, std::string resource);
+
+        // Logs a debug selection that can't be shown, at most once per second
+        void warn_debug_selection(const view_description& view, const debug_selection& selection, std::string_view why);
+
+        // Moves the cluster statistics whose frames are complete into cluster_statistics_
+        void collect_cluster_statistics() const;
 
         // The reuse shortcut's condition (11 §3.5)
         bool can_reuse_extraction(const scene::snapshot& snapshot, const frame_interpolation& interpolation) const;
@@ -498,9 +574,24 @@ namespace avis::visualizer::rendering
         rhi::compute_pipeline_handle tonemap_pipeline_;
         rhi::compute_pipeline_handle selection_outline_pipeline_;
         rhi::compute_pipeline_handle pick_window_pipeline_;
-        std::vector<pick_slot> pick_slots_;
-        std::uint64_t pick_sequence_ = 0; // the order of the requests, for take_pick_results
-        std::optional<std::chrono::steady_clock::time_point> last_pick_warning_;
+        rhi::graphics_pipeline_handle debug_blit_pipeline_;
+        rhi::compute_pipeline_handle debug_inspect_pipeline_;
+        rhi::compute_pipeline_handle cluster_statistics_pipeline_;
+        readback_ring<readback_payload> readbacks_;
+        // Inspector results without a value, with their place in readbacks_' order and their frame's index
+        struct ready_inspection
+        {
+            std::uint64_t sequence = 0;
+            inspector_result result;
+        };
+        std::vector<ready_inspection> ready_inspections_;
+        std::optional<std::chrono::steady_clock::time_point> last_readback_warning_;
+        std::optional<std::chrono::steady_clock::time_point> last_debug_warning_;
+        // Collected by debug_information, which is const for its callers
+        mutable readback_ring<std::string> cluster_readbacks_; // payload: the view's name
+        mutable std::map<std::string, view_cluster_statistics, std::less<>> cluster_statistics_;
+        std::vector<std::string> last_view_names_; // of the last frame built
+        pass_statistics_collector pass_statistics_; // of the last frame built
         rhi::texture_handle blue_noise_texture_;
         // The blue noise's upload, queued at creation and flushed by the first frame, which resolves it into
         // blue_noise_ready_; every frame's import waits on that point

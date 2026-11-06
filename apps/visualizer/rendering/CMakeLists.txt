@@ -6,12 +6,14 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	blue_noise.cpp
 	cascades.cpp
 	clusters.cpp
+	debug_blit.cpp
 	draw_lists.cpp
 	environment_baker.cpp
 	extraction.cpp
 	frame_data.cpp
 	geometry_arena.cpp
 	material_table.cpp
+	passes/debug_blit_pass.cpp
 	passes/depth_passes.cpp
 	passes/exposure_passes.cpp
 	passes/forward_pass.cpp

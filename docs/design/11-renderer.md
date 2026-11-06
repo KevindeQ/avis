@@ -590,6 +590,10 @@ Generic geometry features. The renderer doesn't know what the points or lines re
 - **Visualisation modes:** `raw` (with range remap), `depth_linear`, `normal_octahedral` (decoded to RGB), `velocity` (HSV direction/magnitude), `ao` (greyscale), `cascade_index` (false colour), `cluster_light_count` (heat map), `luminance_heat`, `alpha_only`.
 - Format-aware sampling: integer formats use `Load`, depth formats are read through SRV views with `R32_FLOAT`.
 - **Pixel inspector:** hovering with Alt held reads back the selected resource's texel under the cursor, using the RHI readback sender. The value is shown in the panel.
+- *As implemented* (task 11.20):
+  - A view's selections are `view_options::debug_blits`, drawn in list order (later on top) by one `debug_blit` pass after the overlays and picking. The pass draws a fullscreen triangle per blit into its rectangle, rather than `fullscreen_effects` draw items: a blit's source is a per-frame graph resource, which a material-table material can't name.
+  - Every format is read with `Load`. The colour is written into `ldr_color` as is, so a debug value of 0.5 is byte 128. A selection the frame can't show is skipped with a warning.
+  - The inspector reads one texel through the readback ring picking uses. Its results come from `scene_renderer::take_inspector_results()`, polled like picks, rather than through the RHI readback sender.
 
 ## 12. Output to Qt
 `present_to_shared` copies or blits `ldr_color` into the shared texture slot the interop layer chose ([12 §3](12-visualizer.md#3-viewport-integration-qquickrhiitem--shared-handles)). The shared texture is imported with `final = common`. After submission the frame chain signals the shared fence. The viewport size follows the `QQuickRhiItem` size times the device pixel ratio. A resize is debounced by 100 ms and reallocates the shared ring.

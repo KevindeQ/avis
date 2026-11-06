@@ -172,6 +172,30 @@ AVIS_SHARED_CONSTANT(uint, selection_outline_radius, 2);
 AVIS_SHARED_CONSTANT(uint, pick_window_size, 9);
 AVIS_SHARED_CONSTANT(float, picking_minimum_coverage, 0.1f);
 
+// The debug blit (11 §11): debug_blit_constants::source_kind, how the source is read
+AVIS_SHARED_CONSTANT(uint, debug_source_float, 0); // Texture2D<float4> (Texture2DArray<float4> when is_array)
+AVIS_SHARED_CONSTANT(uint, debug_source_uint, 1); // Texture2D<uint4> (Texture2DArray<uint4>): an integer format
+AVIS_SHARED_CONSTANT(uint, debug_source_depth, 2); // a depth format, through its R32_FLOAT SRV, as debug_source_float
+AVIS_SHARED_CONSTANT(uint, debug_source_clusters, 3); // StructuredBuffer<cluster_lights>, with linear_depth
+
+// debug_blit_constants::mode: the values of rendering::debug_blit_mode
+AVIS_SHARED_CONSTANT(uint, debug_mode_raw, 0);
+AVIS_SHARED_CONSTANT(uint, debug_mode_depth_linear, 1);
+AVIS_SHARED_CONSTANT(uint, debug_mode_normal_octahedral, 2);
+AVIS_SHARED_CONSTANT(uint, debug_mode_velocity, 3);
+AVIS_SHARED_CONSTANT(uint, debug_mode_ao, 4);
+AVIS_SHARED_CONSTANT(uint, debug_mode_cascade_index, 5);
+AVIS_SHARED_CONSTANT(uint, debug_mode_cluster_light_count, 6);
+AVIS_SHARED_CONSTANT(uint, debug_mode_luminance_heat, 7);
+AVIS_SHARED_CONSTANT(uint, debug_mode_alpha_only, 8);
+
+// The pixel inspector's texel (11 §11): float4 value at 0, uint4 bits at 16
+AVIS_SHARED_CONSTANT(uint, debug_inspector_bytes, 32);
+
+// A view's cluster statistics (11 §6.3), a uint4: the light references dropped past cluster_maximum_lights, the clusters
+// that dropped any, the most lights a cluster touched (dropped ones included), and the light references kept
+AVIS_SHARED_CONSTANT(uint, cluster_statistics_bytes, 16);
+
 // The sun's shadow cascades (11 §7): at most shadow_maximum_cascades slices of the shadow map. cascade_index (the
 // debug output of deferred_lighting) is no_cascade for a pixel no cascade covers.
 AVIS_SHARED_CONSTANT(uint, shadow_maximum_cascades, 4);
@@ -547,6 +571,40 @@ struct tonemap_constants
     uint padding0;
 };
 
+// The pass constants (b1) of a debug blit and of the pixel inspector (11 §11). The view constants (b2) are the camera's,
+// for linearizing a depth format.
+struct debug_blit_constants
+{
+    uint source; // SRV, as source_kind says
+    uint source_kind; // debug_source_*
+    uint is_array; // 1: a Texture2DArray, read at `slice`
+    uint mode; // debug_mode_*
+    uint mip;
+    uint slice;
+    uint channels; // debug_mode_raw: bit 0 R … bit 3 A
+    uint linear_depth; // debug_source_clusters: Texture2D<float> SRV, the view's linear depth
+    int2 origin; // the blit's rectangle in ldr_color, pixels
+    uint2 extent;
+    uint2 source_size; // texels of the mip; the view's size for debug_source_clusters
+    uint2 tile_size; // debug_source_clusters: pixels per cluster tile
+    float range_minimum;
+    float range_maximum;
+    uint2 texel; // the inspector's texel in the mip
+    uint output; // the inspector's RWByteAddressBuffer UAV, debug_inspector_bytes
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
+// The pass constants (b1) of a view's cluster statistics (11 §6.3)
+struct cluster_statistics_constants
+{
+    uint cluster_lights; // StructuredBuffer<cluster_lights> SRV, cluster_count entries
+    uint output; // RWByteAddressBuffer UAV, cluster_statistics_bytes
+    uint padding0;
+    uint padding1;
+};
+
 #ifdef __cplusplus
 
 static_assert(sizeof(float2) == 8 && sizeof(float3) == 12 && sizeof(float4) == 16);
@@ -739,6 +797,16 @@ static_assert(sizeof(selection_outline_constants) == 32);
 static_assert(sizeof(pick_window_constants) == 32);
 static_assert(offsetof(tonemap_constants, size) == 16);
 static_assert(offsetof(tonemap_constants, tonemapper) == 24);
+
+static_assert(sizeof(debug_blit_constants) == 96);
+static_assert(offsetof(debug_blit_constants, origin) == 32);
+static_assert(offsetof(debug_blit_constants, extent) == 40);
+static_assert(offsetof(debug_blit_constants, source_size) == 48);
+static_assert(offsetof(debug_blit_constants, tile_size) == 56);
+static_assert(offsetof(debug_blit_constants, range_minimum) == 64);
+static_assert(offsetof(debug_blit_constants, texel) == 72);
+static_assert(offsetof(debug_blit_constants, output) == 80);
+static_assert(sizeof(cluster_statistics_constants) == 16);
 
 } // namespace avis::visualizer::rendering::gpu
 

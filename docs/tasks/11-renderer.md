@@ -116,7 +116,7 @@ flowchart LR
 
   Views come from the caller (11 §2.1); the renderer never reads a camera from the snapshot.
 
-  *As implemented:* `output` is a `std::optional<output_target>` (none: the view's passes are culled). `view_options` also has `reset_history` (11.15), and `debug_selection` and `pick_request` are minimal until 11.19 and 11.20 extend them. `camera` has `view_from_world()` and a reverse-Z `projection(aspect_ratio)`.
+  *As implemented:* `output` is a `std::optional<output_target>` (none: the view's passes are culled). `view_options` also has `reset_history` (11.15), and `debug_selection` and `pick_request` are minimal until 11.19 and 11.20 extend them. *11.20 replaced the single `debug_selection` with the `debug_blits` list and added `inspect`.* `camera` has `view_from_world()` and a reverse-Z `projection(aspect_ratio)`.
 - [x] `scene_renderer` (rewritten):
   - `static result<std::unique_ptr<scene_renderer>> create(renderer_dependencies, const render_settings&, graphics::shader_library&)`. The dependencies are the RHI views, the render graph, the pool, the frame scheduler, the profiler, the pipeline cache, the root signature registry and a per-frame `upload_queue`. `create` registers the standard root signature, creates the base pipeline sets with a startup `bulk` (11.7) and the persistent resources.
   - `render(frame_token&, const scene::snapshot&, std::span<const view_description>, time_point wall_now)`: builds and executes the frame's graph, and returns a sender of `submitted_frame` (10 §7).
@@ -135,7 +135,7 @@ flowchart LR
   - a scene built with task 10's `scene` and `asset_cache` and published to a `snapshot_buffer`
   - helpers to add a unit cube, a sphere (`mesh_builder`), a ground plane, a sun, a point light and an unlit quad
   - `render_and_read(views, frames = 1)`, which runs frames through the scheduler and `readback_queue` and returns the pixels
-  - `read_texture(name)`, which reads any graph resource through the debug selection (11.20), or through the debug information once 11.20 exists. *Left for 11.20, which brings the debug selection it reads through.*
+  - `read_texture(name)`, which reads any graph resource through the debug selection (11.20), or through the debug information once 11.20 exists. *Left for 11.20, which brings the debug selection it reads through. 11.20 doesn't add it: `resource_capture` copies any of a view's textures by name, and the pixel inspector reads single texels.*
 
 **Tests** (`test_renderer_frames.cpp`, `[renderer]`):
 - [x] An empty snapshot with a sun renders the sky colour of the environment's sun direction (from 11.11 on; until then, the clear colour), with no debug-layer or GPU-based-validation messages.
@@ -540,7 +540,7 @@ flowchart LR
 - **Light units.** The snapshot already carries candela for point and spot lights (08 §6.1), so the renderer has no Φ / 4π conversion. A point or spot light with range 0 ("unlimited") gets `light_cutoff_range`, where its illuminance falls to 0.01 lux, so the clusters can bound it. Only the first directional light (the sun) is lit; others are ignored (one sun, 11 §6.2).
 - **Clusters** (`clusters.hlsl`, `clusters.h/.cpp` for the CPU mirror). The grid constants are in `shared_types.hlsli`.
   - `cluster_build` writes the bounds into the view's history (`view_history::cluster_bounds`). It runs only when the unjittered projection differs from `cluster_projection`, and never for a view that writes nothing.
-  - `light_cull` uses one thread per cluster and walks the lights in order, so the lists are reproducible. Each cluster has a fixed slot of 256 indices in `light_indices`, at `256 · index`. The `cluster_lights` entry `{ offset, count, dropped }` replaces an overflow counter. Reading `dropped` back for the debug information comes with 11.20's readback.
+  - `light_cull` uses one thread per cluster and walks the lights in order, so the lists are reproducible. Each cluster has a fixed slot of 256 indices in `light_indices`, at `256 · index`. The `cluster_lights` entry `{ offset, count, dropped }` replaces an overflow counter. Reading `dropped` back for the debug information comes with 11.20's readback. *11.20 sums it on the GPU (`cluster_statistics.hlsl`) and reads the sum back: `renderer_debug_information::clusters`.*
   - Tiles are skipped by the `depth_mips` level whose texels fit in a tile.
   - Since 11.14, a cluster in front of its tile's opaque depth, or in a tile of sky only, keeps its lights when the frame draws transparents (`cluster_inputs::keep_front`): only transparents can be there.
   - Spot lights also get Wronski's cone test against the cluster's bounding sphere.
@@ -817,16 +817,36 @@ flowchart LR
 ## 11.20 Debug blit and debug information
 11 §11, 10 §9.
 
-- [ ] `debug_selection { qualified name, mip, slice, channel mask, mode, value range, layout }` in `view_options`. The renderer resolves the name against the frame's resources, reads it with `render_pass_builder::read_for_debug` (task 9) and adds `debug_blit` (graphics) after `overlay`. Each blit is a `fullscreen_effects` draw item with the debug material, stacked by the depth field.
-- [ ] `debug_blit.hlsl` covers the modes of 11 §11 (`raw`, `depth_linear`, `normal_octahedral`, `velocity`, `ao`, `cascade_index`, `cluster_light_count`, `luminance_heat`, `alpha_only`), with format-aware sampling (`Load` for integer formats, R32_FLOAT SRVs for depth).
-- [ ] The pixel inspector reads back the selected resource's texel under a cursor position in `view_options`, through the same readback ring as picking (11.19), and reports it.
-- [ ] `scene_renderer::debug_information()` returns the render graph's `graph_debug_information` plus the renderer's counters: instances, draws, pipeline changes per pass, items per group, cluster overflow drops, progressive vertices drawn, residency bytes and pending uploads, and GPU timings from the profiler.
+*Status: implemented; the tests pass in Debug and Release.* As implemented:
+- **Selection** (`view.h`). `view_options::debug_blits` is a list of `debug_selection { resource, mip, slice, channels, mode, range_minimum, range_maximum, picture_in_picture }`, drawn in list order, later ones on top. `picture_in_picture { corner, scale }` puts a blit flush with a corner at `scale` of the view's size; none is fullscreen (`debug_blit_rectangle`).
+- **Names.** A name is one of the view's resources, unqualified (`gbuffer_normal`) or qualified with the view (`main/gbuffer_normal`; `resource_in_view`). The renderer resolves it against the table the captures use, plus `shadow_map` (with its cascades as slices) and `cluster_lights`, which only `cluster_light_count` shows. A selection the frame can't show is skipped with a warning (at most one per second), and the frame renders without it. That covers another view's name, an unknown name, a resource not rendered this frame (`picking_id` without a click), a mip or slice out of range, a mismatched mode, and `ldr_color`, which the blit draws into. Selections of `cascade_index` make deferred lighting write it, as its captures do.
+- **Pass** (`passes/debug_blit_pass.h/.cpp`, `debug_blit.hlsl`). `debug_blit` is one graphics pass after the overlays and picking. It reads every source with `read_for_debug` and draws a fullscreen triangle per blit, with the blit's rectangle as viewport and scissor and no blending.
+  - **Not draw items.** The task asked for `fullscreen_effects` draw items with a debug material. Draw items come from snapshot instances, and their materials live in the material table, while a blit's source is a per-frame graph resource whose SRV exists only when the pass records. The stacking order the depth field would give is the list order.
+  - **Sampling.** Every format is read with `Load`, the texel under the pixel. Integer formats are read as `uint4`, and depth formats through their `R32_FLOAT` SRV. The rectangle maps onto the whole selected mip.
+  - **Output.** The colour is written as is, not sRGB-encoded: a value of 0.5 is byte 128.
+  - **Modes.** As 11 §11. `depth_linear` linearizes a depth format through the camera's projection; nothing drawn is white. `velocity` takes its length in texels over `range_maximum`. `cascade_index` shows cascades 0–3 as red, green, blue and yellow. `cluster_light_count` and `luminance_heat` use a blue–cyan–green–yellow–red ramp.
+- **Inspector.** `view_options::inspect` is an `inspector_request { x, y, selection }`, a cursor in view pixels on one of the blits. `inspected_texel` maps it through the blit's rectangle into the mip. `debug_inspect` (compute) reads the texel into 32 bytes, and `debug_readback` copies them into a slot of the readback ring that picking uses. That ring is now `readback_ring` (8 slots, shared by picks and inspector reads).
+  - **Results.** `scene_renderer::take_inspector_results()` returns `inspector_result { view, request, resource, mip, slice, frame_index, value }`, polled like picks. A cursor outside the blit, or a blit that can't be shown, gets a result without a value at once.
+  - **Value.** `value` is `inspected_value { texel, value (4 floats), bits (4 uints) }`. Float formats give the texel and its bits, and integer formats the texel and its value as float. Depth formats give the stored depth and its linear depth. `cluster_lights` gives the pixel's linear depth and its cluster's offset, count, dropped lights and index.
+- **Debug information.** `renderer_debug_information` adds four things:
+  - `passes`: each scene pass's range-walker counters (draws, instances, pipeline changes, …) summed over its recording parts. A `pass_statistics_collector` gathers them while the frame executes.
+  - `draw_groups`: the items of each group, per view.
+  - `clusters`: each view's cluster statistics, read back through a second ring (16 slots, one per view and frame in flight). These are the dropped light references (the overflow), the clusters that dropped any, the most lights in a cluster, and the references kept. `cluster_statistics` (compute) sums `cluster_lights` on the GPU for every view that writes something.
+  - `gpu_milliseconds`: the sum of the passes' profiler times.
+
+  Instances, progressive vertices, residency bytes and pending uploads were already there. The cluster statistics are collected by `debug_information()` (through mutable members, since it is const for its callers) and by `retire`.
+- **Tests** are in `test_renderer_debug_blit.cpp`. Beyond the list: the rectangle, name and texel helpers as unit tests, the inspector on a picture-in-picture depth buffer, integer (`cascade_index`) and `cluster_lights` inspection, every mode once with the skipped selections, and the counters.
+
+- [x] `debug_selection { qualified name, mip, slice, channel mask, mode, value range, layout }` in `view_options`. The renderer resolves the name against the frame's resources, reads it with `render_pass_builder::read_for_debug` (task 9) and adds `debug_blit` (graphics) after `overlay`. Each blit is a `fullscreen_effects` draw item with the debug material, stacked by the depth field. *Done as one pass that draws the blits in list order: see above.*
+- [x] `debug_blit.hlsl` covers the modes of 11 §11 (`raw`, `depth_linear`, `normal_octahedral`, `velocity`, `ao`, `cascade_index`, `cluster_light_count`, `luminance_heat`, `alpha_only`), with format-aware sampling (`Load` for integer formats, R32_FLOAT SRVs for depth).
+- [x] The pixel inspector reads back the selected resource's texel under a cursor position in `view_options`, through the same readback ring as picking (11.19), and reports it.
+- [x] `scene_renderer::debug_information()` returns the render graph's `graph_debug_information` plus the renderer's counters: instances, draws, pipeline changes per pass, items per group, cluster overflow drops, progressive vertices drawn, residency bytes and pending uploads, and GPU timings from the profiler.
 
 **Tests** (`[renderer]`):
-- [ ] Blitting `gbuffer_normal` in `normal_octahedral` mode shows a cube's face normals as the expected colours.
-- [ ] Picture-in-picture leaves the rest of `ldr_color` unchanged.
-- [ ] A selected transient resource isn't aliased (task 9's `debug_selected`).
-- [ ] The pixel inspector returns the linear depth at the centre of the 11.10 cube scene.
+- [x] Blitting `gbuffer_normal` in `normal_octahedral` mode shows a cube's face normals as the expected colours.
+- [x] Picture-in-picture leaves the rest of `ldr_color` unchanged.
+- [x] A selected transient resource isn't aliased (task 9's `debug_selected`).
+- [x] The pixel inspector returns the linear depth at the centre of the 11.10 cube scene.
 
 ## 11.21 Screenshots
 11 §12.1.
@@ -891,7 +911,7 @@ flowchart LR
 - **`depth_mips` layout.** 11 says "min/max per tile" for clusters but "view-space Z, 5 mips" for GTAO. Proposed: an RG32F chain with min in R and max in G. GTAO reads R. Alternative: two R32F chains.
 - **Arena split.** `geometry.arena_mib` is one number, but there are two buffers. Proposed: 80% vertices, 20% indices, with a log line when either fills first. Alternative: one buffer holding both as raw ranges, which avoids the split; the index buffer view can point anywhere in a raw buffer. *Done in 11.3: 80% / 20%. The residency warning names the buffer that filled, its use and its largest free block.*
 - **Selection mask.** 11 §10.5 describes "a stencil-like mask written by the selected instances". A stencil bit would need stencil in the depth format (D32_S8) and the new `set_stencil_reference`. An R8 extra target in the passes that draw selected instances needs no RHI change. Recommended: the R8 target, written only on frames with a selection, the same way as picking. In that case `set_stencil_reference` and `clear_depth_stencil` stay unused and can be left out of 11.9. *11.9 follows the recommendation: the RHI is unchanged, and both stencil uses fail a debug check in the walker. 11.17 writes the R8 mask in its own pass, which draws only the selected instances again, rather than as an extra target.*
-- **Pick and inspector results.** How results reach 12: a `take_pick_results()` poll on the frame chain, or a sender completed per request. Recommended: the poll. The frame chain posts results to the GUI with the rest of its per-frame state. *11.19 follows the recommendation for picks.*
+- **Pick and inspector results.** How results reach 12: a `take_pick_results()` poll on the frame chain, or a sender completed per request. Recommended: the poll. The frame chain posts results to the GUI with the rest of its per-frame state. *11.19 follows the recommendation for picks, and 11.20 for the inspector (`take_inspector_results()`).*
 - **Hosek–Wilkie data.** The model's published coefficient tables (from the authors' reference implementation, under a BSD-style licence) need to be vendored, either as a header under `apps/visualizer/rendering/third_party/` or in `external/`. Check the licence first. Alternative: Preetham, which is simpler, analytic and lower quality. *11.11 uses Preetham for now; vendoring Hosek–Wilkie only replaces `sky_model.cpp` and `sky.hlsli`.*
 - **Blue-noise texture.** The dithering and possibly GTAO want a 64² blue-noise texture. Either generate one offline (void-and-cluster, a `dt` command) or vendor a CC0 one. *Done in 11.16: generated at startup by void-and-cluster (`blue_noise.h`), so nothing is checked in.*
 - **Point and spot shadows.** These are out of iteration 1 (11 §6.2). Nothing to do; it's listed so 11.11 doesn't grow them.

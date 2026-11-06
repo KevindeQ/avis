@@ -16,6 +16,7 @@
 // scene_pass_constants in b1 (scene_range_pass::extension), as the forward pass does with its lighting inputs.
 
 #include "rendering/frame_data.h"
+#include "rendering/pass_statistics.h"
 #include "rendering/pipeline_variant_registry.h"
 #include "rendering/range_walker.h"
 #include "rendering/sort_key.h"
@@ -48,6 +49,9 @@ namespace avis::visualizer::rendering
         const frame_materials& materials;
         gpu::view_constants view_constants; // the camera's
         recording_split split;
+        // Where the passes' parts record their range walker counters (debug_information); may be null
+        pass_statistics_collector* statistics = nullptr;
+        std::string_view view_name; // the view the passes are registered under in `statistics`
     };
 
     // One attachment of a scene pass: an existing version to write, or a texture the first part creates

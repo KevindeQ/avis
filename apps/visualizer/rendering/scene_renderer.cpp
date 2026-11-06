@@ -1,6 +1,8 @@
 #include "rendering/scene_renderer.h"
 
 #include "rendering/blue_noise.h"
+#include "rendering/clusters.h"
+#include "rendering/passes/debug_blit_pass.h"
 #include "rendering/passes/depth_passes.h"
 #include "rendering/passes/exposure_passes.h"
 #include "rendering/passes/forward_pass.h"
@@ -35,7 +37,9 @@
 #include <Eigen/LU>
 
 #include <algorithm>
+#include <cstring>
 #include <format>
+#include <limits>
 #include <set>
 #include <string>
 #include <string_view>
@@ -90,15 +94,20 @@ namespace avis::visualizer::rendering
             std::uint32_t mip = 0;
         };
 
-        // A view texture resource_capture may name
-        struct capturable
+        constexpr bool is_integer_format(const rhi::format format) noexcept
         {
-            std::string_view name;
-            graphics::texture texture;
-            rhi::format format;
-            std::uint32_t mips = 1;
-            graphics::texture_extent size{ 0, 0 }; // of mip 0; 0 × 0: the view's
-        };
+            switch (format)
+            {
+            case rhi::format::r8_uint:
+            case rhi::format::r16_uint:
+            case rhi::format::r32_uint:
+            case rhi::format::rg32_uint:
+            case rhi::format::rgba32_uint:
+                return true;
+            default:
+                return false;
+            }
+        }
 
         struct buffer_capture_data
         {
@@ -169,6 +178,17 @@ namespace avis::visualizer::rendering
         }
     } // namespace
 
+    // A view texture that a resource_capture or a debug_selection may name
+    struct scene_renderer::debug_resource
+    {
+        std::string_view name;
+        graphics::texture texture;
+        rhi::format format;
+        std::uint32_t mips = 1;
+        graphics::texture_extent size{ 0, 0 }; // of mip 0; 0 × 0: the view's
+        std::uint32_t layers = 1; // array slices; the debug blit only (captures copy slice 0)
+    };
+
     result<std::unique_ptr<scene_renderer>> scene_renderer::create(
         const renderer_dependencies& dependencies, const render_settings& settings, graphics::shader_library& shaders)
     {
@@ -198,6 +218,8 @@ namespace avis::visualizer::rendering
             std::pair{ &state.tonemap, shader_ids::tonemap },
             std::pair{ &state.selection_outline, shader_ids::selection_outline },
             std::pair{ &state.pick_window, shader_ids::pick_window },
+            std::pair{ &state.debug_inspect, shader_ids::debug_inspect },
+            std::pair{ &state.cluster_statistics, shader_ids::cluster_statistics },
             std::pair{ &environment.sky, shader_ids::environment_sky },
             std::pair{ &environment.prefilter, shader_ids::environment_prefilter },
             std::pair{ &environment.irradiance, shader_ids::environment_irradiance },
@@ -225,6 +247,20 @@ namespace avis::visualizer::rendering
             return std::unexpected{ std::move(sky).error() };
         }
         state.sky = *sky;
+
+        auto debug_blit = dependencies.pipeline_cache.get_or_create(
+            shaders,
+            graphics::graphics_pipeline_description{
+                .vertex_shader = graphics::make_shader_id(shader_ids::debug_blit_vertex),
+                .pixel_shader = graphics::make_shader_id(shader_ids::debug_blit_pixel),
+                .state = debug_blit_pipeline_state(),
+                .root_signature = *standard,
+                .debug_name = "debug_blit" });
+        if (!debug_blit)
+        {
+            return std::unexpected{ std::move(debug_blit).error() };
+        }
+        state.debug_blit = *debug_blit;
 
         auto baker = environment_baker::create(dependencies.resources, environment);
         if (!baker)
@@ -322,6 +358,14 @@ namespace avis::visualizer::rendering
         tonemap_pipeline_{ state.tonemap },
         selection_outline_pipeline_{ state.selection_outline },
         pick_window_pipeline_{ state.pick_window },
+        debug_blit_pipeline_{ state.debug_blit },
+        debug_inspect_pipeline_{ state.debug_inspect },
+        cluster_statistics_pipeline_{ state.cluster_statistics },
+        readbacks_{ dependencies.resources, maximum_readback_slots, readback_slot_bytes, "readback" },
+        cluster_readbacks_{ dependencies.resources,
+                            maximum_cluster_statistics_slots,
+                            gpu::cluster_statistics_bytes,
+                            "cluster_statistics_readback" },
         blue_noise_texture_{ state.blue_noise },
         blue_noise_upload_{ state.blue_noise_upload },
         environment_{ std::move(state.environment) },
@@ -338,99 +382,135 @@ namespace avis::visualizer::rendering
     {
         // Deferred by the RHI until the GPU is done with them
         dependencies_.resources.destroy(blue_noise_texture_);
-        for (const pick_slot& slot : pick_slots_)
-        {
-            dependencies_.resources.destroy(slot.readback);
-        }
     }
 
-    // ---- picking (11 §5.1) ----
+    // ---- readbacks: picking (11 §5.1), the inspector (11 §11), the cluster statistics ----
 
-    result<scene_renderer::pick_slot*>
-        scene_renderer::acquire_pick_slot(const view_description& view, const std::uint64_t frame_index)
+    result<readback_ring<scene_renderer::readback_payload>::slot*> scene_renderer::acquire_readback(
+        const view_description& view, const std::uint64_t frame_index, readback_payload payload)
     {
-        auto free = std::ranges::find_if(pick_slots_, [](const pick_slot& slot) { return !slot.pending; });
-        if (free == pick_slots_.end())
+        auto slot = readbacks_.acquire(frame_index, std::move(payload));
+        if (slot && *slot == nullptr)
         {
-            if (pick_slots_.size() >= maximum_pick_slots)
+            const auto now = std::chrono::steady_clock::now();
+            if (!last_readback_warning_ || now - *last_readback_warning_ >= std::chrono::seconds{ 1 })
             {
-                return nullptr;
+                last_readback_warning_ = now;
+                log::get(logger_name)
+                    ->warn(
+                        "view '{}': a pick or inspector request is dropped: its {} readback slots are in use",
+                        view.name,
+                        maximum_readback_slots);
             }
-            auto buffer = dependencies_.resources.create_buffer(
-                { .size = pick_window_bytes,
-                  .usage = rhi::buffer_usage::copy_destination,
-                  .memory = rhi::memory_type::readback,
-                  .debug_name = "pick_readback" });
-            if (!buffer)
-            {
-                return std::unexpected{ std::move(buffer).error() };
-            }
-            pick_slots_.push_back({ .readback = *buffer });
-            free = pick_slots_.end() - 1;
         }
-        free->pending = pending_pick{
-            .view = view.name, .request = *view.options.pick, .frame_index = frame_index, .sequence = pick_sequence_++
-        };
-        return &*free;
+        return slot;
     }
 
-    void scene_renderer::picks_submitted(const std::uint64_t frame_index, const graphics::submitted_frame& submitted)
+    void
+        scene_renderer::readbacks_submitted(const std::uint64_t frame_index, const graphics::submitted_frame& submitted)
     {
-        for (pick_slot& slot : pick_slots_)
-        {
-            if (slot.pending && slot.pending->frame_index == frame_index && !slot.pending->submitted)
-            {
-                slot.pending->submitted = submitted;
-            }
-        }
+        readbacks_.submitted(frame_index, submitted);
+        cluster_readbacks_.submitted(frame_index, submitted);
     }
 
-    void scene_renderer::drop_picks(const std::uint64_t frame_index) noexcept
+    void scene_renderer::drop_readbacks(const std::uint64_t frame_index) noexcept
     {
-        for (pick_slot& slot : pick_slots_)
-        {
-            if (slot.pending && slot.pending->frame_index == frame_index && !slot.pending->submitted)
-            {
-                slot.pending.reset();
-            }
-        }
+        readbacks_.drop(frame_index);
+        cluster_readbacks_.drop(frame_index);
+        std::erase_if(
+            ready_inspections_,
+            [frame_index](const ready_inspection& ready) { return ready.result.frame_index == frame_index; });
     }
 
     std::vector<pick_result> scene_renderer::take_pick_results()
     {
-        std::vector<std::pair<std::uint64_t, pick_result>> done;
-        for (pick_slot& slot : pick_slots_)
-        {
-            if (!slot.pending || !slot.pending->submitted)
-            {
-                continue;
-            }
-            const bool complete = std::ranges::all_of(
-                slot.pending->submitted->last_submissions(),
-                [this](const rhi::synchronization_point point)
-                { return dependencies_.synchronization.is_complete(point); });
-            if (!complete)
-            {
-                continue;
-            }
-            const pending_pick& pick = *slot.pending;
-            done.emplace_back(
-                pick.sequence,
-                pick_result{ .view = pick.view,
-                             .request = pick.request,
-                             .frame_index = pick.frame_index,
-                             .hit = select_pick(
-                                 dependencies_.resources.mapped_bytes(slot.readback), pick_origin(pick.request)) });
-            slot.pending.reset();
-        }
-        std::ranges::sort(done, {}, &std::pair<std::uint64_t, pick_result>::first);
         std::vector<pick_result> results;
+        readbacks_.take(
+            dependencies_.synchronization,
+            [](const readback_payload& payload) { return std::holds_alternative<pick_payload>(payload); },
+            [&results](const readback_ring<readback_payload>::pending& pending, const std::span<const std::byte> bytes)
+            {
+                const pick_payload& pick = std::get<pick_payload>(pending.payload);
+                results.push_back(
+                    { .view = pick.view,
+                      .request = pick.request,
+                      .frame_index = pending.frame_index,
+                      .hit = select_pick(bytes, pick_origin(pick.request)) });
+            });
+        return results;
+    }
+
+    std::vector<inspector_result> scene_renderer::take_inspector_results()
+    {
+        std::vector<ready_inspection> done = std::move(ready_inspections_);
+        ready_inspections_.clear();
+        readbacks_.take(
+            dependencies_.synchronization,
+            [](const readback_payload& payload) { return std::holds_alternative<inspection_payload>(payload); },
+            [&done](const readback_ring<readback_payload>::pending& pending, const std::span<const std::byte> bytes)
+            {
+                const inspection_payload& inspection = std::get<inspection_payload>(pending.payload);
+                done.push_back(
+                    { .sequence = pending.sequence,
+                      .result = { .view = inspection.view,
+                                  .request = inspection.request,
+                                  .resource = inspection.resource,
+                                  .mip = inspection.mip,
+                                  .slice = inspection.slice,
+                                  .frame_index = pending.frame_index,
+                                  .value = decode_inspected_value(bytes, inspection.texel) } });
+            });
+        std::ranges::sort(done, {}, &ready_inspection::sequence);
+        std::vector<inspector_result> results;
         results.reserve(done.size());
-        for (auto& [sequence, result] : done)
+        for (ready_inspection& ready : done)
         {
-            results.push_back(std::move(result));
+            results.push_back(std::move(ready.result));
         }
         return results;
+    }
+
+    void scene_renderer::inspect_without_value(
+        const std::uint64_t frame_index, const view_description& view, std::string resource)
+    {
+        const debug_selection* selection = view.options.inspect->selection < view.options.debug_blits.size() ?
+                                               &view.options.debug_blits[view.options.inspect->selection] :
+                                               nullptr;
+        ready_inspections_.push_back(
+            { .sequence = readbacks_.reserve_sequence(),
+              .result = { .view = view.name,
+                          .request = *view.options.inspect,
+                          .resource = std::move(resource),
+                          .mip = selection != nullptr ? selection->mip : 0,
+                          .slice = selection != nullptr ? selection->slice : 0,
+                          .frame_index = frame_index } });
+    }
+
+    void scene_renderer::collect_cluster_statistics() const
+    {
+        cluster_readbacks_.take(
+            dependencies_.synchronization,
+            [](const std::string&) { return true; },
+            [this](const readback_ring<std::string>::pending& pending, const std::span<const std::byte> bytes)
+            {
+                if (bytes.size() < gpu::cluster_statistics_bytes)
+                {
+                    return;
+                }
+                std::array<std::uint32_t, 4> words{};
+                std::memcpy(words.data(), bytes.data(), sizeof(words));
+                view_cluster_statistics& statistics = cluster_statistics_[pending.payload];
+                if (pending.frame_index < statistics.frame_index)
+                {
+                    return;
+                }
+                statistics = { .view = pending.payload,
+                               .frame_index = pending.frame_index,
+                               .dropped_lights = words[0],
+                               .overflowing_clusters = words[1],
+                               .most_lights = words[2],
+                               .light_references = words[3] };
+            });
     }
 
     void scene_renderer::retire(const std::uint64_t completed_frame_index)
@@ -442,12 +522,34 @@ namespace avis::visualizer::rendering
         residency_->retire(completed_frame_index_);
         materials_->retire(completed_frame_index_);
         textures_->retire(completed_frame_index_);
+        collect_cluster_statistics();
     }
 
     renderer_debug_information scene_renderer::debug_information() const
     {
+        collect_cluster_statistics();
+        const graphics::graph_debug_information* graph = frames_rendered_ > 0 ? &graph_.debug_information() : nullptr;
+        std::optional<double> gpu_milliseconds;
+        if (graph != nullptr)
+        {
+            for (const graphics::pass_debug_information& pass : graph->passes)
+            {
+                if (pass.gpu_milliseconds)
+                {
+                    gpu_milliseconds = gpu_milliseconds.value_or(0.0) + *pass.gpu_milliseconds;
+                }
+            }
+        }
+        std::vector<view_cluster_statistics> clusters;
+        for (const std::string& name : last_view_names_)
+        {
+            if (const auto found = cluster_statistics_.find(name); found != cluster_statistics_.end())
+            {
+                clusters.push_back(found->second);
+            }
+        }
         return {
-            .graph = frames_rendered_ > 0 ? &graph_.debug_information() : nullptr,
+            .graph = graph,
             .frames_rendered = frames_rendered_,
             .last_frame_index = last_frame_index_,
             .completed_frame_index = completed_frame_index_,
@@ -504,6 +606,24 @@ namespace avis::visualizer::rendering
                 return vertices;
             }(),
             .environment = environment_->statistics(),
+            .passes = pass_statistics_.passes(),
+            .draw_groups =
+                [this]
+            {
+                std::vector<std::vector<draw_group_items>> views;
+                views.reserve(draw_lists_.size());
+                for (const draw_list& list : draw_lists_)
+                {
+                    std::vector<draw_group_items>& groups = views.emplace_back();
+                    for (const draw_group& group : list.groups())
+                    {
+                        groups.push_back({ .group = group_name(group.group), .items = group.count });
+                    }
+                }
+                return views;
+            }(),
+            .clusters = std::move(clusters),
+            .gpu_milliseconds = gpu_milliseconds,
         };
     }
 
@@ -569,6 +689,8 @@ namespace avis::visualizer::rendering
         prepared_draw_lists_.clear();
         progressive_statistics_.clear();
         instance_indices_.clear();
+        pass_statistics_.clear();
+        collect_cluster_statistics();
 
         // Checked before anything is added: the graph's own checks on view names only assert
         std::set<std::string_view> names;
@@ -763,6 +885,11 @@ namespace avis::visualizer::rendering
         last_frame_index_ = frame.index();
         last_publish_sequence_ = snapshot.publish_sequence;
         last_view_count_ = static_cast<std::uint32_t>(views.size());
+        last_view_names_.clear();
+        for (const view_description& view : views)
+        {
+            last_view_names_.push_back(view.name);
+        }
         return std::nullopt;
     }
 
@@ -1044,6 +1171,8 @@ namespace avis::visualizer::rendering
             .materials = frame_materials_,
             .view_constants = make_view_constants(camera_frame),
             .split = { .passes_per_group = graph_.configuration().passes_per_group_without_timings },
+            .statistics = &pass_statistics_,
+            .view_name = view.name,
         };
 
         // Passes 1 and 2 (11.10)
@@ -1103,8 +1232,15 @@ namespace avis::visualizer::rendering
         {
             shadow_map = add_shadow_cascades(graph_, inputs, cascades, static_cast<std::uint32_t>(frame.index()));
         }
-        const bool wants_cascade_index = std::ranges::any_of(
-            view.options.captures, [](const resource_capture& capture) { return capture.resource == "cascade_index"; });
+        const auto names_cascade_index = [&view](const std::string_view name)
+        { return resource_in_view(name, view.name) == std::optional<std::string_view>{ "cascade_index" }; };
+        const bool wants_cascade_index =
+            std::ranges::any_of(
+                view.options.captures,
+                [&](const resource_capture& capture) { return names_cascade_index(capture.resource); }) ||
+            std::ranges::any_of(
+                view.options.debug_blits,
+                [&](const debug_selection& selection) { return names_cascade_index(selection.resource); });
         const deferred_lighting_outputs lit = add_deferred_lighting(
             graph_,
             { .pipeline = deferred_lighting_pipeline_,
@@ -1195,6 +1331,26 @@ namespace avis::visualizer::rendering
               .blue_noise = blue_noise_,
               .tonemapper = tonemapper_ });
 
+        // The cluster statistics for debug_information, after lighting, which already waited for light_cull: declared
+        // earlier, the graphics queue would wait for the async compute work before the G-buffer
+        if (writes)
+        {
+            auto slot = cluster_readbacks_.acquire(frame.index(), view.name);
+            if (!slot)
+            {
+                return std::move(slot).error();
+            }
+            if (*slot != nullptr)
+            {
+                const rhi::access_state common = rhi::access_states::common;
+                add_cluster_statistics(
+                    graph_,
+                    cluster_statistics_pipeline_,
+                    clusters.lights,
+                    graph_.import_buffer("cluster_statistics_readback", (*slot)->buffer, common, common));
+            }
+        }
+
         // Pass 14 (11.17): the selection outline, then the overlays, unlit, into ldr_color
         const overlay_outputs overlays = add_overlay(
             graph_,
@@ -1203,7 +1359,7 @@ namespace avis::visualizer::rendering
               .ldr_color = tonemapped,
               .depth = transparent.depth,
               .selection_color = selection_color_ });
-        const graphics::texture ldr_color = overlays.ldr_color;
+        graphics::texture ldr_color = overlays.ldr_color;
 
         // Picking (11 §5.1), on a click frame only: the pickable instances again into picking_id, and its window
         // around the click into a slot of the readback ring
@@ -1211,25 +1367,13 @@ namespace avis::visualizer::rendering
         graphics::texture picking_id;
         if (view.options.pick)
         {
-            auto slot = acquire_pick_slot(view, frame.index());
+            auto slot =
+                acquire_readback(view, frame.index(), pick_payload{ .view = view.name, .request = *view.options.pick });
             if (!slot)
             {
                 return std::move(slot).error();
             }
-            if (*slot == nullptr)
-            {
-                const auto now = std::chrono::steady_clock::now();
-                if (!last_pick_warning_ || now - *last_pick_warning_ >= std::chrono::seconds{ 1 })
-                {
-                    last_pick_warning_ = now;
-                    log::get(logger_name)
-                        ->warn(
-                            "view '{}': a pick request is dropped: its {} readback slots are in use",
-                            view.name,
-                            maximum_pick_slots);
-                }
-            }
-            else
+            if (*slot != nullptr)
             {
                 const rhi::access_state common = rhi::access_states::common;
                 const picking_outputs picked = add_picking(
@@ -1238,7 +1382,7 @@ namespace avis::visualizer::rendering
                     { .window = pick_window_pipeline_,
                       .depth = overlays.depth,
                       .request = *view.options.pick,
-                      .readback = graph_.import_buffer("pick_readback", (*slot)->readback, common, common) });
+                      .readback = graph_.import_buffer("pick_readback", (*slot)->buffer, common, common) });
                 final_depth = picked.depth;
                 picking_id = picked.picking_id;
             }
@@ -1246,30 +1390,45 @@ namespace avis::visualizer::rendering
 
         // Captures, for tests and tools: copies of the final versions
         const graphics::texture_extent ao_size = gtao_extent(ao_parameters_, view.size);
-        const std::array resources{
-            capturable{ "depth", final_depth, rhi::format::d32_float },
-            capturable{ "linear_depth", linearized.linear_depth, rhi::format::r32_float },
-            capturable{ "depth_mips", linearized.depth_mips, rhi::format::rg32_float, depth_mips },
-            capturable{ "gbuffer_albedo", gbuffer.albedo, rhi::format::rgba8_unorm_srgb },
-            capturable{ "gbuffer_normal", gbuffer.normal, rhi::format::rg16_unorm },
-            capturable{ "gbuffer_material", gbuffer.material, rhi::format::rgba8_unorm },
-            capturable{ "gbuffer_emissive", gbuffer.emissive, rhi::format::r11g11b10_float },
-            capturable{ "velocity", gbuffer.velocity, rhi::format::rg16_float },
-            capturable{ "ao_raw", ambient_occlusion.raw, rhi::format::r8_unorm, 1, ao_size },
-            capturable{ "ao_edges", ambient_occlusion.edges, rhi::format::r8_unorm, 1, ao_size },
-            capturable{ "ao", ambient_occlusion.ao, rhi::format::r8_unorm, 1, ao_size },
-            capturable{ "hdr_color", transparent.hdr_color, rhi::format::rgba16_float },
-            capturable{ "reactive_mask", transparent.reactive_mask, rhi::format::r8_unorm },
-            capturable{ "taa_output", taa_output, rhi::format::rgba16_float },
-            capturable{ "cascade_index", lit.cascade_index, rhi::format::r8_uint },
-            capturable{ "selection_mask", overlays.selection_mask, rhi::format::r8_unorm },
-            capturable{ "picking_id", picking_id, rhi::format::rg32_uint },
-            capturable{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
+        const graphics::texture_extent shadow_size{ cascades.resolution, cascades.resolution };
+        std::array resources{
+            debug_resource{ "depth", final_depth, rhi::format::d32_float },
+            debug_resource{ "linear_depth", linearized.linear_depth, rhi::format::r32_float },
+            debug_resource{ "depth_mips", linearized.depth_mips, rhi::format::rg32_float, depth_mips },
+            debug_resource{ "gbuffer_albedo", gbuffer.albedo, rhi::format::rgba8_unorm_srgb },
+            debug_resource{ "gbuffer_normal", gbuffer.normal, rhi::format::rg16_unorm },
+            debug_resource{ "gbuffer_material", gbuffer.material, rhi::format::rgba8_unorm },
+            debug_resource{ "gbuffer_emissive", gbuffer.emissive, rhi::format::r11g11b10_float },
+            debug_resource{ "velocity", gbuffer.velocity, rhi::format::rg16_float },
+            debug_resource{ "ao_raw", ambient_occlusion.raw, rhi::format::r8_unorm, 1, ao_size },
+            debug_resource{ "ao_edges", ambient_occlusion.edges, rhi::format::r8_unorm, 1, ao_size },
+            debug_resource{ "ao", ambient_occlusion.ao, rhi::format::r8_unorm, 1, ao_size },
+            debug_resource{ "hdr_color", transparent.hdr_color, rhi::format::rgba16_float },
+            debug_resource{ "reactive_mask", transparent.reactive_mask, rhi::format::r8_unorm },
+            debug_resource{ "taa_output", taa_output, rhi::format::rgba16_float },
+            debug_resource{ "cascade_index", lit.cascade_index, rhi::format::r8_uint },
+            debug_resource{ "selection_mask", overlays.selection_mask, rhi::format::r8_unorm },
+            debug_resource{ "picking_id", picking_id, rhi::format::rg32_uint },
+            debug_resource{ "shadow_map", shadow_map, rhi::format::d32_float, 1, shadow_size, cascades.count },
+            debug_resource{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
         };
+
+        // The debug blits and the inspector (11 §11), after the overlays and picking; captures of ldr_color and the
+        // output show them
+        auto blitted = add_view_debug_blits(
+            frame, view, resources, clusters.lights, ldr_color, linearized.linear_depth, inputs.view_constants);
+        if (!blitted)
+        {
+            return std::move(blitted).error();
+        }
+        ldr_color = *blitted;
+        resources.back().texture = ldr_color;
+
         for (std::size_t capture_index = 0; capture_index < view.options.captures.size(); ++capture_index)
         {
             const resource_capture& capture = view.options.captures[capture_index];
-            const auto found = std::ranges::find(resources, std::string_view{ capture.resource }, &capturable::name);
+            const auto found =
+                std::ranges::find(resources, std::string_view{ capture.resource }, &debug_resource::name);
             if (found == resources.end())
             {
                 return invalid_view(view.name, std::format("no resource '{}' to capture", capture.resource));
@@ -1365,6 +1524,167 @@ namespace avis::visualizer::rendering
                 });
         }
         return std::nullopt;
+    }
+
+    void scene_renderer::warn_debug_selection(
+        const view_description& view, const debug_selection& selection, const std::string_view why)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (!last_debug_warning_ || now - *last_debug_warning_ >= std::chrono::seconds{ 1 })
+        {
+            last_debug_warning_ = now;
+            log::get(logger_name)
+                ->warn(
+                    "view '{}': the debug blit of '{}' ({}) isn't shown: {}",
+                    view.name,
+                    selection.resource,
+                    to_string(selection.mode),
+                    why);
+        }
+    }
+
+    result<graphics::texture> scene_renderer::add_view_debug_blits(
+        const graphics::frame_token& frame,
+        const view_description& view,
+        const std::span<const debug_resource> resources,
+        const graphics::buffer cluster_lights,
+        const graphics::texture ldr_color,
+        const graphics::texture linear_depth,
+        const gpu::view_constants& view_constants)
+    {
+        const std::vector<debug_selection>& selections = view.options.debug_blits;
+        constexpr std::size_t not_shown = std::numeric_limits<std::size_t>::max();
+        std::vector<debug_blit_source> blits;
+        std::vector<std::size_t> blit_of_selection(selections.size(), not_shown);
+        for (std::size_t index = 0; index < selections.size(); ++index)
+        {
+            const debug_selection& selection = selections[index];
+            const std::optional<std::string_view> name = resource_in_view(selection.resource, view.name);
+            if (!name)
+            {
+                warn_debug_selection(view, selection, "it names another view");
+                continue;
+            }
+            debug_blit_source source{ .selection = selection, .rectangle = debug_blit_rectangle(selection, view.size) };
+            if (*name == "cluster_lights")
+            {
+                if (selection.mode != debug_blit_mode::cluster_light_count)
+                {
+                    warn_debug_selection(view, selection, "cluster_lights is shown with cluster_light_count only");
+                    continue;
+                }
+                source.clusters = cluster_lights;
+                source.source_kind = gpu::debug_source_clusters;
+                source.source_size = view.size;
+            }
+            else
+            {
+                if (selection.mode == debug_blit_mode::cluster_light_count)
+                {
+                    warn_debug_selection(view, selection, "cluster_light_count shows cluster_lights only");
+                    continue;
+                }
+                if (*name == "ldr_color")
+                {
+                    warn_debug_selection(view, selection, "ldr_color is what the blit draws into");
+                    continue;
+                }
+                const auto found = std::ranges::find(resources, *name, &debug_resource::name);
+                if (found == resources.end())
+                {
+                    warn_debug_selection(view, selection, "the view has no such resource");
+                    continue;
+                }
+                if (!found->texture.valid())
+                {
+                    warn_debug_selection(view, selection, "it isn't rendered this frame");
+                    continue;
+                }
+                if (selection.mip >= found->mips || selection.slice >= found->layers)
+                {
+                    warn_debug_selection(
+                        view,
+                        selection,
+                        std::format(
+                            "mip {} slice {} is outside its {} mips and {} slices",
+                            selection.mip,
+                            selection.slice,
+                            found->mips,
+                            found->layers));
+                    continue;
+                }
+                const graphics::texture_extent base = found->size.width != 0 ? found->size : view.size;
+                source.texture = found->texture;
+                source.source_kind = rhi::traits(found->format).depth ? gpu::debug_source_depth :
+                                     is_integer_format(found->format) ? gpu::debug_source_uint :
+                                                                        gpu::debug_source_float;
+                source.is_array = found->layers > 1;
+                source.source_size = { mip_extent(base.width, selection.mip), mip_extent(base.height, selection.mip) };
+            }
+            blit_of_selection[index] = blits.size();
+            blits.push_back(source);
+        }
+
+        std::optional<debug_inspection> inspection;
+        if (view.options.inspect)
+        {
+            const inspector_request& request = *view.options.inspect;
+            const bool selected = request.selection < selections.size();
+            std::string qualified;
+            if (selected)
+            {
+                const std::string& name = selections[request.selection].resource;
+                qualified = name.find('/') != std::string::npos ? name : std::format("{}/{}", view.name, name);
+            }
+            const std::size_t blit = selected ? blit_of_selection[request.selection] : not_shown;
+            const std::optional<texel_position> texel =
+                blit != not_shown ?
+                    inspected_texel(blits[blit].rectangle, blits[blit].source_size, request.x, request.y) :
+                    std::nullopt;
+            if (!texel)
+            {
+                inspect_without_value(frame.index(), view, std::move(qualified));
+            }
+            else
+            {
+                const debug_selection& selection = selections[request.selection];
+                auto slot = acquire_readback(
+                    view,
+                    frame.index(),
+                    inspection_payload{ .view = view.name,
+                                        .request = request,
+                                        .resource = std::move(qualified),
+                                        .mip = selection.mip,
+                                        .slice = selection.slice,
+                                        .texel = *texel });
+                if (!slot)
+                {
+                    return std::unexpected{ std::move(slot).error() };
+                }
+                if (*slot != nullptr)
+                {
+                    const rhi::access_state common = rhi::access_states::common;
+                    inspection = debug_inspection{
+                        .blit = blit,
+                        .texel = *texel,
+                        .readback = graph_.import_buffer("debug_readback", (*slot)->buffer, common, common),
+                    };
+                }
+            }
+        }
+
+        const graphics::texture_extent tile = cluster_tile_size(view.size);
+        return add_debug_blits(
+                   graph_,
+                   { .blit = debug_blit_pipeline_,
+                     .inspect = debug_inspect_pipeline_,
+                     .ldr_color = ldr_color,
+                     .linear_depth = linear_depth,
+                     .tile_size = tile,
+                     .view_constants = view_constants,
+                     .blits = blits,
+                     .inspection = inspection })
+            .ldr_color;
     }
 
     std::optional<error> scene_renderer::add_buffer_captures(

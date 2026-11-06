@@ -71,6 +71,9 @@ namespace avis::visualizer::rendering
         }
 
         scene_pass_outputs outputs{ .color_count = attachments.color_count, .parts = parts.size() };
+        pass_statistics_collector* const statistics = inputs.statistics;
+        const std::size_t statistics_slot =
+            statistics != nullptr ? statistics->add_pass(inputs.view_name, pass.name, parts.size()) : 0;
         for (std::size_t index = 0; index < attachments.color_count; ++index)
         {
             outputs.colors[index] = attachments.colors[index].texture;
@@ -160,7 +163,9 @@ namespace avis::visualizer::rendering
                  extension = pass.extension,
                  clears = part == 0 ? clears : attachment_clears{},
                  instances_srv = inputs.frame.instances_srv,
-                 instance_indices_srv = inputs.frame.instance_indices_srv](
+                 instance_indices_srv = inputs.frame.instance_indices_srv,
+                 statistics,
+                 statistics_slot](
                     const scene_pass_data& data,
                     const graphics::resource_bag& resources,
                     graphics::graphics_pass_context& context)
@@ -254,7 +259,11 @@ namespace avis::visualizer::rendering
                                                       .meshes = meshes,
                                                       .pipelines = *pipelines,
                                                       .index_buffer = resources.buffer_handle(data.indices) };
-                    walk(runs, kind, context, sources, bindings);
+                    const range_walk_statistics walked = walk(runs, kind, context, sources, bindings);
+                    if (statistics != nullptr)
+                    {
+                        statistics->record(statistics_slot, walked);
+                    }
                 });
             outputs.colors = written.colors;
             outputs.depth = written.depth;

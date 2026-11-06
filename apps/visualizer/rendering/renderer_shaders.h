@@ -70,6 +70,12 @@ namespace avis::visualizer::rendering
         inline constexpr std::string_view selection_outline = "selection_outline.main.cs";
         // The pick window around a click, from picking_id (11.19)
         inline constexpr std::string_view pick_window = "pick_window.main.cs";
+        // The debug blit into ldr_color and the pixel inspector's texel (11.20)
+        inline constexpr std::string_view debug_blit_vertex = "debug_blit.vertex_main.vs";
+        inline constexpr std::string_view debug_blit_pixel = "debug_blit.pixel_main.ps";
+        inline constexpr std::string_view debug_inspect = "debug_blit.inspect_main.cs";
+        // A view's light cluster counters, for debug_information (11.20)
+        inline constexpr std::string_view cluster_statistics = "cluster_statistics.main.cs";
 
         inline constexpr std::array all{ binding_probe,
                                          generate_mips,
@@ -91,7 +97,11 @@ namespace avis::visualizer::rendering
                                          exposure_adapt,
                                          tonemap,
                                          selection_outline,
-                                         pick_window };
+                                         pick_window,
+                                         debug_blit_vertex,
+                                         debug_blit_pixel,
+                                         debug_inspect,
+                                         cluster_statistics };
     } // namespace shader_ids
 
     // Where the build deploys the shaders, relative to the executable's directory
