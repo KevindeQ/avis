@@ -95,6 +95,12 @@ namespace avis::tests
         scene::entity add_point_light(const Eigen::Vector3f& position, float intensity, float range);
         // A width × height quad in the XY plane, facing +Z, with an unlit material of `color` (linear)
         scene::entity add_unlit_quad(const Eigen::Vector3f& position, float width, float height, scene::color color);
+        // Any mesh at `position`; its bounds are computed by the asset cache
+        scene::entity add_mesh(
+            const std::string& name,
+            const Eigen::Vector3f& position,
+            scene::mesh_data mesh,
+            const scene::material_description& material = {});
 
         // The tick sequence (08 §9.6) into the snapshot buffer: update transforms, make_snapshot, publish, end_tick
         void publish();
@@ -103,6 +109,9 @@ namespace avis::tests
 
         // An RGBA8 output texture that copies can write and read
         rhi::texture_handle make_output(graphics::texture_extent size);
+        // A texture of `format` that copies can write and read, for resource captures (a depth format also allows
+        // depth_stencil); the fixture destroys it
+        rhi::texture_handle make_texture(rhi::format format, graphics::texture_extent size);
 
         // A view named `name` of the output's size, at the origin looking down −Z, writing `output` (the fixture's
         // output when none is given)

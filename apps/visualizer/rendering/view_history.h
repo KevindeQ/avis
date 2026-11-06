@@ -38,6 +38,7 @@ namespace avis::visualizer::rendering
         std::uint32_t current = 0; // the slot this frame writes; 1 − current holds the previous frame
         bool has_previous = false; // the previous slots and view_projection hold this view's previous frame
         Eigen::Matrix4f view_projection = Eigen::Matrix4f::Identity(); // unjittered, of the last frame rendered
+        std::uint64_t jitter_sequence = 0; // the TAA jitter's next sample (11 §10.2); 0 when the history starts again
         std::uint64_t last_used_frame = 0;
 
         std::uint32_t previous() const noexcept

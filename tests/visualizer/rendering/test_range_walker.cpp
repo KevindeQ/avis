@@ -421,7 +421,7 @@ namespace
                                                             .vertices = vertices.srv().value,
                                                             .indices = indices.srv().value,
                                                             .materials = 0,
-                                                            .padding0 = 0,
+                                                            .line_margin = 0.0f,
                                                             .padding1 = 0,
                                                             .padding2 = 0 };
 

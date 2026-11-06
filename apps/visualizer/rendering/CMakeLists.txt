@@ -8,6 +8,9 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	frame_data.cpp
 	geometry_arena.cpp
 	material_table.cpp
+	passes/depth_passes.cpp
+	passes/gbuffer_pass.cpp
+	passes/scene_range_pass.cpp
 	pipeline_variant_registry.cpp
 	range_walker.cpp
 	render_settings.cpp
@@ -18,6 +21,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	shader_manifest_parser.cpp
 	sort_key.cpp
 	view.cpp
+	view_constants.cpp
 	view_history.cpp
 	yaml_reading.cpp)
 

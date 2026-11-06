@@ -39,7 +39,13 @@ namespace avis::visualizer::rendering
         // One mip of a decoded texture's chain, a 2 × 2 box in linear space (11.4)
         inline constexpr std::string_view generate_mips = "generate_mips.main.cs";
 
-        inline constexpr std::array all{ binding_probe, generate_mips };
+        // linear_depth and mip 0 of depth_mips from the depth buffer, and one further mip of depth_mips (11.10)
+        inline constexpr std::string_view linearize_depth = "linearize_depth.main.cs";
+        inline constexpr std::string_view depth_mips = "depth_mips.main.cs";
+        // ldr_color from the G-buffer's base colour, until lighting and tonemapping exist (11.10)
+        inline constexpr std::string_view gbuffer_preview = "gbuffer_preview.main.cs";
+
+        inline constexpr std::array all{ binding_probe, generate_mips, linearize_depth, depth_mips, gbuffer_preview };
     } // namespace shader_ids
 
     // Where the build deploys the shaders, relative to the executable's directory

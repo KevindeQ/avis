@@ -501,6 +501,14 @@ flowchart LR
 ## 11.10 Depth prepass, G-buffer, linearize depth, points and lines
 11 §2.3 passes 1, 2, 4, §3.2, §5, §9.1, §9.2.
 
+*Status: implemented and compiled, tests written but not run yet.* Windows Application Control blocked the test binary (and data-trace's `dt.exe`, which writes the shader manifest), so the items below stay unchecked until the tests pass. As implemented:
+- **Passes** in `rendering/passes/`. `scene_range_pass` adds the graph passes that walk a key range, one per recording part. `depth_passes` holds `depth_prepass`, `linearize_depth` and `depth_mips_<mip>`. `gbuffer_pass` holds `gbuffer` and a placeholder `tonemap`, which shows the base colour over `background_color` until 11.11 and 11.16.
+- **`depth_mips`** is RG32F (min in R, max in G, as the Open point proposes), 5 mips, with mip 0 at full resolution. A destination texel covers 2 × 2 source texels, or 3 on the last row or column of an odd size. Pixels with nothing drawn are +infinity. Normal frames cull it, since nothing reads it before 11.11.
+- **Render graph:** new buffer reads `srv_graphics` and `index_and_srv_graphics` (10 §6.3), because the vertex shader pulls from the frame and arena buffers. The G-buffer declares a depth write, although its PSOs don't write, because the RHI's depth views are writable.
+- **Lines:** `scene_pass_constants::line_margin` extends a line's quad for the blended passes' edge falloff (`line_coverage`). It is 0 in the opaque passes, so they cover `line_width` pixels exactly. `quad.y` is the distance from the centre line in pixels.
+- **View constants** (`view_constants.h/.cpp`) gained `view_projection_inverse`. The jitter index is `view_history::jitter_sequence`, which restarts with the history.
+- **Tests** read the passes' textures through `view_options::captures`, copies into caller textures at the end of the view (`test_renderer_passes.cpp`).
+
 - [ ] `vertex_pulling.hlsli` reads positions and attributes from the arena's `ByteAddressBuffer`s by the range offsets and attribute mask, and `instance_data` through `instance_indices[offset + SV_InstanceID]`. It decodes octahedral normals and tangents, f16 uvs and sRGB vertex colours.
 - [ ] Topology expansion in the vertex shader (11 §9.1, §9.2):
   - **Points** are six vertices per point from `SV_VertexID`, forming a camera-facing quad of `point_size` metres (at least 1 px). The pixel shader discards outside the circle and writes depth. The normal is the vertex normal, or camera-facing.

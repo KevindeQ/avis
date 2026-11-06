@@ -177,7 +177,7 @@ namespace avis::graphics
 }
 ```
 
-- `texture_read`: `srv_pixel`, `srv_compute`, `depth_read`, `copy_source`. `texture_write`: `render_target`, `depth_write`, `uav`, `copy_destination`. `buffer_read`: `srv_pixel`, `srv_compute`, `indirect_arguments`, `copy_source`. `buffer_write`: `uav`, `copy_destination`.
+- `texture_read`: `srv_pixel`, `srv_compute`, `depth_read`, `copy_source`. `texture_write`: `render_target`, `depth_write`, `uav`, `copy_destination`. `buffer_read`: `srv_pixel`, `srv_compute`, `indirect_arguments`, `copy_source`, plus `srv_graphics` (vertex and pixel shaders) and `index_and_srv_graphics` (an index buffer the shaders also read), added for the scene renderer's vertex pulling (task 11.10). `buffer_write`: `uav`, `copy_destination`.
 - `texture_description` supports **relative sizes** (`size_mode::view_relative`, scale 0.5 for half-resolution GTAO), so passes declare sizes independently of the output resolution. A relative size resolves when the texture is created, against the open view scope's size (`begin_view(name, view_size)`) or the graph's (`set_view_size`).
 - The description carries no RHI usages: compile derives them (render target, depth stencil, shader resource, unordered access, copy) from the declared accesses.
 - **Why a function per pass type:** the context type passed to the execute lambda is fixed at compile time, so a compute pass can never call `draw()`:
@@ -488,6 +488,8 @@ For each resource, walk its uses in execution order and compute `access_state` t
 | `depth_read` | depth_stencil \| pixel/compute shading | depth_read (+ shader_resource) | depth_read |
 | `srv_pixel` | pixel_shading | shader_resource | shader_resource |
 | `srv_compute` | compute_shading | shader_resource | shader_resource |
+| `srv_graphics` (buffers) | vertex_shading \| pixel_shading | shader_resource | — |
+| `index_and_srv_graphics` (buffers) | index_input \| vertex_shading \| pixel_shading | index_buffer \| shader_resource | — |
 | `uav` | compute_shading (or pixel) | unordered_access | unordered_access |
 | `copy_source` / `copy_destination` | copy | copy_source / copy_destination | copy_source / copy_destination (`common` on the copy queue) |
 | `indirect_arguments` | execute_indirect | indirect_argument | — |

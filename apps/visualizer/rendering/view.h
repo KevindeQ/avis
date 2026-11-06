@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace avis::visualizer::rendering
 {
@@ -57,6 +58,17 @@ namespace avis::visualizer::rendering
         std::uint32_t y = 0;
     };
 
+    // A copy of one of the view's textures into a caller's texture at the end of the view's frame, for tests and tools
+    // (docs/tasks/11-renderer.md §11.10). The texture must have the resource's format and the mip's size, allow
+    // copy_destination, and be in `common`, where the frame leaves it. Resources: depth, linear_depth, depth_mips,
+    // gbuffer_albedo, gbuffer_normal, gbuffer_material, gbuffer_emissive, velocity, ldr_color.
+    struct resource_capture
+    {
+        std::string resource;
+        std::uint32_t mip = 0;
+        rhi::texture_handle texture;
+    };
+
     struct view_options
     {
         bool taa = true; // with render.taa.enabled; off for views without history (11 §12.1)
@@ -64,6 +76,7 @@ namespace avis::visualizer::rendering
         std::optional<rendering::debug_selection> debug_selection;
         std::optional<pick_request> pick;
         std::optional<std::uint64_t> progressive_vertex_budget; // replaces render.progressive.vertex_budget (11 §9.3)
+        std::vector<resource_capture> captures;
     };
 
     struct view_description

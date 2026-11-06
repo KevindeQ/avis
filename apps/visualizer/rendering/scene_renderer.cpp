@@ -1,6 +1,10 @@
 #include "rendering/scene_renderer.h"
 
+#include "rendering/passes/depth_passes.h"
+#include "rendering/passes/gbuffer_pass.h"
+#include "rendering/passes/scene_range_pass.h"
 #include "rendering/renderer_shaders.h"
+#include "rendering/view_constants.h"
 
 #include "avis/graphics/binding_layout.h"
 #include "avis/graphics/buffer.h"
@@ -68,10 +72,34 @@ namespace avis::visualizer::rendering
             };
         }
 
-        struct tonemap_data
+        struct capture_data
         {
-            graphics::texture ldr_color;
+            graphics::texture source;
+            graphics::texture destination;
+            std::uint32_t mip = 0;
         };
+
+        // A view texture resource_capture may name
+        struct capturable
+        {
+            std::string_view name;
+            graphics::texture texture;
+            rhi::format format;
+            std::uint32_t mips = 1;
+        };
+
+        result<rhi::compute_pipeline_handle> create_compute(
+            graphics::pipeline_cache& cache,
+            graphics::shader_library& shaders,
+            const rhi::root_signature_handle signature,
+            const std::string_view id)
+        {
+            return cache.get_or_create(
+                shaders,
+                graphics::compute_pipeline_description{ .compute_shader = graphics::make_shader_id(id),
+                                                        .root_signature = signature,
+                                                        .debug_name = std::string{ id.substr(0, id.find('.')) } });
+        }
 
         struct present_data
         {
@@ -136,17 +164,21 @@ namespace avis::visualizer::rendering
 
         persistent_state state{ .standard_signature = *standard };
 
-        auto generate_mips = dependencies.pipeline_cache.get_or_create(
-            shaders,
-            graphics::compute_pipeline_description{ .compute_shader =
-                                                        graphics::make_shader_id(shader_ids::generate_mips),
-                                                    .root_signature = *standard,
-                                                    .debug_name = "generate_mips" });
-        if (!generate_mips)
+        const std::array computes{
+            std::pair{ &state.generate_mips, shader_ids::generate_mips },
+            std::pair{ &state.linearize_depth, shader_ids::linearize_depth },
+            std::pair{ &state.depth_mips, shader_ids::depth_mips },
+            std::pair{ &state.gbuffer_preview, shader_ids::gbuffer_preview },
+        };
+        for (const auto& [pipeline, id] : computes)
         {
-            return std::unexpected{ std::move(generate_mips).error() };
+            auto created = create_compute(dependencies.pipeline_cache, shaders, *standard, id);
+            if (!created)
+            {
+                return std::unexpected{ std::move(created).error() };
+            }
+            *pipeline = *created;
         }
-        state.generate_mips = *generate_mips;
 
         auto pipeline_variants =
             pipeline_variant_registry::create(dependencies.pipeline_cache, dependencies.root_signatures, shaders);
@@ -196,6 +228,9 @@ namespace avis::visualizer::rendering
         standard_signature_{ state.standard_signature },
         histories_{ dependencies.resources },
         generate_mips_pipeline_{ state.generate_mips },
+        linearize_depth_pipeline_{ state.linearize_depth },
+        depth_mips_pipeline_{ state.depth_mips },
+        gbuffer_preview_pipeline_{ state.gbuffer_preview },
         pipeline_variants_{ std::move(state.pipeline_variants) },
         arena_{ std::move(state.arena) },
         residency_{ std::make_unique<residency_cache>(*arena_, dependencies.uploads, dependencies.synchronization) },
@@ -414,9 +449,9 @@ namespace avis::visualizer::rendering
         }
         frame_buffers_ = *uploaded;
 
-        for (const view_description& view : views)
+        for (std::size_t index = 0; index < views.size(); ++index)
         {
-            if (auto failed = add_view(frame, view))
+            if (auto failed = add_view(frame, views[index], index))
             {
                 return failed;
             }
@@ -543,6 +578,13 @@ namespace avis::visualizer::rendering
         {
             return invalid_view(view.name, std::format("empty size {} x {}", view.size.width, view.size.height));
         }
+        for (const resource_capture& capture : view.options.captures)
+        {
+            if (!capture.texture.is_valid())
+            {
+                return invalid_view(view.name, std::format("the capture of '{}' has no texture", capture.resource));
+            }
+        }
         if (view.output)
         {
             if (!view.output->texture.is_valid())
@@ -616,7 +658,8 @@ namespace avis::visualizer::rendering
         return list;
     }
 
-    std::optional<error> scene_renderer::add_view(const graphics::frame_token& frame, const view_description& view)
+    std::optional<error> scene_renderer::add_view(
+        const graphics::frame_token& frame, const view_description& view, const std::size_t index)
     {
         auto history = histories_.acquire(view.name, view.size, frame.index());
         if (!history)
@@ -627,35 +670,111 @@ namespace avis::visualizer::rendering
         {
             (*history)->has_previous = false;
         }
+        if (!(*history)->has_previous)
+        {
+            (*history)->jitter_sequence = 0;
+        }
 
-        // The camera of this frame, and the previous frame's view-projection from the history, for motion vectors
-        // (11.10); a view without a previous frame has no motion
-        const float aspect_ratio = static_cast<float>(view.size.width) / static_cast<float>(view.size.height);
-        const Eigen::Matrix4f view_projection = view.camera.projection(aspect_ratio) * view.camera.view_from_world();
-        [[maybe_unused]] const Eigen::Matrix4f view_projection_previous =
-            (*history)->has_previous ? (*history)->view_projection : view_projection;
+        // The camera of this frame, with the TAA jitter when TAA is on for the view, and the previous frame's
+        // unjittered view-projection from the history, for motion vectors; a view without a previous frame has none
+        const Eigen::Matrix4f view_projection = unjittered_view_projection(view);
+        const bool taa = settings_.taa.enabled && view.options.taa;
+        const view_frame camera_frame{
+            .view = view,
+            .view_projection_previous = (*history)->has_previous ? (*history)->view_projection : view_projection,
+            .jitter = taa ? jitter_pixels((*history)->jitter_sequence) : Eigen::Vector2f::Zero(),
+            .frame_index = static_cast<std::uint32_t>(frame.index()),
+        };
         (*history)->view_projection = view_projection;
+        ++(*history)->jitter_sequence;
 
         const graphics::view_scope scope = graph_.begin_view(view.name, view.size);
         [[maybe_unused]] const history_imports imported = import_history(graph_, **history);
 
-        // Placeholder for the pass chain of 11 §2.3 (11.10 to 11.16): ldr_color is the background colour
-        const tonemap_data& tonemap = graph_.add_graphics_pass<tonemap_data>(
-            "tonemap",
-            [](graphics::render_pass_builder& builder, tonemap_data& data)
+        const scene_pass_inputs inputs{
+            .list = prepared_draw_lists_[index],
+            .meshes = draw_meshes_,
+            .pipelines = *pipeline_variants_,
+            .frame = frame_buffers_,
+            .geometry = geometry_,
+            .materials = frame_materials_,
+            .view_constants = make_view_constants(camera_frame),
+            .split = { .passes_per_group = graph_.configuration().passes_per_group_without_timings },
+        };
+
+        // Passes 1, 2 and 4 (11.10), then the placeholder for lighting and tonemapping
+        const graphics::texture depth = add_depth_prepass(graph_, inputs);
+        const linearized_depth linearized = add_linearize_depth(
+            graph_,
+            depth,
+            { .linearize = linearize_depth_pipeline_, .reduce = depth_mips_pipeline_ },
+            inputs.view_constants,
+            view.size);
+        const gbuffer_targets gbuffer = add_gbuffer_pass(graph_, inputs, depth);
+        const graphics::texture ldr_color =
+            add_gbuffer_preview(graph_, gbuffer_preview_pipeline_, gbuffer, linearized.linear_depth, background_color);
+
+        // Captures, for tests and tools: copies of the final versions
+        const std::array resources{
+            capturable{ "depth", gbuffer.depth, rhi::format::d32_float },
+            capturable{ "linear_depth", linearized.linear_depth, rhi::format::r32_float },
+            capturable{ "depth_mips",
+                        linearized.depth_mips,
+                        rhi::format::rg32_float,
+                        depth_mip_levels(view.size.width, view.size.height) },
+            capturable{ "gbuffer_albedo", gbuffer.albedo, rhi::format::rgba8_unorm_srgb },
+            capturable{ "gbuffer_normal", gbuffer.normal, rhi::format::rg16_unorm },
+            capturable{ "gbuffer_material", gbuffer.material, rhi::format::rgba8_unorm },
+            capturable{ "gbuffer_emissive", gbuffer.emissive, rhi::format::r11g11b10_float },
+            capturable{ "velocity", gbuffer.velocity, rhi::format::rg16_float },
+            capturable{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
+        };
+        for (std::size_t capture_index = 0; capture_index < view.options.captures.size(); ++capture_index)
+        {
+            const resource_capture& capture = view.options.captures[capture_index];
+            const auto found = std::ranges::find(resources, std::string_view{ capture.resource }, &capturable::name);
+            if (found == resources.end())
             {
-                graphics::texture_description description{ .size = graphics::view_relative(1.0f),
-                                                           .format = rhi::format::rgba8_unorm };
-                description.clear_value = rhi::clear_value{ .color = background_color };
-                data.ldr_color = builder.write(
-                    builder.create_texture("ldr_color", description), graphics::texture_write::render_target);
-            },
-            [](const tonemap_data& data,
-               const graphics::resource_bag& resources,
-               graphics::graphics_pass_context& context)
+                return invalid_view(view.name, std::format("no resource '{}' to capture", capture.resource));
+            }
+            const rhi::texture_description& target = dependencies_.resources.description(capture.texture);
+            const std::uint32_t width = std::max(view.size.width >> capture.mip, 1u);
+            const std::uint32_t height = std::max(view.size.height >> capture.mip, 1u);
+            if (capture.mip >= found->mips || target.format != found->format || target.width != width ||
+                target.height != height || !(target.usage & rhi::texture_usage::copy_destination))
             {
-                context.recorder().clear_render_target(resources.render_target_view(data.ldr_color), background_color);
-            });
+                return invalid_view(
+                    view.name,
+                    std::format(
+                        "the capture of '{}' mip {} needs a {} texture of {} x {} that allows copy_destination",
+                        capture.resource,
+                        capture.mip,
+                        rhi::to_string(found->format),
+                        width,
+                        height));
+            }
+            const rhi::access_state common = rhi::access_states::common;
+            const graphics::texture destination =
+                graph_.import_texture(std::format("capture_{}", capture_index), capture.texture, common, common);
+            graph_.add_copy_pass<capture_data>(
+                std::format("copy_capture_{}", capture_index),
+                [&](graphics::render_pass_builder& builder, capture_data& data)
+                {
+                    const graphics::subresource_range mip{ .first_mip = static_cast<std::uint16_t>(capture.mip),
+                                                           .mip_count = 1 };
+                    data.source = builder.read(found->texture, graphics::texture_read::copy_source, mip);
+                    data.destination = builder.write(destination, graphics::texture_write::copy_destination);
+                    data.mip = capture.mip;
+                },
+                [](const capture_data& data, const graphics::resource_bag& bag, graphics::copy_pass_context& context)
+                {
+                    context.recorder().copy_texture(
+                        bag.texture_handle(data.destination),
+                        {},
+                        bag.texture_handle(data.source),
+                        rhi::subresource{ .mip = static_cast<std::uint16_t>(data.mip) });
+                });
+        }
 
         // Pass 16 (11 §12): copies ldr_color into the view's output. Without one, nothing writes an import, and the
         // graph culls the view's passes.
@@ -667,7 +786,7 @@ namespace avis::visualizer::rendering
                 "present_to_shared",
                 [&](graphics::render_pass_builder& builder, present_data& data)
                 {
-                    data.source = builder.read(tonemap.ldr_color, graphics::texture_read::copy_source);
+                    data.source = builder.read(ldr_color, graphics::texture_read::copy_source);
                     data.output = builder.write(output, graphics::texture_write::copy_destination);
                 },
                 [](const present_data& data,

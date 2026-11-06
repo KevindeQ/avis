@@ -4,15 +4,16 @@
 // The scene renderer (docs/design/11-renderer.md): turns one scene::snapshot into an image for each view, on the
 // render graph (10). Scene-agnostic: it reads the snapshot and the views, nothing else (11 §2.1).
 //
-// So far (task 11.2) each view's frame is a placeholder tonemap pass that clears ldr_color to background_color, and
-// present_to_shared, which copies it into the view's output. The passes of 11 §2.3 replace the placeholder step by
-// step. Residency runs in every frame's prepare stage: the snapshot's meshes are uploaded into the geometry arena
-// (11.3), its textures into their own RHI textures and its materials into the material table (11.4). The arena and
-// the material table are imported into the graph, and the frame generates the mip chains of newly uploaded images.
-// Extraction (11.5) then builds the frame's instance and light arrays, interpolated at the frame's time, and pass 0
-// (upload_frame_data) copies them into persistent ring-indexed buffers. Startup creates the pipeline sets the passes
-// draw with (11.7). Each view's draw list (11.8) is cut into runs before pass 0, which uploads their instance
-// indices; the passes record their key ranges with the range walker (11.9).
+// Each view's frame (11 §2.3) is, so far: depth_prepass, linearize_depth with the depth_mips chain, gbuffer (11.10),
+// then a placeholder tonemap that shows the G-buffer's base colour over background_color, and present_to_shared,
+// which copies ldr_color into the view's output. The passes of 11.11 on replace the placeholder step by step. Residency
+// runs in every frame's prepare stage: the snapshot's meshes are uploaded into the geometry arena (11.3), its textures
+// into their own RHI textures and its materials into the material table (11.4). The arena and the material table are
+// imported into the graph, and the frame generates the mip chains of newly uploaded images. Extraction (11.5) then
+// builds the frame's instance and light arrays, interpolated at the frame's time, and pass 0 (upload_frame_data) copies
+// them into persistent ring-indexed buffers. Startup creates the pipeline sets the passes draw with (11.7). Each view's
+// draw list (11.8) is cut into runs before pass 0, which uploads their instance indices; the passes record their key
+// ranges with the range walker (11.9).
 
 #include "rendering/draw_lists.h"
 #include "rendering/extraction.h"
@@ -62,8 +63,8 @@ namespace avis::graphics
 
 namespace avis::visualizer::rendering
 {
-    // ldr_color's content until the sky and the tonemap exist (11.11, 11.16): sRGB-encoded, exact in RGBA8
-    // (51, 102, 153, 255)
+    // ldr_color where nothing was drawn, until the sky and the tonemap exist (11.11, 11.16): sRGB-encoded, exact in
+    // RGBA8 (51, 102, 153, 255)
     inline constexpr std::array<float, 4> background_color{ 0.2f, 0.4f, 0.6f, 1.0f };
 
     // What the renderer works with; everything must outlive it. The caller owns the frame chain: it begins frames on
@@ -114,21 +115,6 @@ namespace avis::visualizer::rendering
         std::vector<draw_list_statistics> draw_lists; // the last frame's, one per view in view order (11.8)
         std::vector<std::size_t> draw_runs; // the runs of each of those lists (11.9)
         std::size_t instance_indices = 0; // of the last frame's runs, uploaded by pass 0
-    };
-
-    // The geometry arena in this frame's graph (11 §3.2), imported outside any view with the newest ready_after of the
-    // mesh versions the frame draws (D-103). The passes that draw read them (11.10).
-    struct frame_geometry
-    {
-        graphics::buffer vertices;
-        graphics::buffer indices;
-    };
-
-    // The material table in this frame's graph (11 §3.3), imported outside any view with the newest ready_after of the
-    // slots the frame draws and of their textures. The textures themselves are read bindlessly, in `common`.
-    struct frame_materials
-    {
-        graphics::buffer table;
     };
 
     class scene_renderer
@@ -299,6 +285,9 @@ namespace avis::visualizer::rendering
         {
             rhi::root_signature_handle standard_signature;
             rhi::compute_pipeline_handle generate_mips;
+            rhi::compute_pipeline_handle linearize_depth;
+            rhi::compute_pipeline_handle depth_mips;
+            rhi::compute_pipeline_handle gbuffer_preview;
             std::unique_ptr<pipeline_variant_registry> pipeline_variants;
             std::unique_ptr<geometry_arena> arena;
             std::unique_ptr<texture_residency> textures;
@@ -325,7 +314,9 @@ namespace avis::visualizer::rendering
             std::chrono::steady_clock::time_point wall_now);
 
         std::optional<error> check_view(const view_description& view) const;
-        std::optional<error> add_view(const graphics::frame_token& frame, const view_description& view);
+        // `index` is the view's position in the frame: its draw list
+        std::optional<error>
+            add_view(const graphics::frame_token& frame, const view_description& view, std::size_t index);
 
         // The view's draw list (11 §4.5), in the graph's arena
         draw_list build_view_draw_list(const scene::snapshot& snapshot, const view_description& view);
@@ -337,6 +328,9 @@ namespace avis::visualizer::rendering
         rhi::root_signature_handle standard_signature_;
         view_history_store histories_;
         rhi::compute_pipeline_handle generate_mips_pipeline_;
+        rhi::compute_pipeline_handle linearize_depth_pipeline_;
+        rhi::compute_pipeline_handle depth_mips_pipeline_;
+        rhi::compute_pipeline_handle gbuffer_preview_pipeline_;
         std::unique_ptr<pipeline_variant_registry> pipeline_variants_;
         std::unique_ptr<geometry_arena> arena_;
         std::unique_ptr<residency_cache> residency_; // refers to arena_ and the upload queue

@@ -13,6 +13,11 @@
 #include "bindless.hlsli"
 #include "scene_varyings.hlsli"
 #include "shared_types.hlsli"
+#include "scene_material.hlsli"
+#include "vertex_pulling.hlsli"
+
+AVIS_PASS_CONSTANTS(scene_pass_constants, scene_pass);
+AVIS_VIEW_CONSTANTS(view_constants, view);
 
 // ---- permutation features ----
 #if defined(LINES) || defined(LINES_PICKING) || defined(LINES_ALPHA_MASK) || defined(LINES_ALPHA_MASK_PICKING)
@@ -54,7 +59,9 @@ overlay_output pixel_main(scene_varyings input)
     }
 #endif
 #if AVIS_LINES
-    coverage = saturate(1.0 - abs(input.quad.y));
+    // The analytic edge falloff of 11 §9.2: quad.y is the distance from the centre line in pixels
+    coverage = line_coverage(
+        input.quad.y, pull_material(scene_pass, input.material).line_width * view.device_pixel_ratio);
 #endif
 #if AVIS_ALPHA_MASK
     if (input.color.a < 0.5)

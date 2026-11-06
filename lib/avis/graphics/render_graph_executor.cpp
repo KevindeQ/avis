@@ -50,7 +50,8 @@ namespace avis::graphics::detail
             if (access.direction == access_direction::read)
             {
                 const auto usage = static_cast<buffer_read>(access.usage);
-                needs.srv = needs.srv || usage == buffer_read::srv_pixel || usage == buffer_read::srv_compute;
+                needs.srv = needs.srv || usage == buffer_read::srv_pixel || usage == buffer_read::srv_compute ||
+                            usage == buffer_read::srv_graphics || usage == buffer_read::index_and_srv_graphics;
             }
             else
             {

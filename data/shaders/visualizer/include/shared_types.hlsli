@@ -166,18 +166,20 @@ struct light_data
     uint padding0;
 };
 
-// The view constants, a root CBV at b2 (11.10). Projections are reverse-Z.
+// The view constants, a root CBV at b2 (11.10). Projections are reverse-Z; view space looks down -Z, so a point's
+// linear depth is -z_view (the clip w of a perspective projection).
 struct view_constants
 {
     float4x4 view; // view-from-world
     float4x4 view_inverse; // world-from-view
     float4x4 projection; // jittered when TAA is on
-    float4x4 projection_inverse;
+    float4x4 projection_inverse; // of the jittered projection
     float4x4 projection_unjittered;
     float4x4 view_projection; // projection * view, jittered
     float4x4 view_projection_unjittered;
-    float4x4 view_projection_previous; // unjittered, of the previous rendered frame
-    float2 jitter; // in clip space units
+    float4x4 view_projection_previous; // unjittered, of the previous rendered frame (this frame's without one)
+    float4x4 view_projection_inverse; // world-from-clip, of the jittered view_projection
+    float2 jitter; // in clip space units: added to the unjittered projection's x and y offsets
     float2 size; // pixels
     float2 inverse_size;
     float near_plane; // metres
@@ -220,7 +222,8 @@ struct scene_pass_constants
     uint vertices; // ByteAddressBuffer, the arena's vertex buffer
     uint indices; // ByteAddressBuffer, the arena's index buffer (u32)
     uint materials; // StructuredBuffer<material_data>
-    uint padding0;
+    float line_margin; // pixels a line's quad extends past its width on each side, for the edge falloff: 0 in the
+                       // opaque passes, so the depth and the G-buffer cover line_width pixels exactly (11 §9.2)
     uint padding1;
     uint padding2;
 };
@@ -276,7 +279,7 @@ static_assert(offsetof(light_data, spot_cos_outer) == 52);
 static_assert(offsetof(light_data, casts_shadows) == 56);
 static_assert(offsetof(light_data, padding0) == 60);
 
-static_assert(sizeof(view_constants) == 560);
+static_assert(sizeof(view_constants) == 624);
 static_assert(offsetof(view_constants, view) == 0);
 static_assert(offsetof(view_constants, view_inverse) == 64);
 static_assert(offsetof(view_constants, projection) == 128);
@@ -285,13 +288,14 @@ static_assert(offsetof(view_constants, projection_unjittered) == 256);
 static_assert(offsetof(view_constants, view_projection) == 320);
 static_assert(offsetof(view_constants, view_projection_unjittered) == 384);
 static_assert(offsetof(view_constants, view_projection_previous) == 448);
-static_assert(offsetof(view_constants, jitter) == 512);
-static_assert(offsetof(view_constants, size) == 520);
-static_assert(offsetof(view_constants, inverse_size) == 528);
-static_assert(offsetof(view_constants, near_plane) == 536);
-static_assert(offsetof(view_constants, device_pixel_ratio) == 540);
-static_assert(offsetof(view_constants, camera_position) == 544);
-static_assert(offsetof(view_constants, frame_index) == 556);
+static_assert(offsetof(view_constants, view_projection_inverse) == 512);
+static_assert(offsetof(view_constants, jitter) == 576);
+static_assert(offsetof(view_constants, size) == 584);
+static_assert(offsetof(view_constants, inverse_size) == 592);
+static_assert(offsetof(view_constants, near_plane) == 600);
+static_assert(offsetof(view_constants, device_pixel_ratio) == 604);
+static_assert(offsetof(view_constants, camera_position) == 608);
+static_assert(offsetof(view_constants, frame_index) == 620);
 
 static_assert(sizeof(scene_draw_constants) == 64); // binding_layout::draw_constant_count 32-bit values
 static_assert(offsetof(scene_draw_constants, instance_index_offset) == 0);
@@ -314,6 +318,7 @@ static_assert(offsetof(scene_pass_constants, instance_indices) == 4);
 static_assert(offsetof(scene_pass_constants, vertices) == 8);
 static_assert(offsetof(scene_pass_constants, indices) == 12);
 static_assert(offsetof(scene_pass_constants, materials) == 16);
+static_assert(offsetof(scene_pass_constants, line_margin) == 20);
 
 } // namespace avis::visualizer::rendering::gpu
 

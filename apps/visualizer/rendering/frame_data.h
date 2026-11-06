@@ -126,6 +126,21 @@ namespace avis::visualizer::rendering
         std::uint32_t light_count = 0;
     };
 
+    // The geometry arena in this frame's graph (11 §3.2), imported outside any view with the newest ready_after of the
+    // mesh versions the frame draws (D-103). The scene passes read them (11.10).
+    struct frame_geometry
+    {
+        graphics::buffer vertices;
+        graphics::buffer indices;
+    };
+
+    // The material table in this frame's graph (11 §3.3), imported outside any view with the newest ready_after of the
+    // slots the frame draws and of their textures. The textures themselves are read bindlessly, in `common`.
+    struct frame_materials
+    {
+        graphics::buffer table;
+    };
+
     struct frame_data_statistics
     {
         std::uint64_t uploads = 0; // frames that wrote an instance slot

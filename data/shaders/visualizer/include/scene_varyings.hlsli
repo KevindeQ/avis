@@ -13,12 +13,14 @@ struct scene_varyings
     float4 position : SV_Position;
     float3 world_position : WORLD_POSITION;
     float3 normal : NORMAL; // world space
-    float4 tangent : TANGENT; // world space, w = bitangent sign
+    float4 tangent : TANGENT; // world space, w = bitangent sign; w = 0 when the mesh has no tangents
     float2 uv : TEXCOORD0;
     float4 color : COLOR0; // linear
     float4 current_clip : CURRENT_CLIP; // unjittered, for velocity
     float4 previous_clip : PREVIOUS_CLIP; // unjittered, of the previous rendered frame
-    float2 quad : QUAD; // lines and points: the position in the expanded quad, in [-1, 1]
+    // Points: the position in the expanded quad, in [-1, 1]. Lines: x runs along the segment from -1 to 1, y is the
+    // signed distance from the centre line in pixels (11 §9.2).
+    float2 quad : QUAD;
     nointerpolation uint instance : INSTANCE; // index into instance_data[]
     nointerpolation uint material : MATERIAL;
 };

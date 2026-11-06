@@ -24,7 +24,9 @@ namespace avis::graphics
         srv_pixel,
         srv_compute,
         indirect_arguments,
-        copy_source
+        copy_source,
+        srv_graphics, // the vertex and pixel shaders of a graphics pass (vertex pulling, 11 §3.2)
+        index_and_srv_graphics // an index buffer that the graphics shaders also read
     };
 
     enum class buffer_write : std::uint8_t
@@ -53,6 +55,13 @@ namespace avis::graphics
             return { pipeline_synchronization::execute_indirect, resource_access::indirect_argument };
         case buffer_read::copy_source:
             return { pipeline_synchronization::copy, resource_access::copy_source };
+        case buffer_read::srv_graphics:
+            return { pipeline_synchronization::vertex_shading | pipeline_synchronization::pixel_shading,
+                     resource_access::shader_resource };
+        case buffer_read::index_and_srv_graphics:
+            return { pipeline_synchronization::index_input | pipeline_synchronization::vertex_shading |
+                         pipeline_synchronization::pixel_shading,
+                     resource_access::index_buffer | resource_access::shader_resource };
         }
         return {};
     }

@@ -461,7 +461,10 @@ namespace avis::graphics::detail
                 {
                 case buffer_read::srv_pixel:
                 case buffer_read::srv_compute:
+                case buffer_read::srv_graphics:
                     return buffer_usage::shader_resource;
+                case buffer_read::index_and_srv_graphics:
+                    return buffer_usage::index | buffer_usage::shader_resource;
                 case buffer_read::indirect_arguments:
                     return buffer_usage::indirect_arguments;
                 case buffer_read::copy_source:

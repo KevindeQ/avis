@@ -334,6 +334,15 @@ namespace avis::tests
         return add_drawn("unlit quad", at(position), build(std::move(builder)), material);
     }
 
+    scene::entity renderer_fixture::add_mesh(
+        const std::string& name,
+        const Eigen::Vector3f& position,
+        scene::mesh_data mesh,
+        const scene::material_description& material)
+    {
+        return add_drawn(name, at(position), std::move(mesh), material);
+    }
+
     void renderer_fixture::publish()
     {
         world.update_world_transforms();
@@ -355,6 +364,25 @@ namespace avis::tests
               .usage = rhi::texture_usage::copy_destination | rhi::texture_usage::copy_source,
               .initial_layout = rhi::texture_layout::common,
               .debug_name = "renderer test output" });
+        REQUIRE(texture.has_value());
+        outputs_.push_back(*texture);
+        return *texture;
+    }
+
+    rhi::texture_handle renderer_fixture::make_texture(const rhi::format format, const graphics::texture_extent size)
+    {
+        avis::flags<rhi::texture_usage> usage = rhi::texture_usage::copy_destination | rhi::texture_usage::copy_source;
+        if (format == rhi::format::d32_float)
+        {
+            usage = usage | rhi::texture_usage::depth_stencil;
+        }
+        auto texture = rhi::resources{ *graphics.hardware_interface }.create_texture(
+            { .width = size.width,
+              .height = size.height,
+              .format = format,
+              .usage = usage,
+              .initial_layout = rhi::texture_layout::common,
+              .debug_name = "renderer test capture" });
         REQUIRE(texture.has_value());
         outputs_.push_back(*texture);
         return *texture;
