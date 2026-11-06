@@ -23,6 +23,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	passes/shadow_pass.cpp
 	passes/taa_pass.cpp
 	pipeline_variant_registry.cpp
+	progressive_lod.cpp
 	range_walker.cpp
 	render_settings.cpp
 	renderer_shaders.cpp

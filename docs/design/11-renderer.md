@@ -523,6 +523,11 @@ Generic geometry features. The renderer doesn't know what the points or lines re
 ### 9.3 Progressive meshes (LOD)
 - For a mesh flagged `progressive`, the renderer draws `n = clamp(k · projected_bounds_area_px, n_minimum, vertex_count)` vertices per visible instance. A random vertex order makes the prefix a uniform subsample.
 - A **global progressive vertex budget** (`render.progressive.vertex_budget`) rescales `k` each frame so the total stays under budget. Frame-to-frame changes in `n` are rate-limited so popping isn't visible.
+- *As implemented* (task 11.18):
+  - The projected area is that of the sphere around the world bounds. `n_minimum` is 256.
+  - The budget covers the camera and shadow vertices of a view. Under it, every instance draws whole.
+  - The rate limit is ±25% of the view's previous `n` per frame, keyed by `object_id`. The budget wins over it.
+  - The LOD applies to points and non-indexed lines and triangles.
 - This is generic: any large point set (for example lidar sweeps and belief point maps, which the scene representation turns into progressive point meshes, [12 §9](12-visualizer.md#9-scene-representation)) benefits without renderer changes.
 - Future option (not in iteration 1): a compute-shader point rasteriser (64-bit atomic visibility buffer) for budgets above 50M points.
 

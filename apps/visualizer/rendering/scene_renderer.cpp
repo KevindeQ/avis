@@ -394,6 +394,18 @@ namespace avis::visualizer::rendering
                 return runs;
             }(),
             .instance_indices = instance_indices_.size(),
+            .progressive = progressive_statistics_,
+            .progressive_vertices =
+                [this]
+            {
+                std::vector<std::uint64_t> vertices;
+                vertices.reserve(prepared_draw_lists_.size());
+                for (const prepared_draw_list& list : prepared_draw_lists_)
+                {
+                    vertices.push_back(progressive_vertices(list));
+                }
+                return vertices;
+            }(),
             .environment = environment_->statistics(),
         };
     }
@@ -458,6 +470,7 @@ namespace avis::visualizer::rendering
         view_cascades_.clear();
         draw_lists_.clear(); // they were in the arena
         prepared_draw_lists_.clear();
+        progressive_statistics_.clear();
         instance_indices_.clear();
 
         // Checked before anything is added: the graph's own checks on view names only assert
@@ -546,10 +559,40 @@ namespace avis::visualizer::rendering
             view_cascades_.push_back(compute_view_cascades(view));
             draw_lists_.push_back(build_view_draw_list(snapshot, view, view_cascades_.back()));
         }
+        // The progressive LOD (11 §9.3) of each view, rate-limited against the view's previous frame, gives the runs of
+        // progressive meshes their vertex counts
+        std::erase_if(
+            progressive_lods_,
+            [&names](const auto& entry) { return !names.contains(std::string_view{ entry.first }); });
         prepared_draw_lists_.reserve(draw_lists_.size());
-        for (const draw_list& list : draw_lists_)
+        progressive_statistics_.reserve(draw_lists_.size());
+        for (std::size_t index = 0; index < draw_lists_.size(); ++index)
         {
-            prepared_draw_lists_.push_back(prepare_draw_runs(list, draw_meshes_, graph_.arena(), instance_indices_));
+            const view_description& view = views[index];
+            auto state = progressive_lods_.find(view.name);
+            if (state == progressive_lods_.end())
+            {
+                state = progressive_lods_.emplace(view.name, progressive_lod{}).first;
+            }
+            if (view.options.reset_history)
+            {
+                state->second.reset();
+            }
+            const progressive_lod_parameters parameters{
+                .vertex_budget = view.options.progressive_vertex_budget.value_or(settings_.progressive.vertex_budget),
+                .shadow_lod_scale = settings_.progressive.shadow_lod_scale,
+            };
+            const progressive_draw_counts lod = compute_progressive_lod(
+                view,
+                draw_lists_[index],
+                draw_meshes_,
+                extraction_.instances,
+                parameters,
+                state->second,
+                graph_.arena());
+            progressive_statistics_.push_back(lod.statistics);
+            prepared_draw_lists_.push_back(
+                prepare_draw_runs(draw_lists_[index], draw_meshes_, graph_.arena(), instance_indices_, lod.by_record));
         }
 
         // Shared work, outside any view scope (10 §8). The arena and the material table wait on the newest copies this

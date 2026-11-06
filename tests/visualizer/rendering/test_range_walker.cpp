@@ -734,6 +734,48 @@ TEST_CASE("runs merge equal keys of one mesh and write their instance indices co
         const prepared_draw_list prepared = prepare_draw_runs(list, scene.meshes, arena, indices);
         CHECK(prepared.runs.size() == 10);
         CHECK(indices.size() == 10);
+        CHECK(progressive_vertices(prepared) == 0); // without a LOD, drawn whole
+    }
+
+    SECTION("progressive runs get their LOD's count of their viewport (11.18)")
+    {
+        const std::uint32_t progressive = scene.add_mesh(blue, true);
+        for (scene::object_id id = 1; id <= 4; ++id)
+        {
+            scene.add(id, progressive, opaque_material, placed({ 0.0f, 0.0f, -5.0f }), scene::draw_layer::world);
+        }
+        scene.add(5, first, opaque_material, placed({ 0.0f, 0.0f, -5.0f }), scene::draw_layer::world);
+        const std::array<cascade_viewpoint, 2> cascades{ orthographic_cascade(10.0f, 10.0f),
+                                                         orthographic_cascade(10.0f, 10.0f) };
+        const draw_list list = scene.build(arena, test_view(), unit_lookup(), cascades);
+        std::vector<progressive_vertex_counts> counts(list.records().size());
+        for (std::size_t record = 0; record < counts.size(); ++record)
+        {
+            if (scene.meshes[list.records()[record].mesh].progressive)
+            {
+                counts[record] = { .camera = static_cast<std::uint32_t>(100 + record), .shadow = 7 };
+            }
+        }
+        std::vector<std::uint32_t> indices;
+        const prepared_draw_list prepared = prepare_draw_runs(list, scene.meshes, arena, indices, counts);
+
+        // 4 progressive instances in the camera and both cascades, and one ordinary run per viewport
+        CHECK(prepared.runs.size() == 4 * 3 + 3);
+        std::uint64_t expected = 0;
+        for (const draw_run& run : prepared.runs)
+        {
+            const draw_item& item = list.items()[run.first];
+            const draw_record& record = list.records()[item.value];
+            if (!scene.meshes[record.mesh].progressive)
+            {
+                CHECK(run.vertex_count == 0);
+                continue;
+            }
+            const bool camera = key_fields::viewport.extract(item.key) == 0;
+            CHECK(run.vertex_count == (camera ? 100 + item.value : 7));
+            expected += run.vertex_count;
+        }
+        CHECK(progressive_vertices(prepared) == expected);
     }
 
     SECTION("commands are runs of their own, after their group's draws")

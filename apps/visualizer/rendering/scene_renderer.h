@@ -28,6 +28,7 @@
 #include "rendering/material_table.h"
 #include "rendering/passes/overlay_pass.h"
 #include "rendering/pipeline_variant_registry.h"
+#include "rendering/progressive_lod.h"
 #include "rendering/range_walker.h"
 #include "rendering/render_settings.h"
 #include "rendering/residency_cache.h"
@@ -54,6 +55,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -121,6 +124,9 @@ namespace avis::visualizer::rendering
         std::vector<draw_list_statistics> draw_lists; // the last frame's, one per view in view order (11.8)
         std::vector<std::size_t> draw_runs; // the runs of each of those lists (11.9)
         std::size_t instance_indices = 0; // of the last frame's runs, uploaded by pass 0
+        // The progressive LOD of each of those lists (11.18), and the vertices its runs draw over every viewport
+        std::vector<progressive_lod_statistics> progressive;
+        std::vector<std::uint64_t> progressive_vertices;
         environment_statistics environment; // the environment bakes (11.11)
     };
 
@@ -477,6 +483,9 @@ namespace avis::visualizer::rendering
         std::vector<shadow_cascades> view_cascades_; // of the frame being built, per view
         std::vector<draw_list> draw_lists_; // of the frame being built, per view
         std::vector<prepared_draw_list> prepared_draw_lists_; // their runs, per view (11.9)
+        std::vector<progressive_lod_statistics> progressive_statistics_; // their LOD, per view (11.18)
+        // Each view's LOD state, by view name; a view not rendered in a frame loses it
+        std::map<std::string, progressive_lod, std::less<>> progressive_lods_;
         std::vector<std::uint32_t> instance_indices_; // of every view's draw runs, uploaded by pass 0
         std::optional<std::chrono::steady_clock::time_point> last_pipeline_warning_;
 

@@ -7,8 +7,9 @@
 // Prepare stage, serially, once per draw list: prepare_draw_runs cuts the whole list into runs, and writes each draw
 // run's instance indices contiguously into the frame's instance_indices array (pass 0 uploads it). A run is one
 // command item, or the draw items with one key whose records share a mesh and submesh: one instanced draw. Progressive
-// meshes draw one instance per run (11 §9.3). Translucent groups merge only identical keys, which every run does. The
-// offsets are fixed before recording, so parts of a range recorded in parallel don't race.
+// meshes draw one instance per run, with the vertex count of their LOD in the run's viewport (progressive_lod.h).
+// Translucent groups merge only identical keys, which every run does. The offsets are fixed before recording, so parts
+// of a range recorded in parallel don't race.
 //
 // Recording, on any worker: walk records the runs of a range in key order.
 //   - Command items run through a command_context. clear_* commands check the attachment against the pass's declared
@@ -28,6 +29,7 @@
 
 #include "rendering/draw_lists.h"
 #include "rendering/pipeline_variant_registry.h"
+#include "rendering/progressive_lod.h"
 #include "rendering/sort_key.h"
 
 #include "avis/graphics/pass_context.h"
@@ -58,6 +60,7 @@ namespace avis::visualizer::rendering
         std::uint32_t first = 0; // index of its first item in draw_list::items()
         std::uint32_t count = 0; // items: the draw's instances, or 1 for a command
         std::uint32_t instance_offset = 0; // the draw's first entry in the frame's instance_indices; 0 for a command
+        std::uint32_t vertex_count = 0; // a progressive instance's LOD (11 §9.3); 0: the primitive's whole count
 
         friend bool operator==(const draw_run&, const draw_run&) = default;
     };
@@ -74,12 +77,18 @@ namespace avis::visualizer::rendering
     };
 
     // Cuts `list` into runs and appends each draw run's instance indices (draw_record::instance) to `instance_indices`.
-    // `meshes` is the frame's mesh table the list was built with. Prepare stage only.
+    // `meshes` is the frame's mesh table the list was built with. `progressive` is the view's LOD by record
+    // (compute_progressive_lod; empty: progressive meshes draw whole): each progressive run gets the camera or shadow
+    // count of its viewport. Prepare stage only.
     prepared_draw_list prepare_draw_runs(
         const draw_list& list,
         std::span<const draw_mesh> meshes,
         graphics::linear_arena& arena,
-        std::vector<std::uint32_t>& instance_indices);
+        std::vector<std::uint32_t>& instance_indices,
+        std::span<const progressive_vertex_counts> progressive = {});
+
+    // The vertices the progressive runs of `list` draw (their vertex_count), over every viewport
+    std::uint64_t progressive_vertices(const prepared_draw_list& list) noexcept;
 
     // ---- commands (11 §4.7) ----
 

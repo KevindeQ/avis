@@ -303,6 +303,11 @@ namespace avis::visualizer::rendering
                 {
                     return;
                 }
+                // A progressive run draws a prefix of the vertices (11 §9.3); indexed lines and triangles draw whole
+                const bool prefix = run.vertex_count > 0 &&
+                                    (mesh.topology == scene::mesh_topology::points || primitive.index_count == 0);
+                const std::uint32_t vertex_count =
+                    prefix ? std::min(run.vertex_count, primitive.vertex_count) : primitive.vertex_count;
 
                 apply_state(binding, slot);
                 if (!index_buffer_bound_ && primitive.index_count > 0 &&
@@ -319,7 +324,7 @@ namespace avis::visualizer::rendering
                     .mesh = record.mesh,
                     .attributes = shader_attributes(mesh.attributes),
                     .vertex_first = primitive.vertex_first,
-                    .vertex_count = primitive.vertex_count,
+                    .vertex_count = vertex_count,
                     .index_first = range.first_index() + primitive.index_first,
                     .index_count = primitive.index_count,
                     .position_offset = stream_offset(range.streams.position),
@@ -349,13 +354,18 @@ namespace avis::visualizer::rendering
                     }
                     else
                     {
-                        recorder_.draw(primitive.vertex_count, instances, 0, 0);
+                        const std::uint32_t triangle_vertices = vertex_count / 3 * 3;
+                        if (triangle_vertices == 0)
+                        {
+                            return;
+                        }
+                        recorder_.draw(triangle_vertices, instances, 0, 0);
                     }
                     break;
                 case scene::mesh_topology::lines:
                     {
                         const std::uint32_t segments =
-                            (primitive.index_count > 0 ? primitive.index_count : primitive.vertex_count) / 2;
+                            (primitive.index_count > 0 ? primitive.index_count : vertex_count) / 2;
                         if (segments == 0)
                         {
                             return;
@@ -364,7 +374,7 @@ namespace avis::visualizer::rendering
                         break;
                     }
                 case scene::mesh_topology::points:
-                    recorder_.draw(primitive.vertex_count * 6, instances, 0, 0);
+                    recorder_.draw(vertex_count * 6, instances, 0, 0);
                     break;
                 }
                 ++statistics_.draws;
@@ -567,7 +577,8 @@ namespace avis::visualizer::rendering
         const draw_list& list,
         const std::span<const draw_mesh> meshes,
         graphics::linear_arena& arena,
-        std::vector<std::uint32_t>& instance_indices)
+        std::vector<std::uint32_t>& instance_indices,
+        const std::span<const progressive_vertex_counts> progressive)
     {
         const std::span<const draw_item> items = list.items();
         const std::span<const draw_record> records = list.records();
@@ -587,9 +598,18 @@ namespace avis::visualizer::rendering
 
             // Equal keys whose records share the mesh and submesh; a progressive mesh draws each instance alone
             const draw_record& record = records[item.value];
-            const bool progressive = record.mesh < meshes.size() && meshes[record.mesh].progressive;
+            const bool is_progressive = record.mesh < meshes.size() && meshes[record.mesh].progressive;
             std::size_t end = index + 1;
-            if (!progressive)
+            std::uint32_t vertex_count = 0;
+            if (is_progressive)
+            {
+                if (item.value < progressive.size())
+                {
+                    const progressive_vertex_counts& counts = progressive[item.value];
+                    vertex_count = key_fields::viewport.extract(item.key) == 0 ? counts.camera : counts.shadow;
+                }
+            }
+            else
             {
                 while (end < items.size() && items[end].key == item.key && same_mesh(records[items[end].value], record))
                 {
@@ -598,13 +618,24 @@ namespace avis::visualizer::rendering
             }
             runs[run_count++] = { .first = static_cast<std::uint32_t>(index),
                                   .count = static_cast<std::uint32_t>(end - index),
-                                  .instance_offset = static_cast<std::uint32_t>(instance_indices.size()) };
+                                  .instance_offset = static_cast<std::uint32_t>(instance_indices.size()),
+                                  .vertex_count = vertex_count };
             for (; index < end; ++index)
             {
                 instance_indices.push_back(records[items[index].value].instance);
             }
         }
         return { .list = &list, .runs = runs.first(run_count) };
+    }
+
+    std::uint64_t progressive_vertices(const prepared_draw_list& list) noexcept
+    {
+        std::uint64_t total = 0;
+        for (const draw_run& run : list.runs)
+        {
+            total += run.vertex_count;
+        }
+        return total;
     }
 
     // ---- draw_commands ----

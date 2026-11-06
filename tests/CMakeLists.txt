@@ -134,6 +134,7 @@ target_sources(AVIS_TESTS
 		visualizer/rendering/test_extraction.cpp
 		visualizer/rendering/test_geometry_arena.cpp
 		visualizer/rendering/test_pipeline_variant_registry.cpp
+		visualizer/rendering/test_progressive_lod.cpp
 		visualizer/rendering/test_range_walker.cpp
 		visualizer/rendering/test_renderer_passes.cpp
 		visualizer/rendering/test_renderer_shadows.cpp

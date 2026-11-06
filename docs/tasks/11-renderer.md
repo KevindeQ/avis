@@ -591,12 +591,12 @@ flowchart LR
 ## 11.12 Cascaded shadow maps
 11 §7, pass 7.
 
-*Status: implemented; the tests pass in Debug and Release.* Only the progressive LOD stays open, for 11.18. As implemented:
+*Status: implemented; the tests pass in Debug and Release.* As implemented:
 - **CPU** (`cascades.h/.cpp`). Each cascade's sphere is the smallest one centred on the view axis that holds its frustum slice, so its radius only depends on the projection. The light's view has a fixed rotation, and the sphere's light-space x and y are rounded to whole texels. Depth 1 is 200 m (`caster_extension`) beyond the sphere towards the sun, depth 0 its far side. The renderer computes the cascades per view before the draw lists, which cull the casters into them, and only when the frame's sun casts shadows. `scene_renderer::view_cascades()` exposes them for tests.
 - **Pass** (`passes/shadow_pass.h/.cpp`): `shadow_cascades` walks `scene/shadow_cascade[0 … count − 1]/world/opaque` into `shadow_map`, cascade *c* into layer *c* with its own view constants (orthographic, near plane 0, no jitter). `scene_range_pass` gained per-viewport bindings (`scene_viewport`). The shadow PSO has a slope-scaled bias of −1.5 and no depth clipping, so casters in front of the cascade are flattened onto it. The pass was declared after the G-buffer; since 11.13 it comes after GTAO.
 - **Clears.** The graph's `write_flags::needs_clear` only declares the need: nothing recorded a clear, so 11.10's depth prepass and G-buffer weren't cleared either. `scene_range_pass`'s first part now records the clears of the attachments that ask for one, over every layer.
 - **Receiver** (`shadows.hlsli`, read by `deferred_lighting`): the normal offset is 1 texel × sin of the normal–sun angle, the Poisson disk's radius 1 texel. The cascade constants travel in `deferred_lighting_constants::shadow` (`shadow_constants`, the cascades as four members, since shared structs have no arrays). The last cascade blends into "lit". `cascade_index` (R8_UINT, `gpu::no_cascade` where none applies) is written only when a view captures it, until 11.20.
-- **Progressive LOD in shadow viewports** waits for 11.18, which brings progressive meshes.
+- **Progressive LOD in shadow viewports**: done by 11.18.
 - **Tests** in `test_cascades.cpp` and `test_renderer_shadows.cpp`. The shadow tests render each scene with and without the sun's shadows and compare per pixel. The cube's shadow is checked away from two texels of its edge, and from three texels of the cube's footprint, where the slope bias may let light through at the contact.
 
 - [x] `cascades.h/.cpp`, CPU:
@@ -610,7 +610,7 @@ flowchart LR
   `cascades` ≤ 4 (11 §14).
 - [x] `shadow_cascades` (graphics): one D32F Texture2DArray of `cascades × resolution²`, walking `scene/shadow_cascade[0–3]/world/opaque` with each set's shadow PSO. The PSO has a slope-scaled bias, and the viewport per slice comes from the key's viewport field (11.9). The pass is declared after GTAO (11 §2.3).
 - [x] Receiver: a normal-offset bias, 16-tap Poisson PCF with the comparison sampler, interleaved-gradient-noise rotation, and cascade blending. A `cascade_index` debug output is written for 11.20.
-- [ ] *(11.18)* Progressive meshes use `shadow_lod_scale` in shadow viewports (11.18).
+- [x] *(11.18)* Progressive meshes use `shadow_lod_scale` in shadow viewports (11.18).
 
 **Tests** (`test_cascades.cpp` `[renderer][unit]`, passes `[renderer]`):
 - [x] The splits are monotonic and end at `distance`. With λ = 0, they're uniform.
@@ -752,18 +752,31 @@ flowchart LR
 ## 11.18 Progressive meshes
 11 §9.3.
 
-- [ ] `progressive_lod.h/.cpp`:
+*Status: implemented; the tests pass in Debug and Release.* As implemented:
+- **LOD** (`progressive_lod.h/.cpp`), per view, in the prepare stage between the draw lists and their runs. `compute_progressive_lod` gathers each drawn progressive record once, with its camera item and its cascade count, and `progressive_lod::update` computes `n` for each.
+  - **Projected area**: the sphere around the instance's world bounds, π × its projected radius², at most the view's area (the whole view from inside it). It doesn't depend on the frustum, so an instance drawn only in shadows has an area too.
+  - **k** is the largest value whose exact integer total fits the budget, found by bisection. The total counts the camera vertices plus each cascade's shadow vertices. Under the budget, every instance draws whole: the budget is the only limit, so a lifted budget draws full density (11.21).
+  - `n_minimum` is 256, or the whole mesh when it has fewer.
+  - **Shadow viewports** draw `max(1, ⌊shadow_lod_scale · n⌋)`.
+  - **Rate limit**: `n` stays within ±25% of the view's previous `n` for that `object_id`, with at least one vertex of growth. An object the view didn't draw in its previous frame, a `history_invalid` instance, and every instance after `reset_history` start free. The budget wins: when the rate limit's lower bounds alone exceed it, they're scaled down.
+  - The state is per view name in the renderer, dropped when a frame doesn't render that view.
+- **Walker.** `draw_run::vertex_count` carries a progressive run's count for its viewport (0: whole), set by `prepare_draw_runs` from the view's counts by record. The walker draws that prefix for points and non-indexed lines and triangles (whole segments and triangles). An indexed line or triangle primitive draws whole, since a prefix of its vertices isn't a prefix of its primitives.
+- **Budget**: `view_options::progressive_vertex_budget`, else `render.progressive.vertex_budget`.
+- **Debug information**: `progressive` (each view's `progressive_lod_statistics`: instances, k, camera and shadow vertices, the whole count, the rate-limited instances, scaled minimums) and `progressive_vertices` (what each view's runs draw).
+- **Tests.** The 1M-point mesh fills a 512 × 288 view, so k is 0.68 vertices per pixel. It draws exactly 100,000 vertices, and lifted, 1,000,000. The rate-limit test settles after about 40 frames, because the two instances share the budget. `test_range_walker.cpp` checks each run's count by viewport.
+
+- [x] `progressive_lod.h/.cpp`:
   - `n = clamp(k · projected_area_px, n_minimum, vertex_count)` per visible progressive instance and viewport
   - `k` rescaled each frame so the total stays under `progressive.vertex_budget`
   - per-instance rate limiting of `n` (at most ±25% per frame, keyed by `object_id`)
   - `shadow_lod_scale` in shadow viewports
-- [ ] The range walker (11.9) draws progressive instances unmerged with their `n`. The budget override in `view_options` lifts the budget (screenshots, 11.21).
+- [x] The range walker (11.9) draws progressive instances unmerged with their `n`. The budget override in `view_options` lifts the budget (screenshots, 11.21).
 
 **Tests** (`test_progressive_lod.cpp` `[renderer][unit]`, plus one `[renderer]`):
-- [ ] The total stays under the budget for 100 random instances, and a bigger projected area gets more vertices.
-- [ ] The rate limit holds when the camera jumps.
-- [ ] Shadow viewports get `scale × n`.
-- [ ] `[renderer]`: a 1M-point progressive mesh with a budget of 100k draws 100k ± 1% vertices, counted through the debug information.
+- [x] The total stays under the budget for 100 random instances, and a bigger projected area gets more vertices.
+- [x] The rate limit holds when the camera jumps.
+- [x] Shadow viewports get `scale × n`.
+- [x] `[renderer]`: a 1M-point progressive mesh with a budget of 100k draws 100k ± 1% vertices, counted through the debug information.
 
 ## 11.19 Picking
 11 §5.1.
