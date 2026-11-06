@@ -530,6 +530,35 @@ flowchart LR
 ## 11.11 Clustered lighting, deferred lighting, sky, IBL
 11 §6, passes 3, 8, 9.
 
+*Status: implemented and compiled in Debug and Release, tests written but not run yet.* Windows Application Control blocks the test binary, so the items below stay unchecked until the tests pass. As implemented:
+- **Sky model: Preetham, not Hosek–Wilkie.** Hosek–Wilkie needs its authors' coefficient tables vendored, and their licence checked first (Open points). `sky_model.h/.cpp` computes Preetham's Perez coefficients and zenith values on the CPU. `sky.hlsli` evaluates them for both the bake and the sky pass. The interface (`gpu::sky_constants`, `sky_radiance`) doesn't depend on the model, so Hosek–Wilkie can replace it later.
+  - The turbidity is clamped to 2–10.
+  - A sun below the horizon is evaluated at the horizon, and the sky fades out by 0.1 below it.
+  - Below the horizon the sky is a uniform ground of albedo 0.3, lit by the sun and the zenith.
+  - There's no sun disc: the sun is lit analytically, and a disc would add it to the IBL twice.
+- **Light units.** The snapshot already carries candela for point and spot lights (08 §6.1), so the renderer has no Φ / 4π conversion. A point or spot light with range 0 ("unlimited") gets `light_cutoff_range`, where its illuminance falls to 0.01 lux, so the clusters can bound it. Only the first directional light (the sun) is lit; others are ignored (one sun, 11 §6.2).
+- **Clusters** (`clusters.hlsl`, `clusters.h/.cpp` for the CPU mirror). The grid constants are in `shared_types.hlsli`.
+  - `cluster_build` writes the bounds into the view's history (`view_history::cluster_bounds`). It runs only when the unjittered projection differs from `cluster_projection`, and never for a view that writes nothing.
+  - `light_cull` uses one thread per cluster and walks the lights in order, so the lists are reproducible. Each cluster has a fixed slot of 256 indices in `light_indices`, at `256 · index`. The `cluster_lights` entry `{ offset, count, dropped }` replaces an overflow counter. Reading `dropped` back for the debug information comes with 11.20's readback.
+  - Tiles are skipped by the `depth_mips` level whose texels fit in a tile.
+  - Spot lights also get Wronski's cone test against the cluster's bounding sphere.
+- **Deferred lighting** (`deferred_lighting.hlsl`, `lighting.hlsli`, `brdf.hlsli`, `environment.hlsli`):
+  - Pixels with nothing drawn are 0, and the sky pass fills them.
+  - The image-based diffuse is weighted by `(1 − specular albedo)(1 − metallic)`, so a white furnace is exact.
+  - Material AO applies to the ambient term, with Lagarde's specular occlusion. `ambient_occlusion` (GTAO) and `shadow_map` are 0 until 11.13 and 11.12.
+  - The pre-exposure is `manual_exposure(exposure.ev100)` in both exposure modes until 11.16.
+  - The Toksvig term widens the G-buffer's roughness where the normal map's texel is shorter than 1.
+- **Environment** (`environment_baker.h/.cpp`, `environment_bake.hlsl`):
+  - The sky cubemap is 256² and the prefiltered cubemap is 128² with 6 mips (64 GGX samples per texel). SH9 is projected from a 32² grid per face. The BRDF LUT is 128² with 512 samples.
+  - The bake passes write imported textures, which are never culled. They are only added on a frame where some view writes an output or a capture. A frame that fails before running forgets its bake.
+  - `scene_renderer::set_environment_override` replaces the sky with a uniform radiance, for the furnace and the analytic tests.
+- **Sky** (`sky.hlsl`) is a fullscreen triangle at depth 0, with depth test EQUAL. It declares a depth write for the same reason the G-buffer does.
+- **Placeholder tonemap** (`tonemap_preview.hlsl`, the "tonemap" pass) replaces 11.10's G-buffer preview. It computes `sRGB(x / (1 + x))` of `hdr_color`, and 11.16 replaces it. `background_color` is gone.
+- **Captures:** `hdr_color` is a texture capture. `view_options::buffer_captures` copies `cluster_lights` and `light_indices` into caller buffers, for example the fixture's `make_readback_buffer`.
+- **Tests** are in `test_renderer_lighting.cpp`. The 11.2 frame tests now check the sky.
+  - The sun test compares with the shader's full BRDF within 2%, and with the Lambert formula within 4%. At this angle the GGX lobe and the `(1 − F)` weight of the diffuse differ from pure Lambert by about 3%.
+  - The cluster test reads `cluster_lights` and `light_indices` back by buffer capture. At 128 × 72 each tile is exactly one `depth_mips` mip 3 texel, so the CPU reproduces the depth skip from `linear_depth`.
+
 - [ ] `brdf.hlsli` per 11 §6.1: GGX `D`, height-correlated Smith `V`, Schlick `F`, Lambert diffuse with `(1 − F)(1 − metallic)`, roughness ≥ 0.045, and the Toksvig term from the normal map's mips.
 - [ ] Lights per 11 §6.2: directional illuminance in lux, point luminous power in lm converted to intensity (`Φ / 4π`), the windowed inverse-square falloff, and spot angular attenuation.
 - [ ] `cluster_build` and `light_cull` on async compute (`compute_queue_hint::async_compute`):
@@ -769,7 +798,7 @@ flowchart LR
 - **Arena split.** `geometry.arena_mib` is one number, but there are two buffers. Proposed: 80% vertices, 20% indices, with a log line when either fills first. Alternative: one buffer holding both as raw ranges, which avoids the split; the index buffer view can point anywhere in a raw buffer. *Done in 11.3: 80% / 20%. The residency warning names the buffer that filled, its use and its largest free block.*
 - **Selection mask.** 11 §10.5 describes "a stencil-like mask written by the selected instances". A stencil bit would need stencil in the depth format (D32_S8) and the new `set_stencil_reference`. An R8 extra target in the passes that draw selected instances needs no RHI change. Recommended: the R8 target, written only on frames with a selection, the same way as picking. In that case `set_stencil_reference` and `clear_depth_stencil` stay unused and can be left out of 11.9. *11.9 follows the recommendation: the RHI is unchanged, and both stencil uses fail a debug check in the walker.*
 - **Pick and inspector results.** How results reach 12: a `take_pick_results()` poll on the frame chain, or a sender completed per request. Recommended: the poll. The frame chain posts results to the GUI with the rest of its per-frame state.
-- **Hosek–Wilkie data.** The model's published coefficient tables (from the authors' reference implementation, under a BSD-style licence) need to be vendored, either as a header under `apps/visualizer/rendering/third_party/` or in `external/`. Check the licence first. Alternative: Preetham, which is simpler, analytic and lower quality.
+- **Hosek–Wilkie data.** The model's published coefficient tables (from the authors' reference implementation, under a BSD-style licence) need to be vendored, either as a header under `apps/visualizer/rendering/third_party/` or in `external/`. Check the licence first. Alternative: Preetham, which is simpler, analytic and lower quality. *11.11 uses Preetham for now; vendoring Hosek–Wilkie only replaces `sky_model.cpp` and `sky.hlsli`.*
 - **Blue-noise texture.** The dithering and possibly GTAO want a 64² blue-noise texture. Either generate one offline (void-and-cluster, a `dt` command) or vendor a CC0 one.
 - **Point and spot shadows.** These are out of iteration 1 (11 §6.2). Nothing to do; it's listed so 11.11 doesn't grow them.
 - **Reference GPU.** 11 §15's targets are for an RTX 3060-class GPU. Record which machine the numbers come from; CI runs on WARP and doesn't check them.

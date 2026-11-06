@@ -1,9 +1,11 @@
-// Whole renderer frames (docs/tasks/11-renderer.md §11.2): the background, several views, views without output,
+// Whole renderer frames (docs/tasks/11-renderer.md §11.2): the sky, several views, views without output,
 // invalid views, the view history store, and the renderer's teardown. On the renderer fixture, with the debug layer and
 // GPU-based validation: the RHI capture fails a test on any validation message.
 
 #include "helpers/renderer_fixture.h"
+#include "rendering/passes/lighting_passes.h"
 #include "rendering/scene_renderer.h"
+#include "rendering/sky_model.h"
 #include "rendering/view.h"
 #include "rendering/view_history.h"
 
@@ -13,16 +15,19 @@
 #include "avis/rhi/d3d12/lifetime_manager.h"
 #include "avis/rhi/d3d12/resource_manager.h"
 
+#include <Eigen/Geometry>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <string_view>
 #include <vector>
 
 using namespace avis;
 using namespace avis::visualizer::rendering;
-using avis::tests::background_rgba8;
 using avis::tests::renderer_fixture;
 
 namespace
@@ -34,20 +39,71 @@ namespace
         const auto found = std::ranges::find(information.graph->passes, name, &graphics::pass_debug_information::name);
         return found == information.graph->passes.end() ? nullptr : &*found;
     }
+
+    // The placeholder tonemap of a pre-exposed radiance (tonemap_preview.hlsl): x / (1 + x), then sRGB, in RGBA8
+    int tonemapped(const double value)
+    {
+        const double mapped = std::clamp(value / (1.0 + value), 0.0, 1.0);
+        const double encoded = mapped <= 0.0031308 ? mapped * 12.92 : 1.055 * std::pow(mapped, 1.0 / 2.4) - 0.055;
+        return static_cast<int>(std::lround(encoded * 255.0));
+    }
+
+    // Whether every pixel of an image is the same
+    bool uniform(const tests::rgba8_image& image)
+    {
+        return image.count_different(image.at(0, 0)) == 0;
+    }
 } // namespace
 
-TEST_CASE_METHOD(renderer_fixture, "an empty snapshot with a sun renders the background", "[renderer]")
+TEST_CASE_METHOD(renderer_fixture, "an empty snapshot with a sun renders the sky", "[renderer]")
 {
-    // Until the sky exists (11.11), the background is background_color
     add_sun({ 1.0f, -1.0f, -1.0f });
     publish();
 
-    const std::vector views{ view() };
+    // A camera looking at the horizon along world +X (Z up): view −Z → +X, view +Y → +Z, view +X → −Y
+    visualizer::rendering::view_description horizon = view();
+    horizon.options.taa = false;
+    Eigen::Matrix3f rotation;
+    rotation.col(0) = -Eigen::Vector3f::UnitY();
+    rotation.col(1) = Eigen::Vector3f::UnitZ();
+    rotation.col(2) = -Eigen::Vector3f::UnitX();
+    horizon.camera.world_from_view.linear() = rotation;
+
+    const std::vector views{ horizon };
     const std::vector images = render_and_read(views);
     REQUIRE(images.size() == 1);
     CHECK(images[0].width == output_size.width);
     CHECK(images[0].height == output_size.height);
-    CHECK(images[0].count_different(background_rgba8) == 0);
+
+    // Every pixel is the sky model in its direction, pre-exposed with the manual EV100, through the placeholder
+    // tonemap. Pixels on the horizon may fall on either side of it.
+    const gpu::sky_constants sky = make_sky_constants({ .settings = world.environment() });
+    const float exposure = manual_exposure(settings.exposure.ev100);
+    const float aspect = static_cast<float>(output_size.width) / static_cast<float>(output_size.height);
+    const float scale = std::tan(0.5f * horizon.camera.vertical_field_of_view);
+    std::size_t different = 0;
+    for (std::uint32_t y = 0; y < output_size.height; ++y)
+    {
+        for (std::uint32_t x = 0; x < output_size.width; ++x)
+        {
+            const float ndc_x = (static_cast<float>(x) + 0.5f) / static_cast<float>(output_size.width) * 2.0f - 1.0f;
+            const float ndc_y = 1.0f - (static_cast<float>(y) + 0.5f) / static_cast<float>(output_size.height) * 2.0f;
+            const Eigen::Vector3f direction =
+                (rotation * Eigen::Vector3f{ ndc_x * scale * aspect, ndc_y * scale, -1.0f }).normalized();
+            const Eigen::Vector3f radiance = sky_radiance(sky, direction) * exposure;
+            const tests::rgba8 pixel = images[0].at(x, y);
+            for (int channel = 0; channel < 3; ++channel)
+            {
+                if (std::abs(pixel[channel] - tonemapped(radiance[channel])) > 2)
+                {
+                    ++different;
+                    break;
+                }
+            }
+        }
+    }
+    CHECK(different <= output_size.width);
+    CHECK_FALSE(uniform(images[0])); // sky above, ground below
 
     const graphics::pass_debug_information* present = find_pass(*this, "main/present_to_shared");
     REQUIRE(present != nullptr);
@@ -70,8 +126,10 @@ TEST_CASE_METHOD(renderer_fixture, "two views of different sizes render in one f
     CHECK(images[0].height == 72);
     CHECK(images[1].width == 64);
     CHECK(images[1].height == 36);
-    CHECK(images[0].count_different(background_rgba8) == 0);
-    CHECK(images[1].count_different(background_rgba8) == 0);
+    // Both cameras look straight down at the ground, which is uniform
+    CHECK(uniform(images[0]));
+    CHECK(uniform(images[1]));
+    CHECK(images[0].at(0, 0) == images[1].at(0, 0));
 
     CHECK(find_pass(*this, "main/present_to_shared") != nullptr);
     CHECK(find_pass(*this, "top/present_to_shared") != nullptr);
@@ -151,7 +209,7 @@ TEST_CASE_METHOD(renderer_fixture, "invalid views fail the frame and submit noth
 
     // The next frame renders
     const std::vector valid{ view("main") };
-    CHECK(render_and_read(valid)[0].count_different(background_rgba8) == 0);
+    CHECK(uniform(render_and_read(valid)[0]));
 }
 
 TEST_CASE_METHOD(renderer_fixture, "view histories ping-pong, reset, resize and expire", "[renderer]")

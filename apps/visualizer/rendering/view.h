@@ -61,12 +61,21 @@ namespace avis::visualizer::rendering
     // A copy of one of the view's textures into a caller's texture at the end of the view's frame, for tests and tools
     // (docs/tasks/11-renderer.md §11.10). The texture must have the resource's format and the mip's size, allow
     // copy_destination, and be in `common`, where the frame leaves it. Resources: depth, linear_depth, depth_mips,
-    // gbuffer_albedo, gbuffer_normal, gbuffer_material, gbuffer_emissive, velocity, ldr_color.
+    // gbuffer_albedo, gbuffer_normal, gbuffer_material, gbuffer_emissive, velocity, hdr_color (11.11), ldr_color.
     struct resource_capture
     {
         std::string resource;
         std::uint32_t mip = 0;
         rhi::texture_handle texture;
+    };
+
+    // The same for one of the view's buffers (docs/tasks/11-renderer.md §11.11), copied whole into the start of
+    // `buffer`, which must be at least as large and allow copy_destination (a readback buffer can be read once the
+    // frame completes). Resources: cluster_lights, light_indices.
+    struct buffer_capture
+    {
+        std::string resource;
+        rhi::buffer_handle buffer;
     };
 
     struct view_options
@@ -77,6 +86,7 @@ namespace avis::visualizer::rendering
         std::optional<pick_request> pick;
         std::optional<std::uint64_t> progressive_vertex_budget; // replaces render.progressive.vertex_budget (11 §9.3)
         std::vector<resource_capture> captures;
+        std::vector<buffer_capture> buffer_captures;
     };
 
     struct view_description

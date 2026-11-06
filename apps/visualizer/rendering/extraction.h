@@ -10,6 +10,7 @@
 //   3. Previous transforms: the world each object_id was drawn with in the previous rendered frame, kept in
 //      extraction_state. They are not the previous tick's transforms.
 //   4. Lights: light_data[] from the snapshot's lights, at most maximum_lights; the first directional one is the sun.
+//      A point or spot light without a range (0) gets light_cutoff_range, so the light clusters can bound it (11.11).
 //
 // CPU only: residency is reached through extraction_lookup, so the tests run it on hand-built snapshots.
 
@@ -32,6 +33,13 @@ namespace avis::visualizer::rendering
 {
     // 11 §6.2: lights past this are dropped with a warning
     inline constexpr std::size_t maximum_lights = 4096;
+
+    // The illuminance (lux) below which a light without a range stops: its range is sqrt(I / this) (11.11)
+    inline constexpr float light_cutoff_illuminance = 0.01f;
+
+    // The range of a point or spot light of luminous intensity `intensity` (cd, the brightest colour channel's)
+    // without a range of its own: where its illuminance falls to light_cutoff_illuminance
+    float light_cutoff_range(float intensity) noexcept;
 
     // Where the frame sits between the snapshot's two ticks (03 §5)
     struct frame_interpolation

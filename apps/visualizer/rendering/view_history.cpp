@@ -6,6 +6,8 @@
 #include <format>
 #include <utility>
 
+#include "shared_types.hlsli"
+
 namespace avis::visualizer::rendering
 {
     view_history_store::view_history_store(const rhi::resources resources) noexcept : resources_{ resources } {}
@@ -77,6 +79,12 @@ namespace avis::visualizer::rendering
         return found == histories_.end() ? nullptr : &found->second;
     }
 
+    view_history* view_history_store::find(const std::string_view name) noexcept
+    {
+        const auto found = histories_.find(name);
+        return found == histories_.end() ? nullptr : &found->second;
+    }
+
     result<void> view_history_store::create_resources(
         const std::string_view name, const graphics::texture_extent size, view_history& history)
     {
@@ -121,6 +129,19 @@ namespace avis::visualizer::rendering
             return std::unexpected{ std::move(exposure).error() };
         }
         history.exposure = *exposure;
+
+        const std::string clusters_name = std::format("{}/cluster_bounds", name);
+        auto clusters = resources_.create_buffer(
+            { .size = std::uint64_t{ gpu::cluster_count } * sizeof(gpu::cluster_bounds),
+              .structure_stride = sizeof(gpu::cluster_bounds),
+              .usage = rhi::buffer_usage::shader_resource | rhi::buffer_usage::unordered_access,
+              .memory = rhi::memory_type::gpu_only,
+              .debug_name = clusters_name });
+        if (!clusters)
+        {
+            return std::unexpected{ std::move(clusters).error() };
+        }
+        history.cluster_bounds = *clusters;
         return {};
     }
 
@@ -147,5 +168,11 @@ namespace avis::visualizer::rendering
             resources_.destroy(history.exposure);
             history.exposure = {};
         }
+        if (history.cluster_bounds.is_valid())
+        {
+            resources_.destroy(history.cluster_bounds);
+            history.cluster_bounds = {};
+        }
+        history.cluster_projection.reset();
     }
 } // namespace avis::visualizer::rendering

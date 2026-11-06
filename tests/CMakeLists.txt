@@ -136,6 +136,7 @@ target_sources(AVIS_TESTS
 		visualizer/rendering/test_renderer_passes.cpp
 		visualizer/rendering/test_render_settings.cpp
 		visualizer/rendering/test_renderer_frames.cpp
+		visualizer/rendering/test_renderer_lighting.cpp
 		visualizer/rendering/test_renderer_materials.cpp
 		visualizer/rendering/test_renderer_shaders.cpp
 		visualizer/rendering/test_residency_cache.cpp

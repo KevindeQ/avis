@@ -461,7 +461,7 @@ That's 20 bytes per pixel plus 4 for depth. On frames where the user clicked the
 | Type | Parameters | Notes |
 |---|---|---|
 | Directional (sun) | direction, illuminance (lux), colour | One per scene, casts CSM shadows |
-| Point | position, luminous power (lm), range, colour | Inverse-square falloff with smooth window `(1 − (d/r)^4)^2` |
+| Point | position, luminous intensity (cd, the snapshot's unit), range, colour | Inverse-square falloff with smooth window `(1 − (d/r)^4)^2`. A range of 0 becomes the distance where the illuminance falls to 0.01 lux |
 | Spot | + direction, inner/outer angles | Same falloff, angular attenuation |
 
 Point and spot lights don't cast shadows in iteration 1. Limits: 4,096 lights per scene, 256 per cluster.
@@ -472,7 +472,7 @@ Point and spot lights don't cast shadows in iteration 1. Limits: 4,096 lights pe
 - `light_cull` tests every light's bounding sphere or cone against each cluster AABB, appending into `light_index_list` (a compact per-cluster offset/count + global index buffer). Tiles with no geometry are skipped using min/max depth from `depth_mips`.
 
 ### 6.4 Image-based / ambient lighting
-- A **procedural sky** (Hosek–Wilkie analytic model) driven by the snapshot's `environment` (sun azimuth and elevation).
+- A **procedural sky** (Hosek–Wilkie analytic model) driven by the snapshot's `environment` (sun azimuth and elevation). *As implemented* (task 11.11): the Preetham model until the Hosek–Wilkie tables are vendored, behind the same `sky_constants` interface.
 - When the environment changes, a compute pass bakes the sky into a 256² cubemap, a **prefiltered specular** cubemap (GGX, 6 mips) and **SH9 irradiance**. A split-sum **BRDF LUT** (RG16F 128²) is generated once at startup.
 - Ambient = `irradiance(N) · albedo · diffuse_ao + prefiltered(R, roughness) · (F0·A + B) · specular_ao`. `diffuse_ao = min(gtao, material_ao)`, and the specular occlusion is derived from GTAO (Lagarde's approximation).
 

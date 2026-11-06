@@ -248,10 +248,9 @@ TEST_CASE_METHOD(
     CHECK(std::abs(face_normal.x()) < 1e-3f);
     CHECK(std::abs(face_normal.y()) < 1e-3f);
 
-    // The placeholder tonemap shows the default white material over the background
+    // The lit cube stands out from the ground of the default environment around it (11.11)
     REQUIRE(images.size() == 1);
-    CHECK(images[0].at(centre_x, centre_y) == avis::tests::rgba8{ 255, 255, 255, 255 });
-    CHECK(images[0].at(0, 0) == avis::tests::background_rgba8);
+    CHECK(images[0].at(centre_x, centre_y) != images[0].at(0, 0));
 }
 
 TEST_CASE_METHOD(

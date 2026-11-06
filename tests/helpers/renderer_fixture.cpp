@@ -187,6 +187,10 @@ namespace avis::tests
         {
             resources.destroy(texture);
         }
+        for (const rhi::buffer_handle buffer : buffers_)
+        {
+            resources.destroy(buffer);
+        }
         for (const scene::mesh_handle mesh : meshes_)
         {
             assets.release(mesh);
@@ -334,6 +338,24 @@ namespace avis::tests
         return add_drawn("unlit quad", at(position), build(std::move(builder)), material);
     }
 
+    scene::entity renderer_fixture::add_lit_quad(
+        const Eigen::Vector3f& position,
+        const float width,
+        const float height,
+        const scene::material_description& material)
+    {
+        scene::mesh_builder builder{ scene::mesh_topology::triangles };
+        std::uint32_t first_vertex = 0;
+        add_quad(
+            builder,
+            first_vertex,
+            { -0.5f * width, -0.5f * height, 0.0f },
+            { width, 0.0f, 0.0f },
+            { 0.0f, height, 0.0f },
+            Eigen::Vector3f::UnitZ());
+        return add_drawn("lit quad", at(position), build(std::move(builder)), material);
+    }
+
     scene::entity renderer_fixture::add_mesh(
         const std::string& name,
         const Eigen::Vector3f& position,
@@ -367,6 +389,23 @@ namespace avis::tests
         REQUIRE(texture.has_value());
         outputs_.push_back(*texture);
         return *texture;
+    }
+
+    rhi::buffer_handle renderer_fixture::make_readback_buffer(const std::uint64_t size)
+    {
+        auto buffer = rhi::resources{ *graphics.hardware_interface }.create_buffer(
+            { .size = size,
+              .usage = rhi::buffer_usage::copy_destination,
+              .memory = rhi::memory_type::readback,
+              .debug_name = "renderer test buffer capture" });
+        REQUIRE(buffer.has_value());
+        buffers_.push_back(*buffer);
+        return *buffer;
+    }
+
+    std::span<const std::byte> renderer_fixture::mapped_bytes(const rhi::buffer_handle buffer)
+    {
+        return rhi::resources{ *graphics.hardware_interface }.mapped_bytes(buffer);
     }
 
     rhi::texture_handle renderer_fixture::make_texture(const rhi::format format, const graphics::texture_extent size)

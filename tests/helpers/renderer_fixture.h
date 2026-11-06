@@ -53,9 +53,6 @@ namespace avis::tests
         std::size_t count_different(rgba8 value) const;
     };
 
-    // visualizer::rendering::background_color in RGBA8
-    inline constexpr rgba8 background_rgba8{ 51, 102, 153, 255 };
-
     // The defaults of 11 §14, with a 16 MiB geometry arena: the default 768 MiB is sized for the Visualizer's
     // geometry budget, and the tests' scenes are small
     inline visualizer::rendering::render_settings test_render_settings()
@@ -95,6 +92,9 @@ namespace avis::tests
         scene::entity add_point_light(const Eigen::Vector3f& position, float intensity, float range);
         // A width × height quad in the XY plane, facing +Z, with an unlit material of `color` (linear)
         scene::entity add_unlit_quad(const Eigen::Vector3f& position, float width, float height, scene::color color);
+        // The same quad with any material
+        scene::entity add_lit_quad(
+            const Eigen::Vector3f& position, float width, float height, const scene::material_description& material);
         // Any mesh at `position`; its bounds are computed by the asset cache
         scene::entity add_mesh(
             const std::string& name,
@@ -112,6 +112,10 @@ namespace avis::tests
         // A texture of `format` that copies can write and read, for resource captures (a depth format also allows
         // depth_stencil); the fixture destroys it
         rhi::texture_handle make_texture(rhi::format format, graphics::texture_extent size);
+        // A readback buffer of `size` bytes that copies can write, for buffer captures; the fixture destroys it. Its
+        // bytes are readable once the frames that wrote it have completed (render_and_read waits for them).
+        rhi::buffer_handle make_readback_buffer(std::uint64_t size);
+        std::span<const std::byte> mapped_bytes(rhi::buffer_handle buffer);
 
         // A view named `name` of the output's size, at the origin looking down −Z, writing `output` (the fixture's
         // output when none is given)
@@ -168,6 +172,7 @@ namespace avis::tests
         scene::entity add_entity(const std::string& name, const scene::transform& local);
 
         std::vector<rhi::texture_handle> outputs_;
+        std::vector<rhi::buffer_handle> buffers_;
         std::vector<scene::mesh_handle> meshes_;
         std::vector<scene::material_handle> materials_;
         scene::object_id next_id_ = 1;

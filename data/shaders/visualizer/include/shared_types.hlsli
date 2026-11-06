@@ -108,6 +108,31 @@ AVIS_SHARED_CONSTANT(uint, light_kind_directional, 0);
 AVIS_SHARED_CONSTANT(uint, light_kind_point, 1);
 AVIS_SHARED_CONSTANT(uint, light_kind_spot, 2);
 
+// "No light": deferred_lighting_constants::sun when the frame has no sun
+AVIS_SHARED_CONSTANT(uint, no_light, 0xFFFFFFFFu);
+
+// The light cluster grid (11 §6.3): 16 × 9 screen tiles × 24 exponential depth slices from cluster_near to
+// cluster_far (metres of linear depth). Cluster (x, y, z) is index x + 16·(y + 9·z). Each cluster holds at most
+// cluster_maximum_lights lights, at cluster_maximum_lights · index in the light index list.
+AVIS_SHARED_CONSTANT(uint, cluster_count_x, 16);
+AVIS_SHARED_CONSTANT(uint, cluster_count_y, 9);
+AVIS_SHARED_CONSTANT(uint, cluster_count_z, 24);
+AVIS_SHARED_CONSTANT(uint, cluster_count, 16 * 9 * 24);
+AVIS_SHARED_CONSTANT(uint, cluster_maximum_lights, 256);
+AVIS_SHARED_CONSTANT(float, cluster_near, 0.1f);
+AVIS_SHARED_CONSTANT(float, cluster_far, 2000.0f);
+
+// sky_constants::mode
+AVIS_SHARED_CONSTANT(uint, sky_mode_model, 0); // the analytic sky of the environment
+AVIS_SHARED_CONSTANT(uint, sky_mode_uniform, 1); // uniform_radiance in every direction (tests, tools)
+
+// The baked environment (11 §6.4)
+AVIS_SHARED_CONSTANT(uint, environment_sky_size, 256); // texels per face of the sky cubemap
+AVIS_SHARED_CONSTANT(uint, environment_prefiltered_size, 128); // texels per face of the prefiltered cubemap's mip 0
+AVIS_SHARED_CONSTANT(uint, environment_prefiltered_mips, 6); // mip m is for roughness m / 5
+AVIS_SHARED_CONSTANT(uint, environment_irradiance_coefficients, 9); // SH9, one float4 (RGB) each
+AVIS_SHARED_CONSTANT(uint, brdf_lut_size, 128); // texel (i, j) is NoV = (i + 0.5) / 128, roughness = (j + 0.5) / 128
+
 // ---- Structures ----
 
 // One material slot of the renderer's material buffer (11 §3.3): glTF 2.0 metallic-roughness plus the generic extensions
@@ -228,6 +253,100 @@ struct scene_pass_constants
     uint padding2;
 };
 
+// One cluster's view-space bounds (11 §6.3), written by cluster_build and kept in the view's history
+struct cluster_bounds
+{
+    float3 minimum;
+    float padding0;
+    float3 maximum;
+    float padding1;
+};
+
+// One cluster's lights, written by light_cull: indices into the frame's light_data[] at offset .. offset + count - 1
+// of the light index list; `dropped` lights touched the cluster past cluster_maximum_lights
+struct cluster_lights
+{
+    uint offset;
+    uint count;
+    uint dropped;
+    uint padding0;
+};
+
+// The analytic sky (11 §6.4), evaluated by sky.hlsli. The model is Preetham et al. 1999 (the task's Open point
+// "Hosek-Wilkie data"): each of luminance Y and chromaticity x, y is zenith · F(θ, γ) / F(0, θs) with the Perez function
+// F(θ, γ) = (1 + A·exp(B / cos θ)) · (1 + C·exp(D·γ) + E·cos²γ). zenith holds zenith / F(0, θs) per channel; Y is in
+// cd/m². Below the horizon the radiance is ground_radiance. World space is Z up.
+struct sky_constants
+{
+    float3 perez_a; // per channel Y, x, y
+    uint mode; // sky_mode_*
+    float3 perez_b;
+    float luminance_scale; // multiplies Y: fades the sky out as the sun sets
+    float3 perez_c;
+    float padding0;
+    float3 perez_d;
+    float padding1;
+    float3 perez_e;
+    float padding2;
+    float3 zenith; // Y (cd/m²), x, y, each divided by F(0, θs)
+    float padding3;
+    float3 sun_position; // unit vector towards the sun
+    float padding4;
+    float3 ground_radiance; // linear RGB, cd/m²
+    float padding5;
+    float3 uniform_radiance; // sky_mode_uniform: linear RGB, cd/m²
+    float padding6;
+};
+
+// The pass constants (b1) of cluster_build: the cluster bounds of one projection
+struct cluster_build_constants
+{
+    float4x4 projection_inverse; // view from clip, of the unjittered projection
+    uint bounds; // UAV, RWStructuredBuffer<cluster_bounds>
+    uint padding0;
+    uint2 size; // the view's size, pixels
+    uint2 tile_size; // pixels per cluster tile
+    uint2 padding1;
+};
+
+// The pass constants (b1) of deferred_lighting (11 §6.5); bindless indices of the G-buffer, the clusters and the baked
+// environment
+struct deferred_lighting_constants
+{
+    uint albedo; // gbuffer_albedo SRV
+    uint normal; // gbuffer_normal SRV
+    uint material; // gbuffer_material SRV
+    uint emissive; // gbuffer_emissive SRV
+    uint depth; // SRV of the depth buffer, read as R32F
+    uint linear_depth; // SRV, R32F
+    uint hdr_color; // UAV, RGBA16F
+    uint lights; // StructuredBuffer<light_data>
+    uint cluster_lights; // StructuredBuffer<cluster_lights>
+    uint light_indices; // StructuredBuffer<uint>
+    uint sun; // index of the sun in lights, or no_light
+    uint ambient_occlusion; // SRV of the AO texture (R8); 0 until GTAO exists (11.13): no occlusion
+    uint irradiance; // StructuredBuffer<float4>, environment_irradiance_coefficients SH9 coefficients
+    uint prefiltered; // TextureCube SRV
+    uint brdf_lut; // Texture2D SRV, RG16F
+    uint shadow_map; // reserved for the cascades (11.12); 0: everything is lit
+    uint2 size; // pixels
+    uint2 tile_size; // pixels per cluster tile
+    float exposure; // pre-exposure: hdr_color = radiance · exposure
+    float ambient_intensity; // scales the image-based lighting
+    uint padding0;
+    uint padding1;
+};
+
+// The pass constants (b1) of the sky pass (11 §2.3 pass 9)
+struct sky_pass_constants
+{
+    sky_constants sky;
+    float exposure;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
 #ifdef __cplusplus
 
 static_assert(sizeof(float2) == 8 && sizeof(float3) == 12 && sizeof(float4) == 16);
@@ -319,6 +438,49 @@ static_assert(offsetof(scene_pass_constants, vertices) == 8);
 static_assert(offsetof(scene_pass_constants, indices) == 12);
 static_assert(offsetof(scene_pass_constants, materials) == 16);
 static_assert(offsetof(scene_pass_constants, line_margin) == 20);
+
+static_assert(sizeof(cluster_bounds) == 32);
+static_assert(offsetof(cluster_bounds, minimum) == 0);
+static_assert(offsetof(cluster_bounds, maximum) == 16);
+
+static_assert(sizeof(cluster_lights) == 16);
+static_assert(offsetof(cluster_lights, offset) == 0);
+static_assert(offsetof(cluster_lights, count) == 4);
+static_assert(offsetof(cluster_lights, dropped) == 8);
+
+static_assert(sizeof(sky_constants) == 144);
+static_assert(offsetof(sky_constants, perez_a) == 0);
+static_assert(offsetof(sky_constants, mode) == 12);
+static_assert(offsetof(sky_constants, perez_b) == 16);
+static_assert(offsetof(sky_constants, luminance_scale) == 28);
+static_assert(offsetof(sky_constants, perez_c) == 32);
+static_assert(offsetof(sky_constants, perez_d) == 48);
+static_assert(offsetof(sky_constants, perez_e) == 64);
+static_assert(offsetof(sky_constants, zenith) == 80);
+static_assert(offsetof(sky_constants, sun_position) == 96);
+static_assert(offsetof(sky_constants, ground_radiance) == 112);
+static_assert(offsetof(sky_constants, uniform_radiance) == 128);
+
+static_assert(sizeof(cluster_build_constants) == 96);
+static_assert(offsetof(cluster_build_constants, projection_inverse) == 0);
+static_assert(offsetof(cluster_build_constants, bounds) == 64);
+static_assert(offsetof(cluster_build_constants, size) == 72);
+static_assert(offsetof(cluster_build_constants, tile_size) == 80);
+
+static_assert(sizeof(deferred_lighting_constants) == 96);
+static_assert(offsetof(deferred_lighting_constants, albedo) == 0);
+static_assert(offsetof(deferred_lighting_constants, depth) == 16);
+static_assert(offsetof(deferred_lighting_constants, cluster_lights) == 32);
+static_assert(offsetof(deferred_lighting_constants, irradiance) == 48);
+static_assert(offsetof(deferred_lighting_constants, shadow_map) == 60);
+static_assert(offsetof(deferred_lighting_constants, size) == 64);
+static_assert(offsetof(deferred_lighting_constants, tile_size) == 72);
+static_assert(offsetof(deferred_lighting_constants, exposure) == 80);
+static_assert(offsetof(deferred_lighting_constants, ambient_intensity) == 84);
+
+static_assert(sizeof(sky_pass_constants) == 160);
+static_assert(offsetof(sky_pass_constants, sky) == 0);
+static_assert(offsetof(sky_pass_constants, exposure) == 144);
 
 } // namespace avis::visualizer::rendering::gpu
 

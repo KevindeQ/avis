@@ -10,11 +10,13 @@
 // The targets (11 §5):
 //   albedo    RGBA8_UNORM_SRGB  linear base colour (the target encodes it); A the material's ambient occlusion
 //   normal    RG16_UNORM        world-space normal, octahedral; normal-mapped when the mesh has tangents
-//   material  RGBA8_UNORM       R metallic, G roughness, B shading model (0 lit, 1 unlit), A material flags / 255
+//   material  RGBA8_UNORM       R metallic, G roughness (widened by the Toksvig term where a normal map is filtered,
+//                               11 §6.1), B shading model (0 lit, 1 unlit), A material flags / 255
 //   emissive  R11G11B10_FLOAT   emissive radiance, before exposure
 //   velocity  RG16_FLOAT        current minus previous unjittered UV (y down)
 
 #include "bindless.hlsli"
+#include "brdf.hlsli"
 #include "packing.hlsli"
 #include "scene_material.hlsli"
 #include "scene_varyings.hlsli"
@@ -59,9 +61,11 @@ float2 clip_to_uv(float4 clip)
 }
 
 // The shading normal: the interpolated one (flipped on back faces, which only double-sided materials draw), perturbed
-// by the normal texture when the mesh has tangents
-float3 shading_normal(scene_varyings input, material_data material, bool front_face)
+// by the normal texture when the mesh has tangents. `filtered_length` is the length of the mip-filtered normal texel,
+// below 1 where the normals it averages diverge (1 without a normal texture), for the Toksvig term.
+float3 shading_normal(scene_varyings input, material_data material, bool front_face, out float filtered_length)
 {
+    filtered_length = 1.0;
     float3 normal = normalize(input.normal);
     if (!front_face)
     {
@@ -76,6 +80,7 @@ float3 shading_normal(scene_varyings input, material_data material, bool front_f
                 .xyz *
                 2.0 -
             1.0;
+        filtered_length = length(texel);
         texel.xy *= material.normal_scale;
         normal = normalize(texel.x * tangent + texel.y * bitangent + texel.z * normal);
     }
@@ -109,11 +114,15 @@ gbuffer_output pixel_main(scene_varyings input, bool front_face : SV_IsFrontFace
         material.emissive_factor *
         sample_material_texture(material.emissive_texture, material.sampler_index, input.uv, float4(1.0, 1.0, 1.0, 1.0)).rgb;
 
+    float filtered_length = 1.0;
+    const float3 normal = shading_normal(input, material, front_face, filtered_length);
+    const float roughness = saturate(material.roughness_factor * metallic_roughness.g);
+
     gbuffer_output output;
     output.albedo = float4(base_color.rgb, 1.0 + material.occlusion_strength * (occlusion - 1.0));
-    output.normal = octahedral_encode(shading_normal(input, material, front_face));
+    output.normal = octahedral_encode(normal);
     output.material = float4(saturate(material.metallic_factor * metallic_roughness.b),
-                             saturate(material.roughness_factor * metallic_roughness.g),
+                             filtered_length < 1.0 ? toksvig_roughness(roughness, filtered_length) : roughness,
                              material.shading_model == shading_model_unlit ? 1.0 : 0.0,
                              (material.flags & 0xFFu) / 255.0);
     output.emissive = emissive;

@@ -91,9 +91,16 @@ namespace avis::visualizer::rendering
                 break;
             }
 
+            float range = light.range;
+            if (kind != gpu::light_kind_directional && !(range > 0.0f))
+            {
+                const scene::color& color = light.light_color;
+                range = light_cutoff_range(light.intensity * std::max({ color.red, color.green, color.blue }));
+            }
+
             return {
                 .position = to_gpu(position),
-                .range = light.range,
+                .range = range,
                 .direction = to_gpu(direction),
                 .kind = kind,
                 .color = { light.light_color.red, light.light_color.green, light.light_color.blue },
@@ -105,6 +112,11 @@ namespace avis::visualizer::rendering
             };
         }
     } // namespace
+
+    float light_cutoff_range(const float intensity) noexcept
+    {
+        return std::sqrt(std::max(intensity, 0.0f) / light_cutoff_illuminance);
+    }
 
     frame_interpolation
         interpolate(const scene::snapshot& snapshot, const std::chrono::steady_clock::time_point wall_now)

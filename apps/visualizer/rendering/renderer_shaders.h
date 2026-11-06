@@ -42,10 +42,26 @@ namespace avis::visualizer::rendering
         // linear_depth and mip 0 of depth_mips from the depth buffer, and one further mip of depth_mips (11.10)
         inline constexpr std::string_view linearize_depth = "linearize_depth.main.cs";
         inline constexpr std::string_view depth_mips = "depth_mips.main.cs";
-        // ldr_color from the G-buffer's base colour, until lighting and tonemapping exist (11.10)
-        inline constexpr std::string_view gbuffer_preview = "gbuffer_preview.main.cs";
+        // The light clusters' bounds and their lights (11.11)
+        inline constexpr std::string_view cluster_build = "clusters.build_main.cs";
+        inline constexpr std::string_view light_cull = "clusters.cull_main.cs";
+        // hdr_color from the G-buffer, the lights and the baked environment (11.11)
+        inline constexpr std::string_view deferred_lighting = "deferred_lighting.main.cs";
+        // The sky where nothing was drawn (11.11)
+        inline constexpr std::string_view sky_vertex = "sky.vertex_main.vs";
+        inline constexpr std::string_view sky_pixel = "sky.pixel_main.ps";
+        // The environment bake: the sky cubemap, the prefiltered cubemap, the SH9 irradiance, the BRDF LUT (11.11)
+        inline constexpr std::string_view environment_sky = "environment_bake.sky_main.cs";
+        inline constexpr std::string_view environment_prefilter = "environment_bake.prefilter_main.cs";
+        inline constexpr std::string_view environment_irradiance = "environment_bake.irradiance_main.cs";
+        inline constexpr std::string_view brdf_lut = "environment_bake.brdf_lut_main.cs";
+        // ldr_color from hdr_color, until exposure and tonemapping exist (11.11, 11.16)
+        inline constexpr std::string_view tonemap_preview = "tonemap_preview.main.cs";
 
-        inline constexpr std::array all{ binding_probe, generate_mips, linearize_depth, depth_mips, gbuffer_preview };
+        inline constexpr std::array all{ binding_probe, generate_mips,   linearize_depth,       depth_mips,
+                                         cluster_build, light_cull,      deferred_lighting,     sky_vertex,
+                                         sky_pixel,     environment_sky, environment_prefilter, environment_irradiance,
+                                         brdf_lut,      tonemap_preview };
     } // namespace shader_ids
 
     // Where the build deploys the shaders, relative to the executable's directory

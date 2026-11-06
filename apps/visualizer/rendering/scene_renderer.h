@@ -4,18 +4,20 @@
 // The scene renderer (docs/design/11-renderer.md): turns one scene::snapshot into an image for each view, on the
 // render graph (10). Scene-agnostic: it reads the snapshot and the views, nothing else (11 §2.1).
 //
-// Each view's frame (11 §2.3) is, so far: depth_prepass, linearize_depth with the depth_mips chain, gbuffer (11.10),
-// then a placeholder tonemap that shows the G-buffer's base colour over background_color, and present_to_shared,
-// which copies ldr_color into the view's output. The passes of 11.11 on replace the placeholder step by step. Residency
-// runs in every frame's prepare stage: the snapshot's meshes are uploaded into the geometry arena (11.3), its textures
-// into their own RHI textures and its materials into the material table (11.4). The arena and the material table are
-// imported into the graph, and the frame generates the mip chains of newly uploaded images. Extraction (11.5) then
-// builds the frame's instance and light arrays, interpolated at the frame's time, and pass 0 (upload_frame_data) copies
-// them into persistent ring-indexed buffers. Startup creates the pipeline sets the passes draw with (11.7). Each view's
-// draw list (11.8) is cut into runs before pass 0, which uploads their instance indices; the passes record their key
-// ranges with the range walker (11.9).
+// Each view's frame (11 §2.3) is, so far: depth_prepass, linearize_depth with the depth_mips chain, cluster_build and
+// light_cull on async compute, gbuffer (11.10), deferred_lighting and sky into hdr_color (11.11), then a placeholder
+// tonemap (Reinhard and sRGB, until 11.16), and present_to_shared, which copies ldr_color into the view's output.
+// Before the views, the environment baker bakes the sky cubemap, the prefiltered cubemap and the SH9 irradiance when
+// the snapshot's environment changes, and the BRDF LUT once (11 §6.4). Residency runs in every frame's prepare stage:
+// the snapshot's meshes are uploaded into the geometry arena (11.3), its textures into their own RHI textures and its
+// materials into the material table (11.4). The arena and the material table are imported into the graph, and the frame
+// generates the mip chains of newly uploaded images. Extraction (11.5) then builds the frame's instance and light
+// arrays, interpolated at the frame's time, and pass 0 (upload_frame_data) copies them into persistent ring-indexed
+// buffers. Startup creates the pipeline sets the passes draw with (11.7). Each view's draw list (11.8) is cut into runs
+// before pass 0, which uploads their instance indices; the passes record their key ranges with the range walker (11.9).
 
 #include "rendering/draw_lists.h"
+#include "rendering/environment_baker.h"
 #include "rendering/extraction.h"
 #include "rendering/frame_data.h"
 #include "rendering/geometry_arena.h"
@@ -49,6 +51,8 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
+#include <vector>
 
 namespace avis::graphics
 {
@@ -63,10 +67,6 @@ namespace avis::graphics
 
 namespace avis::visualizer::rendering
 {
-    // ldr_color where nothing was drawn, until the sky and the tonemap exist (11.11, 11.16): sRGB-encoded, exact in
-    // RGBA8 (51, 102, 153, 255)
-    inline constexpr std::array<float, 4> background_color{ 0.2f, 0.4f, 0.6f, 1.0f };
-
     // What the renderer works with; everything must outlive it. The caller owns the frame chain: it begins frames on
     // `frames`, calls gpu_profiler::prepare_frame before render, and ends the frames.
     struct renderer_dependencies
@@ -115,6 +115,7 @@ namespace avis::visualizer::rendering
         std::vector<draw_list_statistics> draw_lists; // the last frame's, one per view in view order (11.8)
         std::vector<std::size_t> draw_runs; // the runs of each of those lists (11.9)
         std::size_t instance_indices = 0; // of the last frame's runs, uploaded by pass 0
+        environment_statistics environment; // the environment bakes (11.11)
     };
 
     class scene_renderer
@@ -156,7 +157,7 @@ namespace avis::visualizer::rendering
             build_failure_ = build_frame(frame, snapshot, views, wall_now);
             if (build_failure_)
             {
-                frame_data_->forget(); // nothing was copied: a later frame mustn't reuse this frame's slots
+                forget_frame(); // nothing was copied or baked: a later frame mustn't rely on this one
             }
             // A frame that fails to execute didn't copy its arrays either
             auto sender = stdexec::just() |
@@ -172,13 +173,13 @@ namespace avis::visualizer::rendering
                           stdexec::let_error(
                               [this]<typename Error>(Error&& error) noexcept
                               {
-                                  frame_data_->forget();
+                                  forget_frame();
                                   return stdexec::just_error(std::forward<Error>(error));
                               }) |
                           stdexec::let_stopped(
                               [this]() noexcept
                               {
-                                  frame_data_->forget();
+                                  forget_frame();
                                   return stdexec::just_stopped();
                               }) |
                           threading::into_internal_error();
@@ -195,6 +196,19 @@ namespace avis::visualizer::rendering
         const render_settings& settings() const noexcept
         {
             return settings_;
+        }
+
+        // For tests and tools: replaces the snapshot's environment with a uniform radiance (linear RGB, cd/m²) in every
+        // direction, for the image-based lighting and the sky; none restores the sky. Takes effect with the next frame.
+        void set_environment_override(std::optional<Eigen::Vector3f> uniform_radiance)
+        {
+            environment_override_ = uniform_radiance;
+        }
+
+        // For tests: the baked environment (11 §6.4)
+        const environment_baker& environment() const noexcept
+        {
+            return *environment_;
         }
 
         // For tests: the view histories (10 §8)
@@ -287,7 +301,12 @@ namespace avis::visualizer::rendering
             rhi::compute_pipeline_handle generate_mips;
             rhi::compute_pipeline_handle linearize_depth;
             rhi::compute_pipeline_handle depth_mips;
-            rhi::compute_pipeline_handle gbuffer_preview;
+            rhi::compute_pipeline_handle cluster_build;
+            rhi::compute_pipeline_handle light_cull;
+            rhi::compute_pipeline_handle deferred_lighting;
+            rhi::graphics_pipeline_handle sky;
+            rhi::compute_pipeline_handle tonemap_preview;
+            std::unique_ptr<environment_baker> environment;
             std::unique_ptr<pipeline_variant_registry> pipeline_variants;
             std::unique_ptr<geometry_arena> arena;
             std::unique_ptr<texture_residency> textures;
@@ -303,6 +322,10 @@ namespace avis::visualizer::rendering
         // The passes that generate the mip chains of this frame's texture_residency::mip_requests(), outside any view
         void add_mip_passes();
 
+        // The frame being built didn't run: its frame data slots, its environment bake and its cluster bounds are
+        // done again by the next frame
+        void forget_frame() noexcept;
+
         // The reuse shortcut's condition (11 §3.5)
         bool can_reuse_extraction(const scene::snapshot& snapshot, const frame_interpolation& interpolation) const;
 
@@ -317,6 +340,8 @@ namespace avis::visualizer::rendering
         // `index` is the view's position in the frame: its draw list
         std::optional<error>
             add_view(const graphics::frame_token& frame, const view_description& view, std::size_t index);
+        std::optional<error> add_buffer_captures(
+            const view_description& view, graphics::buffer cluster_lights, graphics::buffer light_indices);
 
         // The view's draw list (11 §4.5), in the graph's arena
         draw_list build_view_draw_list(const scene::snapshot& snapshot, const view_description& view);
@@ -330,7 +355,16 @@ namespace avis::visualizer::rendering
         rhi::compute_pipeline_handle generate_mips_pipeline_;
         rhi::compute_pipeline_handle linearize_depth_pipeline_;
         rhi::compute_pipeline_handle depth_mips_pipeline_;
-        rhi::compute_pipeline_handle gbuffer_preview_pipeline_;
+        rhi::compute_pipeline_handle cluster_build_pipeline_;
+        rhi::compute_pipeline_handle light_cull_pipeline_;
+        rhi::compute_pipeline_handle deferred_lighting_pipeline_;
+        rhi::graphics_pipeline_handle sky_pipeline_;
+        rhi::compute_pipeline_handle tonemap_preview_pipeline_;
+        std::unique_ptr<environment_baker> environment_;
+        std::optional<Eigen::Vector3f> environment_override_;
+        float ambient_intensity_ = 1.0f; // the snapshot's, for the frame being built
+        environment_resources environment_resources_; // of the frame being built
+        std::vector<std::string> rebuilt_clusters_; // the views whose cluster bounds the frame being built rebuilds
         std::unique_ptr<pipeline_variant_registry> pipeline_variants_;
         std::unique_ptr<geometry_arena> arena_;
         std::unique_ptr<residency_cache> residency_; // refers to arena_ and the upload queue

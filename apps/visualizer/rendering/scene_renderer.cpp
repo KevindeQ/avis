@@ -2,6 +2,7 @@
 
 #include "rendering/passes/depth_passes.h"
 #include "rendering/passes/gbuffer_pass.h"
+#include "rendering/passes/lighting_passes.h"
 #include "rendering/passes/scene_range_pass.h"
 #include "rendering/renderer_shaders.h"
 #include "rendering/view_constants.h"
@@ -22,6 +23,8 @@
 #include "avis/graphics/view_scope.h"
 #include "avis/log.h"
 #include "avis/rhi/formats.h"
+
+#include <Eigen/LU>
 
 #include <algorithm>
 #include <format>
@@ -86,6 +89,12 @@ namespace avis::visualizer::rendering
             graphics::texture texture;
             rhi::format format;
             std::uint32_t mips = 1;
+        };
+
+        struct buffer_capture_data
+        {
+            graphics::buffer source;
+            graphics::buffer destination;
         };
 
         result<rhi::compute_pipeline_handle> create_compute(
@@ -163,12 +172,20 @@ namespace avis::visualizer::rendering
         }
 
         persistent_state state{ .standard_signature = *standard };
+        environment_pipelines environment;
 
         const std::array computes{
             std::pair{ &state.generate_mips, shader_ids::generate_mips },
             std::pair{ &state.linearize_depth, shader_ids::linearize_depth },
             std::pair{ &state.depth_mips, shader_ids::depth_mips },
-            std::pair{ &state.gbuffer_preview, shader_ids::gbuffer_preview },
+            std::pair{ &state.cluster_build, shader_ids::cluster_build },
+            std::pair{ &state.light_cull, shader_ids::light_cull },
+            std::pair{ &state.deferred_lighting, shader_ids::deferred_lighting },
+            std::pair{ &state.tonemap_preview, shader_ids::tonemap_preview },
+            std::pair{ &environment.sky, shader_ids::environment_sky },
+            std::pair{ &environment.prefilter, shader_ids::environment_prefilter },
+            std::pair{ &environment.irradiance, shader_ids::environment_irradiance },
+            std::pair{ &environment.brdf_lut, shader_ids::brdf_lut },
         };
         for (const auto& [pipeline, id] : computes)
         {
@@ -179,6 +196,26 @@ namespace avis::visualizer::rendering
             }
             *pipeline = *created;
         }
+
+        auto sky = dependencies.pipeline_cache.get_or_create(
+            shaders,
+            graphics::graphics_pipeline_description{ .vertex_shader = graphics::make_shader_id(shader_ids::sky_vertex),
+                                                     .pixel_shader = graphics::make_shader_id(shader_ids::sky_pixel),
+                                                     .state = sky_pipeline_state(),
+                                                     .root_signature = *standard,
+                                                     .debug_name = "sky" });
+        if (!sky)
+        {
+            return std::unexpected{ std::move(sky).error() };
+        }
+        state.sky = *sky;
+
+        auto baker = environment_baker::create(dependencies.resources, environment);
+        if (!baker)
+        {
+            return std::unexpected{ std::move(baker).error() };
+        }
+        state.environment = std::move(*baker);
 
         auto pipeline_variants =
             pipeline_variant_registry::create(dependencies.pipeline_cache, dependencies.root_signatures, shaders);
@@ -230,7 +267,12 @@ namespace avis::visualizer::rendering
         generate_mips_pipeline_{ state.generate_mips },
         linearize_depth_pipeline_{ state.linearize_depth },
         depth_mips_pipeline_{ state.depth_mips },
-        gbuffer_preview_pipeline_{ state.gbuffer_preview },
+        cluster_build_pipeline_{ state.cluster_build },
+        light_cull_pipeline_{ state.light_cull },
+        deferred_lighting_pipeline_{ state.deferred_lighting },
+        sky_pipeline_{ state.sky },
+        tonemap_preview_pipeline_{ state.tonemap_preview },
+        environment_{ std::move(state.environment) },
         pipeline_variants_{ std::move(state.pipeline_variants) },
         arena_{ std::move(state.arena) },
         residency_{ std::make_unique<residency_cache>(*arena_, dependencies.uploads, dependencies.synchronization) },
@@ -300,7 +342,22 @@ namespace avis::visualizer::rendering
                 return runs;
             }(),
             .instance_indices = instance_indices_.size(),
+            .environment = environment_->statistics(),
         };
+    }
+
+    void scene_renderer::forget_frame() noexcept
+    {
+        frame_data_->forget();
+        environment_->forget();
+        for (const std::string& name : rebuilt_clusters_)
+        {
+            if (view_history* history = histories_.find(name))
+            {
+                history->cluster_projection.reset();
+            }
+        }
+        rebuilt_clusters_.clear();
     }
 
     bool scene_renderer::can_reuse_extraction(
@@ -327,6 +384,7 @@ namespace avis::visualizer::rendering
         const std::chrono::steady_clock::time_point wall_now)
     {
         graph_.reset();
+        rebuilt_clusters_.clear();
         draw_lists_.clear(); // they were in the arena
         prepared_draw_lists_.clear();
         instance_indices_.clear();
@@ -432,6 +490,18 @@ namespace avis::visualizer::rendering
                 wait_for(rhi::latest(materials_->frame_ready_after(), textures_->frame_ready_after()))),
         };
         add_mip_passes();
+
+        // The baked environment (11 §6.4). The bake passes write imported textures, which the graph never culls: they
+        // are only added when a view writes something.
+        const bool any_view_writes = std::ranges::any_of(
+            views,
+            [](const view_description& view)
+            { return view.output || !view.options.captures.empty() || !view.options.buffer_captures.empty(); });
+        environment_resources_ = environment_->add_passes(
+            graph_,
+            environment_description{ .settings = snapshot.environment, .uniform_radiance = environment_override_ },
+            any_view_writes);
+        ambient_intensity_ = snapshot.environment.ambient_intensity;
 
         // Pass 0 (11 §2.3): the frame's arrays into their ring slots, on the copy queue. A reused frame copies only the
         // instance indices, which follow the camera.
@@ -585,6 +655,13 @@ namespace avis::visualizer::rendering
                 return invalid_view(view.name, std::format("the capture of '{}' has no texture", capture.resource));
             }
         }
+        for (const buffer_capture& capture : view.options.buffer_captures)
+        {
+            if (!capture.buffer.is_valid())
+            {
+                return invalid_view(view.name, std::format("the capture of '{}' has no buffer", capture.resource));
+            }
+        }
         if (view.output)
         {
             if (!view.output->texture.is_valid())
@@ -702,31 +779,78 @@ namespace avis::visualizer::rendering
             .split = { .passes_per_group = graph_.configuration().passes_per_group_without_timings },
         };
 
-        // Passes 1, 2 and 4 (11.10), then the placeholder for lighting and tonemapping
+        // Passes 1 and 2 (11.10)
         const graphics::texture depth = add_depth_prepass(graph_, inputs);
+        const std::uint32_t depth_mips = depth_mip_levels(view.size.width, view.size.height);
         const linearized_depth linearized = add_linearize_depth(
             graph_,
             depth,
             { .linearize = linearize_depth_pipeline_, .reduce = depth_mips_pipeline_ },
             inputs.view_constants,
             view.size);
+
+        // Pass 3 on async compute, declared before the G-buffer so it overlaps it (11 §2.3). The bounds are rebuilt
+        // when the projection changed; a view that writes nothing doesn't, since the build writes its history.
+        const bool writes = view.output || !view.options.captures.empty() || !view.options.buffer_captures.empty();
+        const Eigen::Matrix4f projection =
+            view.camera.projection(static_cast<float>(view.size.width) / static_cast<float>(view.size.height));
+        const bool rebuild_clusters =
+            writes && (!(*history)->cluster_projection || *(*history)->cluster_projection != projection);
+        if (rebuild_clusters)
+        {
+            (*history)->cluster_projection = projection;
+            rebuilt_clusters_.push_back(view.name);
+        }
+        const light_clusters clusters = add_light_clusters(
+            graph_,
+            { .build = cluster_build_pipeline_,
+              .cull = light_cull_pipeline_,
+              .bounds = (*history)->cluster_bounds,
+              .rebuild = rebuild_clusters,
+              .projection_inverse = projection.inverse(),
+              .size = view.size,
+              .frame = frame_buffers_,
+              .depth_mips = linearized.depth_mips,
+              .depth_mip_count = depth_mips,
+              .view_constants = inputs.view_constants });
+
+        // Pass 4 (11.10), then lighting and the sky (11.11), then the placeholder tonemap until 11.16
         const gbuffer_targets gbuffer = add_gbuffer_pass(graph_, inputs, depth);
-        const graphics::texture ldr_color =
-            add_gbuffer_preview(graph_, gbuffer_preview_pipeline_, gbuffer, linearized.linear_depth, background_color);
+        const float exposure = manual_exposure(settings_.exposure.ev100); // until the exposure pass (11.16)
+        const graphics::texture lit = add_deferred_lighting(
+            graph_,
+            { .pipeline = deferred_lighting_pipeline_,
+              .gbuffer = gbuffer,
+              .depth = gbuffer.depth,
+              .linear_depth = linearized.linear_depth,
+              .clusters = clusters,
+              .frame = frame_buffers_,
+              .sun = extraction_.sun.value_or(gpu::no_light),
+              .environment = environment_resources_,
+              .exposure = exposure,
+              .ambient_intensity = ambient_intensity_,
+              .view_constants = inputs.view_constants });
+        const sky_outputs sky = add_sky_pass(
+            graph_,
+            { .pipeline = sky_pipeline_,
+              .hdr_color = lit,
+              .depth = gbuffer.depth,
+              .sky = environment_->sky(),
+              .exposure = exposure,
+              .view_constants = inputs.view_constants });
+        const graphics::texture ldr_color = add_tonemap_preview(graph_, tonemap_preview_pipeline_, sky.hdr_color);
 
         // Captures, for tests and tools: copies of the final versions
         const std::array resources{
-            capturable{ "depth", gbuffer.depth, rhi::format::d32_float },
+            capturable{ "depth", sky.depth, rhi::format::d32_float },
             capturable{ "linear_depth", linearized.linear_depth, rhi::format::r32_float },
-            capturable{ "depth_mips",
-                        linearized.depth_mips,
-                        rhi::format::rg32_float,
-                        depth_mip_levels(view.size.width, view.size.height) },
+            capturable{ "depth_mips", linearized.depth_mips, rhi::format::rg32_float, depth_mips },
             capturable{ "gbuffer_albedo", gbuffer.albedo, rhi::format::rgba8_unorm_srgb },
             capturable{ "gbuffer_normal", gbuffer.normal, rhi::format::rg16_unorm },
             capturable{ "gbuffer_material", gbuffer.material, rhi::format::rgba8_unorm },
             capturable{ "gbuffer_emissive", gbuffer.emissive, rhi::format::r11g11b10_float },
             capturable{ "velocity", gbuffer.velocity, rhi::format::rg16_float },
+            capturable{ "hdr_color", sky.hdr_color, rhi::format::rgba16_float },
             capturable{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
         };
         for (std::size_t capture_index = 0; capture_index < view.options.captures.size(); ++capture_index)
@@ -776,6 +900,11 @@ namespace avis::visualizer::rendering
                 });
         }
 
+        if (auto failed = add_buffer_captures(view, clusters.lights, clusters.indices))
+        {
+            return failed;
+        }
+
         // Pass 16 (11 §12): copies ldr_color into the view's output. Without one, nothing writes an import, and the
         // graph culls the view's passes.
         if (view.output)
@@ -795,6 +924,61 @@ namespace avis::visualizer::rendering
                 {
                     context.recorder().copy_texture(
                         resources.texture_handle(data.output), {}, resources.texture_handle(data.source), {});
+                });
+        }
+        return std::nullopt;
+    }
+
+    std::optional<error> scene_renderer::add_buffer_captures(
+        const view_description& view, const graphics::buffer cluster_lights, const graphics::buffer light_indices)
+    {
+        struct capturable_buffer
+        {
+            std::string_view name;
+            graphics::buffer buffer;
+            std::uint64_t size;
+        };
+        const std::array resources{
+            capturable_buffer{
+                "cluster_lights", cluster_lights, std::uint64_t{ gpu::cluster_count } * sizeof(gpu::cluster_lights) },
+            capturable_buffer{ "light_indices", light_indices, cluster_light_index_count * 4 },
+        };
+        for (std::size_t capture_index = 0; capture_index < view.options.buffer_captures.size(); ++capture_index)
+        {
+            const buffer_capture& capture = view.options.buffer_captures[capture_index];
+            const auto found =
+                std::ranges::find(resources, std::string_view{ capture.resource }, &capturable_buffer::name);
+            if (found == resources.end())
+            {
+                return invalid_view(view.name, std::format("no buffer '{}' to capture", capture.resource));
+            }
+            const rhi::buffer_description& target = dependencies_.resources.description(capture.buffer);
+            if (target.size < found->size || !(target.usage & rhi::buffer_usage::copy_destination))
+            {
+                return invalid_view(
+                    view.name,
+                    std::format(
+                        "the capture of '{}' needs a buffer of at least {} bytes that allows copy_destination",
+                        capture.resource,
+                        found->size));
+            }
+            const rhi::access_state common = rhi::access_states::common;
+            const graphics::buffer destination =
+                graph_.import_buffer(std::format("buffer_capture_{}", capture_index), capture.buffer, common, common);
+            graph_.add_copy_pass<buffer_capture_data>(
+                std::format("copy_buffer_capture_{}", capture_index),
+                [&](graphics::render_pass_builder& builder, buffer_capture_data& data)
+                {
+                    data.source = builder.read(found->buffer, graphics::buffer_read::copy_source);
+                    data.destination = builder.write(destination, graphics::buffer_write::copy_destination);
+                },
+                [size = found->size](
+                    const buffer_capture_data& data,
+                    const graphics::resource_bag& bag,
+                    graphics::copy_pass_context& context)
+                {
+                    context.recorder().copy_buffer(
+                        bag.buffer_handle(data.destination), 0, bag.buffer_handle(data.source), 0, size);
                 });
         }
         return std::nullopt;

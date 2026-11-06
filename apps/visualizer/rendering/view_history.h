@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -35,6 +36,10 @@ namespace avis::visualizer::rendering
         std::array<rhi::texture_handle, 2> taa_history{}; // RGBA16F: pre-exposed HDR colour after TAA (11 §10.2)
         std::array<rhi::texture_handle, 2> depth{}; // R32F: view-space linear depth, for TAA's disocclusion test
         rhi::buffer_handle exposure; // exposure_buffer_size bytes, raw; one buffer, read and then written each frame
+        rhi::buffer_handle cluster_bounds; // cluster_count gpu::cluster_bounds (11 §6.3), structured
+        // The unjittered projection the cluster bounds were built for; none before the first build. A projection change
+        // rebuilds them (a resize makes a new history).
+        std::optional<Eigen::Matrix4f> cluster_projection;
         std::uint32_t current = 0; // the slot this frame writes; 1 − current holds the previous frame
         bool has_previous = false; // the previous slots and view_projection hold this view's previous frame
         Eigen::Matrix4f view_projection = Eigen::Matrix4f::Identity(); // unjittered, of the last frame rendered
@@ -65,6 +70,7 @@ namespace avis::visualizer::rendering
         void release_unused(std::uint64_t frame_index) noexcept;
 
         const view_history* find(std::string_view name) const noexcept;
+        view_history* find(std::string_view name) noexcept;
         std::size_t size() const noexcept
         {
             return histories_.size();
