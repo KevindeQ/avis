@@ -76,6 +76,9 @@ namespace avis::visualizer::rendering
         inline constexpr std::string_view debug_inspect = "debug_blit.inspect_main.cs";
         // A view's light cluster counters, for debug_information (11.20)
         inline constexpr std::string_view cluster_statistics = "cluster_statistics.main.cs";
+        // A custom screenshot's sub-frames into its accumulation texture, and their average (11.21)
+        inline constexpr std::string_view screenshot_accumulate = "screenshot.accumulate_main.cs";
+        inline constexpr std::string_view screenshot_resolve = "screenshot.resolve_main.cs";
 
         inline constexpr std::array all{ binding_probe,
                                          generate_mips,
@@ -101,7 +104,9 @@ namespace avis::visualizer::rendering
                                          debug_blit_vertex,
                                          debug_blit_pixel,
                                          debug_inspect,
-                                         cluster_statistics };
+                                         cluster_statistics,
+                                         screenshot_accumulate,
+                                         screenshot_resolve };
     } // namespace shader_ids
 
     // Where the build deploys the shaders, relative to the executable's directory

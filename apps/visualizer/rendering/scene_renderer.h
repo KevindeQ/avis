@@ -8,7 +8,8 @@
 // light_cull on async compute, gbuffer (11.10), shadow_cascades when the sun casts shadows (11.12), deferred_lighting
 // and sky into hdr_color (11.11), forward_transparent (11.14), taa_resolve (11.15), exposure and the tonemap into
 // ldr_color (11.16), the selection outline and the overlays (11.17), picking on a click frame (11.19), the debug blits
-// and the pixel inspector (11.20), and present_to_shared, which copies ldr_color into the view's output. The cascades
+// and the pixel inspector (11.20), the screenshot capture (11.21), and present_to_shared, which copies ldr_color into
+// the view's output. A custom screenshot adds a temporary view, rendered over several frames (11 §12.1). The cascades
 // are computed per view before the draw lists, which cull the shadow casters into them. Before the views, the
 // environment baker bakes the sky cubemap, the prefiltered cubemap and the SH9 irradiance when the snapshot's
 // environment changes, and the BRDF LUT once (11 §6.4). Residency runs in every frame's prepare stage: the snapshot's
@@ -36,6 +37,7 @@
 #include "rendering/readback_ring.h"
 #include "rendering/render_settings.h"
 #include "rendering/residency_cache.h"
+#include "rendering/screenshot_capture.h"
 #include "rendering/texture_residency.h"
 #include "rendering/view.h"
 #include "rendering/view_history.h"
@@ -96,6 +98,9 @@ namespace avis::visualizer::rendering
         graphics::pipeline_cache& pipeline_cache;
         graphics::root_signature_registry& root_signatures; // without a signature named "standard" yet
         graphics::upload_queue& uploads; // per frame: residency uploads, flushed by the renderer's prepare stage
+        // The free local video memory a custom screenshot is checked against (11 §12.1, for example
+        // render_hardware_interface::local_memory_budget); empty: no check
+        std::function<rhi::memory_budget()> memory_budget;
     };
 
     // The items of one group of a view's draw list (11 §4.5)
@@ -260,6 +265,17 @@ namespace avis::visualizer::rendering
         // outside the blit, gets a result without a value at once; one made while every readback slot was in use
         // gets none.
         std::vector<inspector_result> take_inspector_results();
+
+        // Posts a screenshot request (11 §12.1, screenshot_capture.h): latest-value, one at a time; a request made
+        // while one runs is queued, replacing a queued one. A viewport request is taken by the next frame that has its
+        // view. A custom request renders a temporary view named "screenshot" over the next screenshot_subframes frames;
+        // while it does, every view of those frames draws the snapshot and the time frozen at its first frame. A
+        // refused request (a size past 7680 x 4320, over half the free video memory, no path) gets its result at once.
+        void request_screenshot(screenshot_request request);
+
+        // The screenshots written or failed so far, each once. The file is encoded and written on a parallel worker
+        // once its frame is complete on the GPU; this call and retire notice that.
+        std::vector<screenshot_result> take_screenshot_results();
 
         // Also collects the cluster statistics whose frames are complete
         renderer_debug_information debug_information() const;
@@ -440,6 +456,8 @@ namespace avis::visualizer::rendering
             rhi::graphics_pipeline_handle debug_blit;
             rhi::compute_pipeline_handle debug_inspect;
             rhi::compute_pipeline_handle cluster_statistics;
+            rhi::compute_pipeline_handle screenshot_accumulate;
+            rhi::compute_pipeline_handle screenshot_resolve;
             rhi::texture_handle blue_noise; // the tonemap's dither (blue_noise.h)
             graphics::upload_ticket blue_noise_upload;
             std::unique_ptr<environment_baker> environment;
@@ -519,6 +537,9 @@ namespace avis::visualizer::rendering
         // Moves the cluster statistics whose frames are complete into cluster_statistics_
         void collect_cluster_statistics() const;
 
+        // The temporary view of a custom screenshot's sub-frame (11 §12.1)
+        static view_description screenshot_view(const screenshot_job& job);
+
         // The reuse shortcut's condition (11 §3.5)
         bool can_reuse_extraction(const scene::snapshot& snapshot, const frame_interpolation& interpolation) const;
 
@@ -590,6 +611,12 @@ namespace avis::visualizer::rendering
         // Collected by debug_information, which is const for its callers
         mutable readback_ring<std::string> cluster_readbacks_; // payload: the view's name
         mutable std::map<std::string, view_cluster_statistics, std::less<>> cluster_statistics_;
+        rhi::compute_pipeline_handle screenshot_accumulate_pipeline_;
+        rhi::compute_pipeline_handle screenshot_resolve_pipeline_;
+        std::unique_ptr<screenshot_capture> screenshots_;
+        screenshot_job* screenshot_job_ = nullptr; // what the frame being built renders of the screenshot job
+        // The latest version of each view's exposure buffer in the frame being built, for a custom screenshot's view
+        std::map<std::string, graphics::buffer, std::less<>> view_exposures_;
         std::vector<std::string> last_view_names_; // of the last frame built
         pass_statistics_collector pass_statistics_; // of the last frame built
         rhi::texture_handle blue_noise_texture_;

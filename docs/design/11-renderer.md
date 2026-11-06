@@ -620,6 +620,13 @@ Screenshots of the 3D viewport are taken **inside the renderer**, so they contai
 
 Screenshots only observe the render output: determinism is unaffected, and they work in every clock state, paused included.
 
+*As implemented* (task 11.21):
+- **Requests and results.** `scene_renderer::request_screenshot` posts the request, which also names the captured view, the path and the metadata. `take_screenshot_results()` returns the results, polled like picks.
+- **Freezing.** While a custom screenshot renders, every view of those frames draws the snapshot and the time frozen at its first sub-frame, since one extraction serves all views. The main view keeps its live camera.
+- **Exposure.** The `screenshot` view pre-exposes with the main view's latest exposure, copied into its own buffer. It accumulates radiance divided by that exposure, and the overlays are drawn unjittered after the last sub-frame's tonemap.
+- **Writing.** The completed copy is noticed when the renderer next polls (`retire`, `take_screenshot_results`, the next frame), not through `when_complete`. WIC encodes the PNG, and the tEXt chunks are inserted after IHDR.
+- **Memory check.** The estimate is 128 bytes per pixel, against `renderer_dependencies::memory_budget`.
+
 ## 13. Shaders: location and build
 Shaders are **Visualizer data**. Their sources live in the repository's runtime-data folder `data/` (next to `data/assets/`), not in the application source tree or the Avis library, which contains no HLSL. The build compiles them into the matching path under the build output.
 

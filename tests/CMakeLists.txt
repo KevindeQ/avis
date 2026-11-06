@@ -149,6 +149,7 @@ target_sources(AVIS_TESTS
 		visualizer/rendering/test_renderer_materials.cpp
 		visualizer/rendering/test_renderer_overlay.cpp
 		visualizer/rendering/test_renderer_picking.cpp
+		visualizer/rendering/test_renderer_screenshot.cpp
 		visualizer/rendering/test_renderer_shaders.cpp
 		visualizer/rendering/test_residency_cache.cpp
 		visualizer/rendering/test_shader_manifest_parser.cpp

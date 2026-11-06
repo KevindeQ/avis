@@ -165,6 +165,8 @@ namespace avis::tests
         simulation::simulation_duration time_current{ 0 };
         // render_frame's wall time; steady_clock::now() when empty
         std::optional<std::chrono::steady_clock::time_point> wall_now;
+        // What the renderer's custom screenshots are checked against (11 §12.1); the RHI's budget when empty
+        std::optional<rhi::memory_budget> memory_budget_override;
 
     private:
         scene::entity add_drawn(

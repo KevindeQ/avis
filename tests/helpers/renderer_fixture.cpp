@@ -222,6 +222,8 @@ namespace avis::tests
                 .pipeline_cache = *pipeline_cache,
                 .root_signatures = *root_signatures,
                 .uploads = *uploads,
+                .memory_budget = [this]
+                { return memory_budget_override.value_or(graphics.hardware_interface->local_memory_budget()); },
             },
             settings,
             *shaders);

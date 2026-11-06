@@ -23,6 +23,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	passes/overlay_pass.cpp
 	passes/picking_pass.cpp
 	passes/scene_range_pass.cpp
+	passes/screenshot_pass.cpp
 	passes/shadow_pass.cpp
 	passes/taa_pass.cpp
 	picking.cpp
@@ -33,6 +34,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	renderer_shaders.cpp
 	residency_cache.cpp
 	scene_renderer.cpp
+	screenshot_capture.cpp
 	texture_residency.cpp
 	shader_manifest_parser.cpp
 	sky_model.cpp
@@ -75,7 +77,12 @@ target_link_libraries(AVIS_VISUALIZER_RENDERING
 		AVIS_LIB
 
 		# Public because render_settings.h takes a YAML::Node
-		yaml-cpp::yaml-cpp)
+		yaml-cpp::yaml-cpp
+
+	# WIC encodes the screenshots' PNGs (screenshot_capture.cpp)
+	PRIVATE
+		ole32
+		windowscodecs)
 
 # The scene renderer's shaders: compiled into <bin>/data/shaders/visualizer with manifest.yaml, the directory
 # resolve_shader_directory() finds next to the executable

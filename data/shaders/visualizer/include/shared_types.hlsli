@@ -204,6 +204,9 @@ AVIS_SHARED_CONSTANT(uint, no_cascade, 255);
 // GTAO (11 §8): gtao_denoise runs gtao_denoise_passes times over the raw AO
 AVIS_SHARED_CONSTANT(uint, gtao_denoise_passes, 2);
 
+// Custom screenshots (11 §12.1): the sub-frames accumulated into the screenshot view's RGBA32F accumulation texture
+AVIS_SHARED_CONSTANT(uint, screenshot_subframes, 8);
+
 // ---- Structures ----
 
 // One material slot of the renderer's material buffer (11 §3.3): glTF 2.0 metallic-roughness plus the generic extensions
@@ -605,6 +608,20 @@ struct cluster_statistics_constants
     uint padding1;
 };
 
+// The pass constants (b1) of screenshot.hlsl (11 §12.1): accumulate_main adds hdr_color, divided by the exposure it was
+// pre-exposed with, into the accumulation texture (the first sub-frame replaces it); resolve_main writes the average,
+// pre-exposed again with the same buffer's current exposure, into the resolved texture
+struct screenshot_constants
+{
+    uint2 size; // pixels
+    uint color; // accumulate: Texture2D<float4> SRV, hdr_color
+    uint accumulation; // RWTexture2D<float4> UAV (accumulate), Texture2D<float4> SRV (resolve)
+    uint exposure_buffer; // ByteAddressBuffer SRV, the screenshot view's exposure
+    uint first; // accumulate: 1 for the first sub-frame
+    uint resolved; // resolve: RWTexture2D<float4> UAV
+    float weight; // resolve: 1 / the sub-frames accumulated
+};
+
 #ifdef __cplusplus
 
 static_assert(sizeof(float2) == 8 && sizeof(float3) == 12 && sizeof(float4) == 16);
@@ -807,6 +824,9 @@ static_assert(offsetof(debug_blit_constants, range_minimum) == 64);
 static_assert(offsetof(debug_blit_constants, texel) == 72);
 static_assert(offsetof(debug_blit_constants, output) == 80);
 static_assert(sizeof(cluster_statistics_constants) == 16);
+static_assert(sizeof(screenshot_constants) == 32);
+static_assert(offsetof(screenshot_constants, color) == 8);
+static_assert(offsetof(screenshot_constants, weight) == 28);
 
 } // namespace avis::visualizer::rendering::gpu
 

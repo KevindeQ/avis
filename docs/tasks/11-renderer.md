@@ -851,17 +851,45 @@ flowchart LR
 ## 11.21 Screenshots
 11 §12.1.
 
-- [ ] `screenshot_capture.h/.cpp`: `request(screenshot_request)`, latest-value and one at a time (a second request is queued).
+*Status: implemented; the tests pass in Debug and Release.* As implemented:
+- **Interface** (`screenshot_capture.h`). `scene_renderer::request_screenshot(screenshot_request)` posts a request, and `take_screenshot_results()` returns the results, polled like picks (11.19).
+  - The request is `{ id, mode, width, height, include_debug_blit, view, path, metadata }`. `view` (default `main`) is the view captured, or the one whose camera and exposure a custom screenshot takes.
+  - The result is `screenshot_result { id, path, failure, size, first_frame_index, last_frame_index }`.
+  - Requests are latest-value: a request made while one runs is queued, and it replaces a queued one, which gets a "superseded" result. The next request starts once the previous file is written, so results come in request order.
+- **Refusals.** These requests get their result at once:
+  - a request without a path;
+  - a custom size of 0, or past 7680 × 4320;
+  - a custom request whose estimate exceeds half the free local video memory. The estimate is 128 bytes per pixel: the view's textures without aliasing, its history, the accumulation and the readback. The free memory comes from a new `renderer_dependencies::memory_budget` callback, for example `local_memory_budget()`; without one, there's no check.
+- **Viewport mode.** The next frame with the request's view adds `screenshot_capture` (copy). It copies `ldr_color` into a readback buffer created for the job, after the overlays and picking, or after the debug blits with `include_debug_blit`.
+- **Custom mode.** A temporary view named `screenshot` comes last in each frame, after the view it takes its exposure from:
+  - **Frozen state.** At the first sub-frame, the renderer copies the snapshot and keeps the wall time and the view's camera. *Every* view of those 8 frames draws the frozen snapshot at the frozen time, not just the screenshot view. One extraction and one set of frame arrays per frame serve all views; a second set only for the screenshot view would have meant a second extraction, frame-data ring and residency pinning. The main view keeps its live camera and keeps rendering, but its scene stands still for those 8 frames. The copy is released once the last sub-frame's frame has executed.
+  - **Sub-frames.** No TAA. The jitter is Halton(2,3) by sub-frame index. The progressive budget is lifted. Each sub-frame copies the source view's latest exposure into both header slots of the screenshot view's exposure buffer (`screenshot_exposure`), so it pre-exposes with the main view's current exposure, and its tonemap rescales by 1. `screenshot_accumulate` adds `hdr_color` divided by that exposure into an RGBA32F accumulation texture, so a changing automatic exposure still adds the same radiance. A sub-frame other than the last one stops there; the accumulation is an import, so the graph keeps its passes.
+  - **The last sub-frame.** `screenshot_resolve` writes the average, pre-exposed again, and the tonemap reads it in place of `taa_output`. The overlays are drawn after the tonemap without jitter, against the last sub-frame's depth. With `include_debug_blit`, the view's debug blits are drawn too. The screenshot view has no output: `screenshot_capture` keeps it alive.
+- **Writing.** The renderer notices that the copying frame is complete when it next polls: `retire`, `take_screenshot_results`, or the next frame's build. It doesn't use `when_complete`, whose wait needs the completion driver polled. It then copies the pixels out, releases the buffers, and spawns the work on the parallel scheduler (an `exec::async_scope`, which the renderer's destructor waits for):
+  - `encode_png` writes them through WIC as 32-bit BGRA with alpha 255, then inserts the tEXt chunks after IHDR itself.
+  - `io::write_file` writes the file with `atomic_replace`.
+
+  The chunks (`screenshot_text`) are Software, Scenario, Step, Simulation time, Driver, Camera and Render settings. Empty values are left out, and an empty camera pose is filled with the captured view's camera.
+- **Failures.** A frame that fails to build or execute while it renders or copies a job fails the job.
+- **Tests** are in `test_renderer_screenshot.cpp`. Beyond the list:
+  - `encode_png`, `decode_png`, `read_png_text` and the refusals as unit tests;
+  - `include_debug_blit` in viewport mode;
+  - the refusal over the memory budget;
+  - a queued request superseded by a later one.
+
+  A read-only directory doesn't stop file creation on Windows, so the write tests use a missing folder, a folder in the file's place, and the IO layer's injected failure before the rename.
+
+- [x] `screenshot_capture.h/.cpp`: `request(screenshot_request)`, latest-value and one at a time (a second request is queued).
   - **Viewport mode:** a `capture` copy pass after `overlay` (or `debug_blit`) copies `ldr_color` into an imported `readback` buffer. When the frame completes, a parallel worker encodes PNG with WIC (alpha forced to 255), adds the tEXt chunks of 11 §12.1 from a `screenshot_metadata` the caller supplies (scenario, step, time, Driver id, camera pose, settings), and writes it with the IO layer's atomic replace.
   - **Custom mode:** a temporary `screenshot` view at the requested size, with the presentation state frozen (snapshot, `alpha`, camera). TAA is off; 8 jittered sub-frames over 8 frames accumulate pre-exposed HDR into RGBA32F, tonemapped with the main view's exposure. Overlays are drawn once after the tonemap, and the progressive budget is lifted.
   - **Limits:** 7680 × 4320, and a refusal when the transient estimate exceeds 50% of the free VRAM budget (09 §8.2).
-- [ ] File naming and the folder (`screenshots.folder`) come from the caller; the renderer writes to the path it's given and reports `{ id, path }` or an error.
+- [x] File naming and the folder (`screenshots.folder`) come from the caller; the renderer writes to the path it's given and reports `{ id, path }` or an error.
 
 **Tests** (`test_renderer_screenshot.cpp`, `[renderer]`, temporary directory helper):
-- [ ] A viewport screenshot's pixels equal the output texture's, and the PNG's tEXt chunks hold the metadata.
-- [ ] A 512 × 288 custom screenshot of the 11.10 cube has the cube's silhouette at the expected position, scaled, with anti-aliased edges, and takes exactly 8 frames.
-- [ ] An 8K + 1 request is refused, and a second request during the first is queued and completes after it.
-- [ ] A failing write (read-only directory) reports an error and leaves no partial file.
+- [x] A viewport screenshot's pixels equal the output texture's, and the PNG's tEXt chunks hold the metadata.
+- [x] A 512 × 288 custom screenshot of the 11.10 cube has the cube's silhouette at the expected position, scaled, with anti-aliased edges, and takes exactly 8 frames. *An unlit cube on a black sky, for a sharp silhouette. Its bounds match the analytic front face and a plain 512 × 288 render, and its edges are partly covered pixels where the plain render's are hard.*
+- [x] An 8K + 1 request is refused, and a second request during the first is queued and completes after it.
+- [x] A failing write (read-only directory) reports an error and leaves no partial file. *See above for the folders used.*
 
 ## 11.22 Visualizer wiring
 - [ ] `visualizer_driver` creates the renderer once the RHI exists: it loads the shaders with `load_renderer_shaders`, then calls `scene_renderer::create`, and shows a startup error on failure (12a §5).

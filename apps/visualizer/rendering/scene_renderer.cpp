@@ -11,6 +11,7 @@
 #include "rendering/passes/lighting_passes.h"
 #include "rendering/passes/picking_pass.h"
 #include "rendering/passes/scene_range_pass.h"
+#include "rendering/passes/screenshot_pass.h"
 #include "rendering/passes/shadow_pass.h"
 #include "rendering/passes/taa_pass.h"
 #include "rendering/renderer_shaders.h"
@@ -220,6 +221,8 @@ namespace avis::visualizer::rendering
             std::pair{ &state.pick_window, shader_ids::pick_window },
             std::pair{ &state.debug_inspect, shader_ids::debug_inspect },
             std::pair{ &state.cluster_statistics, shader_ids::cluster_statistics },
+            std::pair{ &state.screenshot_accumulate, shader_ids::screenshot_accumulate },
+            std::pair{ &state.screenshot_resolve, shader_ids::screenshot_resolve },
             std::pair{ &environment.sky, shader_ids::environment_sky },
             std::pair{ &environment.prefilter, shader_ids::environment_prefilter },
             std::pair{ &environment.irradiance, shader_ids::environment_irradiance },
@@ -366,6 +369,9 @@ namespace avis::visualizer::rendering
                             maximum_cluster_statistics_slots,
                             gpu::cluster_statistics_bytes,
                             "cluster_statistics_readback" },
+        screenshot_accumulate_pipeline_{ state.screenshot_accumulate },
+        screenshot_resolve_pipeline_{ state.screenshot_resolve },
+        screenshots_{ std::make_unique<screenshot_capture>(dependencies.resources, dependencies.synchronization) },
         blue_noise_texture_{ state.blue_noise },
         blue_noise_upload_{ state.blue_noise_upload },
         environment_{ std::move(state.environment) },
@@ -411,12 +417,14 @@ namespace avis::visualizer::rendering
     {
         readbacks_.submitted(frame_index, submitted);
         cluster_readbacks_.submitted(frame_index, submitted);
+        screenshots_->submitted(frame_index, submitted);
     }
 
     void scene_renderer::drop_readbacks(const std::uint64_t frame_index) noexcept
     {
         readbacks_.drop(frame_index);
         cluster_readbacks_.drop(frame_index);
+        screenshots_->frame_failed(frame_index);
         std::erase_if(
             ready_inspections_,
             [frame_index](const ready_inspection& ready) { return ready.result.frame_index == frame_index; });
@@ -468,6 +476,36 @@ namespace avis::visualizer::rendering
             results.push_back(std::move(ready.result));
         }
         return results;
+    }
+
+    void scene_renderer::request_screenshot(screenshot_request request)
+    {
+        std::optional<rhi::memory_budget> budget;
+        if (request.mode == screenshot_mode::custom && dependencies_.memory_budget)
+        {
+            budget = dependencies_.memory_budget();
+        }
+        screenshots_->request(std::move(request), budget);
+    }
+
+    std::vector<screenshot_result> scene_renderer::take_screenshot_results()
+    {
+        return screenshots_->take_results();
+    }
+
+    view_description scene_renderer::screenshot_view(const screenshot_job& job)
+    {
+        // No TAA (a fresh view has no history) and no progressive budget: point clouds at full density (11 §12.1)
+        return {
+            .name = std::string{ screenshot_view_name },
+            .camera = job.camera,
+            .size = job.size,
+            .device_pixel_ratio = job.device_pixel_ratio,
+            .options = { .taa = false,
+                         .reset_history = job.subframes == 0,
+                         .debug_blits = job.debug_blits,
+                         .progressive_vertex_budget = std::numeric_limits<std::uint64_t>::max() },
+        };
     }
 
     void scene_renderer::inspect_without_value(
@@ -523,6 +561,7 @@ namespace avis::visualizer::rendering
         materials_->retire(completed_frame_index_);
         textures_->retire(completed_frame_index_);
         collect_cluster_statistics();
+        screenshots_->poll();
     }
 
     renderer_debug_information scene_renderer::debug_information() const
@@ -676,11 +715,13 @@ namespace avis::visualizer::rendering
 
     std::optional<error> scene_renderer::build_frame(
         const graphics::frame_token& frame,
-        const scene::snapshot& snapshot,
-        const std::span<const view_description> views,
+        const scene::snapshot& live_snapshot,
+        const std::span<const view_description> live_views,
         const std::chrono::steady_clock::time_point wall_now)
     {
         graph_.reset();
+        screenshot_job_ = nullptr;
+        view_exposures_.clear();
         rebuilt_clusters_.clear();
         resolved_views_.clear();
         reset_exposures_.clear();
@@ -694,7 +735,7 @@ namespace avis::visualizer::rendering
 
         // Checked before anything is added: the graph's own checks on view names only assert
         std::set<std::string_view> names;
-        for (const view_description& view : views)
+        for (const view_description& view : live_views)
         {
             if (auto invalid = check_view(view))
             {
@@ -706,8 +747,24 @@ namespace avis::visualizer::rendering
             }
         }
 
+        // The screenshot job (11 §12.1). While a custom one renders, the frame draws the snapshot and the time frozen
+        // at its first sub-frame, and its temporary view comes last, after the view whose exposure it takes.
+        screenshot_job_ = screenshots_->begin_frame(frame.index(), live_snapshot, wall_now, live_views);
+        const bool frozen = screenshot_job_ != nullptr && screenshot_job_->snapshot.has_value();
+        const scene::snapshot& snapshot = frozen ? *screenshot_job_->snapshot : live_snapshot;
+        const std::chrono::steady_clock::time_point presented = frozen ? screenshot_job_->wall_time : wall_now;
+        std::vector<view_description> extended_views;
+        std::span<const view_description> views = live_views;
+        if (screenshot_job_ != nullptr && screenshot_job_->custom())
+        {
+            extended_views.assign(live_views.begin(), live_views.end());
+            extended_views.push_back(screenshot_view(*screenshot_job_));
+            views = extended_views;
+            names.insert(extended_views.back().name);
+        }
+
         // The reuse shortcut (11 §3.5): the previous frame's arrays, residency and extraction skipped
-        const frame_interpolation interpolation = interpolate(snapshot, wall_now);
+        const frame_interpolation interpolation = interpolate(snapshot, presented);
         const bool reuse = can_reuse_extraction(snapshot, interpolation);
 
         if (!reuse)
@@ -746,7 +803,7 @@ namespace avis::visualizer::rendering
                 },
                 .material_slot = [this](const scene::material_handle material) { return materials_->slot(material); },
             };
-            extract(snapshot, wall_now, extraction_state_, lookup, extraction_);
+            extract(snapshot, presented, extraction_state_, lookup, extraction_);
         }
         extraction_reused_ = reuse;
 
@@ -843,10 +900,12 @@ namespace avis::visualizer::rendering
 
         // The baked environment (11 §6.4). The bake passes write imported textures, which the graph never culls: they
         // are only added when a view writes something.
-        const bool any_view_writes = std::ranges::any_of(
-            views,
-            [](const view_description& view)
-            { return view.output || !view.options.captures.empty() || !view.options.buffer_captures.empty(); });
+        const bool any_view_writes =
+            screenshot_job_ != nullptr ||
+            std::ranges::any_of(
+                views,
+                [](const view_description& view)
+                { return view.output || !view.options.captures.empty() || !view.options.buffer_captures.empty(); });
         environment_resources_ = environment_->add_passes(
             graph_,
             environment_description{ .settings = snapshot.environment, .uniform_radiance = environment_override_ },
@@ -1136,10 +1195,15 @@ namespace avis::visualizer::rendering
         // unjittered view-projection from the history, for motion vectors; a view without a previous frame has none
         const Eigen::Matrix4f view_projection = unjittered_view_projection(view);
         const bool taa = settings_.taa.enabled && view.options.taa;
+        // A custom screenshot's view (11 §12.1): no TAA, a Halton jitter per sub-frame instead
+        screenshot_job* const shot = screenshot_job_;
+        const bool subframe = shot != nullptr && shot->custom() && view.name == screenshot_view_name;
         const view_frame camera_frame{
             .view = view,
             .view_projection_previous = (*history)->has_previous ? (*history)->view_projection : view_projection,
-            .jitter = taa ? jitter_pixels((*history)->jitter_sequence) : Eigen::Vector2f::Zero(),
+            .jitter = taa      ? jitter_pixels((*history)->jitter_sequence) :
+                      subframe ? jitter_pixels(shot->subframes) :
+                                 Eigen::Vector2f::Zero(),
             .frame_index = static_cast<std::uint32_t>(frame.index()),
         };
         (*history)->view_projection = view_projection;
@@ -1149,12 +1213,23 @@ namespace avis::visualizer::rendering
         const history_imports imported = import_history(graph_, **history);
 
         // A view that writes nothing has its passes culled, unless one writes its history
-        const bool writes = view.output || !view.options.captures.empty() || !view.options.buffer_captures.empty();
+        const bool writes =
+            view.output || !view.options.captures.empty() || !view.options.buffer_captures.empty() || subframe;
 
         // The exposure buffer holds an exposure from the view's first frame on (11.16): the reset comes before any
-        // pass reads it. A view that writes nothing adds no exposure pass, since they write its history.
+        // pass reads it. A view that writes nothing adds no exposure pass, since they write its history. A screenshot
+        // sub-frame pre-exposes with its source view's latest exposure instead, and doesn't adapt (11 §12.1).
         graphics::buffer exposure = imported.exposure;
-        if (writes && !(*history)->exposure_initialized)
+        if (subframe)
+        {
+            const auto source = view_exposures_.find(shot->request.view);
+            if (source == view_exposures_.end())
+            {
+                return invalid_view(view.name, std::format("no view '{}' to take the exposure of", shot->request.view));
+            }
+            exposure = add_screenshot_exposure(graph_, source->second, exposure);
+        }
+        else if (writes && !(*history)->exposure_initialized)
         {
             exposure = add_exposure_reset(
                 graph_, exposure_adapt_pipeline_, exposure, manual_exposure(exposure_parameters_.ev100));
@@ -1303,10 +1378,32 @@ namespace avis::visualizer::rendering
         }
         (*history)->taa_written = resolve;
 
+        // A screenshot sub-frame accumulates hdr_color; the last one goes on with the average in place of taa_output
+        const rhi::access_state common = rhi::access_states::common;
+        if (subframe)
+        {
+            const screenshot_pipelines pipelines{ .accumulate = screenshot_accumulate_pipeline_,
+                                                  .resolve = screenshot_resolve_pipeline_ };
+            const graphics::texture accumulated = add_screenshot_accumulate(
+                graph_,
+                pipelines,
+                transparent.hdr_color,
+                graph_.import_texture("screenshot_accumulation", shot->accumulation, common, common),
+                exposure,
+                shot->subframes == 0);
+            const bool last = shot->last_subframe();
+            ++shot->subframes;
+            if (!last)
+            {
+                return std::nullopt;
+            }
+            taa_output = add_screenshot_resolve(graph_, pipelines, accumulated, exposure, shot->subframes);
+        }
+
         // Passes 12 and 13: the next frame's exposure from taa_output, timed by the wall time since the view's last
         // adaptation, then the tonemap, rescaled to that exposure
         graphics::buffer adapted = exposure;
-        if (writes)
+        if (writes && !subframe)
         {
             const std::optional<std::chrono::steady_clock::time_point> last = (*history)->last_adaptation;
             const float frame_time =
@@ -1330,10 +1427,11 @@ namespace avis::visualizer::rendering
               .exposure = adapted,
               .blue_noise = blue_noise_,
               .tonemapper = tonemapper_ });
+        view_exposures_.insert_or_assign(view.name, adapted);
 
         // The cluster statistics for debug_information, after lighting, which already waited for light_cull: declared
         // earlier, the graphics queue would wait for the async compute work before the G-buffer
-        if (writes)
+        if (writes && !subframe)
         {
             auto slot = cluster_readbacks_.acquire(frame.index(), view.name);
             if (!slot)
@@ -1342,7 +1440,6 @@ namespace avis::visualizer::rendering
             }
             if (*slot != nullptr)
             {
-                const rhi::access_state common = rhi::access_states::common;
                 add_cluster_statistics(
                     graph_,
                     cluster_statistics_pipeline_,
@@ -1351,10 +1448,18 @@ namespace avis::visualizer::rendering
             }
         }
 
-        // Pass 14 (11.17): the selection outline, then the overlays, unlit, into ldr_color
+        // Pass 14 (11.17): the selection outline, then the overlays, unlit, into ldr_color. A screenshot draws them
+        // once, after its last sub-frame, without jitter (11 §12.1).
+        scene_pass_inputs overlay_inputs = inputs;
+        if (subframe)
+        {
+            view_frame unjittered = camera_frame;
+            unjittered.jitter = Eigen::Vector2f::Zero();
+            overlay_inputs.view_constants = make_view_constants(unjittered);
+        }
         const overlay_outputs overlays = add_overlay(
             graph_,
-            inputs,
+            overlay_inputs,
             { .outline = selection_outline_pipeline_,
               .ldr_color = tonemapped,
               .depth = transparent.depth,
@@ -1375,7 +1480,6 @@ namespace avis::visualizer::rendering
             }
             if (*slot != nullptr)
             {
-                const rhi::access_state common = rhi::access_states::common;
                 const picking_outputs picked = add_picking(
                     graph_,
                     inputs,
@@ -1405,13 +1509,41 @@ namespace avis::visualizer::rendering
             debug_resource{ "ao", ambient_occlusion.ao, rhi::format::r8_unorm, 1, ao_size },
             debug_resource{ "hdr_color", transparent.hdr_color, rhi::format::rgba16_float },
             debug_resource{ "reactive_mask", transparent.reactive_mask, rhi::format::r8_unorm },
-            debug_resource{ "taa_output", taa_output, rhi::format::rgba16_float },
+            debug_resource{
+                "taa_output", taa_output, subframe ? rhi::format::rgba32_float : rhi::format::rgba16_float },
             debug_resource{ "cascade_index", lit.cascade_index, rhi::format::r8_uint },
             debug_resource{ "selection_mask", overlays.selection_mask, rhi::format::r8_unorm },
             debug_resource{ "picking_id", picking_id, rhi::format::rg32_uint },
             debug_resource{ "shadow_map", shadow_map, rhi::format::d32_float, 1, shadow_size, cascades.count },
             debug_resource{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
         };
+
+        // The screenshot's copy of ldr_color (11 §12.1): a viewport job's view, or a custom job's last sub-frame;
+        // after the overlays, or after the debug blits with include_debug_blit
+        const bool captures_screenshot =
+            shot != nullptr && (subframe || (!shot->custom() && view.name == shot->request.view));
+        const auto add_screenshot_capture = [&]() -> std::optional<error>
+        {
+            if (!shot->custom())
+            {
+                if (auto created = screenshots_->create_viewport_readback(*shot, view.size); !created)
+                {
+                    return std::move(created).error();
+                }
+            }
+            add_screenshot_copy(
+                graph_, ldr_color, graph_.import_buffer("screenshot_readback", shot->readback, common, common));
+            shot->last_frame_index = frame.index();
+            shot->state = screenshot_job::phase::reading;
+            return std::nullopt;
+        };
+        if (captures_screenshot && !shot->request.include_debug_blit)
+        {
+            if (auto failed = add_screenshot_capture())
+            {
+                return failed;
+            }
+        }
 
         // The debug blits and the inspector (11 §11), after the overlays and picking; captures of ldr_color and the
         // output show them
@@ -1423,6 +1555,14 @@ namespace avis::visualizer::rendering
         }
         ldr_color = *blitted;
         resources.back().texture = ldr_color;
+
+        if (captures_screenshot && shot->request.include_debug_blit)
+        {
+            if (auto failed = add_screenshot_capture())
+            {
+                return failed;
+            }
+        }
 
         for (std::size_t capture_index = 0; capture_index < view.options.captures.size(); ++capture_index)
         {
@@ -1454,7 +1594,6 @@ namespace avis::visualizer::rendering
                         width,
                         height));
             }
-            const rhi::access_state common = rhi::access_states::common;
             const graphics::texture destination =
                 graph_.import_texture(std::format("capture_{}", capture_index), capture.texture, common, common);
             const auto setup = [&](graphics::render_pass_builder& builder, capture_data& data)
