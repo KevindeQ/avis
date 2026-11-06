@@ -74,6 +74,9 @@ namespace avis::tests
 
     private:
         log_capture capture_{ "rhi" };
+        // The errors alone, so that the messages of a long test (a renderer's startup and teardown) can't push them out
+        // of capture_
+        log_capture errors_{ "rhi", 1024, spdlog::level::err };
         bool errors_accepted_ = false;
         std::unique_ptr<rhi::render_hardware_interface> rhi_;
     };

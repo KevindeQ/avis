@@ -1315,9 +1315,9 @@ These are `constexpr` because `enum | enum` and the single-enum `flags` construc
 - The RHI **doesn't track state automatically**. The render graph computes barriers ([10 §6.3](10-render-graph.md#63-barriers)). Code outside the graph (the upload and readback queues, interop) uses explicit states, often the predefined `access_states`.
 - **Copy queue:** textures accessed on the copy queue must use `texture_layout::common`.
 - **Cross-queue:** textures shared between graphics and async compute within a frame use the common-compatible layouts (`common`, `shader_resource`, `unordered_access`, which work on both queues) or queue-specific layouts with an explicit transition on the owning queue.
-- **Aliasing:** the first use of an aliased placed resource gets `before = access_states::undefined`, and `discard = true` for render and depth targets (§8.5).
+- **Aliasing:** the first use of an aliased placed resource gets `before = access_states::undefined`, and `discard = true` for render and depth targets (§8.5). *As implemented* (task 11.19): the debug layer counts a discard as a render or depth target's initialisation only into its target layout. So on a graphics list, a discard into any other layout (a compute pass's output that a later pass draws into) becomes two barriers: a discard into the target layout, in a `Barrier()` call of its own, then the transition.
 - **Cross-device shared textures (Qt interop):** these must be in `texture_layout::common` at hand-off ([12 §3](12-visualizer.md#3-viewport-integration-qquickrhiitem--shared-handles)).
-- One `barrier` call records one `Barrier()` with up to three groups (§24.3).
+- One `barrier` call records one `Barrier()` with up to three groups (§24.3), plus one before it for the discards above.
 
 ## 11. Copy footprints and readback
 

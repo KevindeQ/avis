@@ -6,11 +6,12 @@
 // A pipeline set is one combination of the state a draw's PSOs depend on (pipeline_set_key). Its 12-bit index is the
 // top of the sort key's material field, so draws sort by set. A set holds one PSO per pass kind that draws it, with the
 // root signature the PSO was matched to:
-//   depth, shadow, gbuffer(_picking)       opaque and mask keys, not screen-aligned
-//   forward(_picking)                      blend keys, not screen-aligned
-//   overlay(_picking), overlay_on_top(_picking)  every key: an overlay instance may use any material
+//   depth, shadow, gbuffer                 opaque and mask keys, not screen-aligned
+//   forward                                blend keys, not screen-aligned
+//   overlay, overlay_on_top                every key: an overlay instance may use any material
 //   selection, selection_on_top            every key: the selection mask of selected instances in any layer (11.17)
-// Picking kinds add the picking_id target (11 §5.1). A pass kind that doesn't draw a key leaves its slot empty.
+//   picking, picking_on_top                every key: the picking_id of pickable instances in any layer (11.19)
+// A pass kind that doesn't draw a key leaves its slot empty.
 //
 // Startup creates the base sets: every key the material model produces (2 shading models × 5 alpha modes and blend
 // operations × 3 topologies × 16 attribute masks × 2 sidednesses), in a fixed order with the common sets first. Their
@@ -19,8 +20,8 @@
 // key (a screen-aligned one, for instance) gets the next free index on first use, which is logged.
 //
 // Shaders: scene_vertex.hlsl for every pass, permuted by screen alignment, topology and the uv0 and color0 attributes,
-// and one pixel shader per pass family (depth_prepass, gbuffer, forward_transparent, overlay, selection_mask), permuted
-// by topology, alpha mask, shading model and picking. Their permutation names are built here and in the shaders'
+// and one pixel shader per pass family (depth_prepass, gbuffer, forward_transparent, overlay, selection_mask, picking),
+// permuted by topology, alpha mask and shading model. Their permutation names are built here and in the shaders'
 // annotations.
 //
 // Threads: find and the startup run on the frame chain's prepare stage, never during parallel recording.
@@ -63,26 +64,21 @@ namespace avis::visualizer::rendering
         depth, // depth_prepass: depth only, reverse-Z greater-equal, write
         shadow, // shadow_cascades: depth only (11.12 adds the bias)
         gbuffer, // depth equal, no write; the five G-buffer targets
-        gbuffer_picking, // plus picking_id
         forward, // forward_transparent: depth test, no write; hdr_color and reactive_mask
-        forward_picking,
         overlay, // depth test against the scene with overlay_depth_bias, no write; ldr_color
-        overlay_picking,
         overlay_on_top, // no depth test
-        overlay_on_top_picking,
         selection, // selection_mask (R8) of selected instances: the overlay's depth test, no blending
         selection_on_top, // selection_mask of selected overlay_on_top instances: no depth test
+        picking, // picking_id (RG32_UINT) of pickable instances: the overlay's depth test, no blending
+        picking_on_top, // picking_id of pickable overlay_on_top instances: no depth test
     };
 
-    inline constexpr std::size_t pass_kind_count = 12;
+    inline constexpr std::size_t pass_kind_count = 10;
 
     inline constexpr std::array<pass_kind, pass_kind_count> all_pass_kinds{
-        pass_kind::depth,          pass_kind::shadow,
-        pass_kind::gbuffer,        pass_kind::gbuffer_picking,
-        pass_kind::forward,        pass_kind::forward_picking,
-        pass_kind::overlay,        pass_kind::overlay_picking,
-        pass_kind::overlay_on_top, pass_kind::overlay_on_top_picking,
-        pass_kind::selection,      pass_kind::selection_on_top,
+        pass_kind::depth,   pass_kind::shadow,         pass_kind::gbuffer,   pass_kind::forward,
+        pass_kind::overlay, pass_kind::overlay_on_top, pass_kind::selection, pass_kind::selection_on_top,
+        pass_kind::picking, pass_kind::picking_on_top,
     };
 
     // The constant depth bias of the overlay and selection PSOs, towards the camera: in units of 2^(e − 23) for a

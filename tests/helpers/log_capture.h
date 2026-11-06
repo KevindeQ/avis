@@ -13,16 +13,21 @@
 
 namespace avis::tests
 {
-    // Captures the messages of one named logger while it is alive, as "[<level>] <message>" lines.
-    // The logger logs every level while a capture is attached, whether or not logging is initialised.
+    // Captures the messages of one named logger while it is alive, as "[<level>] <message>" lines: the last
+    // `capacity` of those at `minimum_level` or above. The logger logs every level while a capture is attached, whether
+    // or not logging is initialised.
     class log_capture
     {
     public:
-        explicit log_capture(std::string logger_name, std::size_t capacity = 1024) :
+        explicit log_capture(
+            std::string logger_name,
+            std::size_t capacity = 1024,
+            spdlog::level::level_enum minimum_level = spdlog::level::trace) :
             logger_name_{ std::move(logger_name) },
             sink_{ std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(capacity) }
         {
             sink_->set_pattern("[%l] %v");
+            sink_->set_level(minimum_level);
             avis::log::detail::attach_sink(logger_name_, sink_);
         }
 

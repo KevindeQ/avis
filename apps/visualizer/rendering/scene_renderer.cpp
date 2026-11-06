@@ -7,6 +7,7 @@
 #include "rendering/passes/gbuffer_pass.h"
 #include "rendering/passes/gtao_pass.h"
 #include "rendering/passes/lighting_passes.h"
+#include "rendering/passes/picking_pass.h"
 #include "rendering/passes/scene_range_pass.h"
 #include "rendering/passes/shadow_pass.h"
 #include "rendering/passes/taa_pass.h"
@@ -196,6 +197,7 @@ namespace avis::visualizer::rendering
             std::pair{ &state.exposure_adapt, shader_ids::exposure_adapt },
             std::pair{ &state.tonemap, shader_ids::tonemap },
             std::pair{ &state.selection_outline, shader_ids::selection_outline },
+            std::pair{ &state.pick_window, shader_ids::pick_window },
             std::pair{ &environment.sky, shader_ids::environment_sky },
             std::pair{ &environment.prefilter, shader_ids::environment_prefilter },
             std::pair{ &environment.irradiance, shader_ids::environment_irradiance },
@@ -319,6 +321,7 @@ namespace avis::visualizer::rendering
         exposure_adapt_pipeline_{ state.exposure_adapt },
         tonemap_pipeline_{ state.tonemap },
         selection_outline_pipeline_{ state.selection_outline },
+        pick_window_pipeline_{ state.pick_window },
         blue_noise_texture_{ state.blue_noise },
         blue_noise_upload_{ state.blue_noise_upload },
         environment_{ std::move(state.environment) },
@@ -333,7 +336,101 @@ namespace avis::visualizer::rendering
 
     scene_renderer::~scene_renderer()
     {
-        dependencies_.resources.destroy(blue_noise_texture_); // deferred by the RHI until the GPU is done with it
+        // Deferred by the RHI until the GPU is done with them
+        dependencies_.resources.destroy(blue_noise_texture_);
+        for (const pick_slot& slot : pick_slots_)
+        {
+            dependencies_.resources.destroy(slot.readback);
+        }
+    }
+
+    // ---- picking (11 §5.1) ----
+
+    result<scene_renderer::pick_slot*>
+        scene_renderer::acquire_pick_slot(const view_description& view, const std::uint64_t frame_index)
+    {
+        auto free = std::ranges::find_if(pick_slots_, [](const pick_slot& slot) { return !slot.pending; });
+        if (free == pick_slots_.end())
+        {
+            if (pick_slots_.size() >= maximum_pick_slots)
+            {
+                return nullptr;
+            }
+            auto buffer = dependencies_.resources.create_buffer(
+                { .size = pick_window_bytes,
+                  .usage = rhi::buffer_usage::copy_destination,
+                  .memory = rhi::memory_type::readback,
+                  .debug_name = "pick_readback" });
+            if (!buffer)
+            {
+                return std::unexpected{ std::move(buffer).error() };
+            }
+            pick_slots_.push_back({ .readback = *buffer });
+            free = pick_slots_.end() - 1;
+        }
+        free->pending = pending_pick{
+            .view = view.name, .request = *view.options.pick, .frame_index = frame_index, .sequence = pick_sequence_++
+        };
+        return &*free;
+    }
+
+    void scene_renderer::picks_submitted(const std::uint64_t frame_index, const graphics::submitted_frame& submitted)
+    {
+        for (pick_slot& slot : pick_slots_)
+        {
+            if (slot.pending && slot.pending->frame_index == frame_index && !slot.pending->submitted)
+            {
+                slot.pending->submitted = submitted;
+            }
+        }
+    }
+
+    void scene_renderer::drop_picks(const std::uint64_t frame_index) noexcept
+    {
+        for (pick_slot& slot : pick_slots_)
+        {
+            if (slot.pending && slot.pending->frame_index == frame_index && !slot.pending->submitted)
+            {
+                slot.pending.reset();
+            }
+        }
+    }
+
+    std::vector<pick_result> scene_renderer::take_pick_results()
+    {
+        std::vector<std::pair<std::uint64_t, pick_result>> done;
+        for (pick_slot& slot : pick_slots_)
+        {
+            if (!slot.pending || !slot.pending->submitted)
+            {
+                continue;
+            }
+            const bool complete = std::ranges::all_of(
+                slot.pending->submitted->last_submissions(),
+                [this](const rhi::synchronization_point point)
+                { return dependencies_.synchronization.is_complete(point); });
+            if (!complete)
+            {
+                continue;
+            }
+            const pending_pick& pick = *slot.pending;
+            done.emplace_back(
+                pick.sequence,
+                pick_result{ .view = pick.view,
+                             .request = pick.request,
+                             .frame_index = pick.frame_index,
+                             .hit = select_pick(
+                                 dependencies_.resources.mapped_bytes(slot.readback), pick_origin(pick.request)) });
+            slot.pending.reset();
+        }
+        std::ranges::sort(done, {}, &std::pair<std::uint64_t, pick_result>::first);
+        std::vector<pick_result> results;
+        results.reserve(done.size());
+        for (auto& [sequence, result] : done)
+        {
+            results.push_back(std::move(result));
+        }
+        return results;
     }
 
     void scene_renderer::retire(const std::uint64_t completed_frame_index)
@@ -1108,10 +1205,49 @@ namespace avis::visualizer::rendering
               .selection_color = selection_color_ });
         const graphics::texture ldr_color = overlays.ldr_color;
 
+        // Picking (11 §5.1), on a click frame only: the pickable instances again into picking_id, and its window
+        // around the click into a slot of the readback ring
+        graphics::texture final_depth = overlays.depth;
+        graphics::texture picking_id;
+        if (view.options.pick)
+        {
+            auto slot = acquire_pick_slot(view, frame.index());
+            if (!slot)
+            {
+                return std::move(slot).error();
+            }
+            if (*slot == nullptr)
+            {
+                const auto now = std::chrono::steady_clock::now();
+                if (!last_pick_warning_ || now - *last_pick_warning_ >= std::chrono::seconds{ 1 })
+                {
+                    last_pick_warning_ = now;
+                    log::get(logger_name)
+                        ->warn(
+                            "view '{}': a pick request is dropped: its {} readback slots are in use",
+                            view.name,
+                            maximum_pick_slots);
+                }
+            }
+            else
+            {
+                const rhi::access_state common = rhi::access_states::common;
+                const picking_outputs picked = add_picking(
+                    graph_,
+                    inputs,
+                    { .window = pick_window_pipeline_,
+                      .depth = overlays.depth,
+                      .request = *view.options.pick,
+                      .readback = graph_.import_buffer("pick_readback", (*slot)->readback, common, common) });
+                final_depth = picked.depth;
+                picking_id = picked.picking_id;
+            }
+        }
+
         // Captures, for tests and tools: copies of the final versions
         const graphics::texture_extent ao_size = gtao_extent(ao_parameters_, view.size);
         const std::array resources{
-            capturable{ "depth", overlays.depth, rhi::format::d32_float },
+            capturable{ "depth", final_depth, rhi::format::d32_float },
             capturable{ "linear_depth", linearized.linear_depth, rhi::format::r32_float },
             capturable{ "depth_mips", linearized.depth_mips, rhi::format::rg32_float, depth_mips },
             capturable{ "gbuffer_albedo", gbuffer.albedo, rhi::format::rgba8_unorm_srgb },
@@ -1127,6 +1263,7 @@ namespace avis::visualizer::rendering
             capturable{ "taa_output", taa_output, rhi::format::rgba16_float },
             capturable{ "cascade_index", lit.cascade_index, rhi::format::r8_uint },
             capturable{ "selection_mask", overlays.selection_mask, rhi::format::r8_unorm },
+            capturable{ "picking_id", picking_id, rhi::format::rg32_uint },
             capturable{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
         };
         for (std::size_t capture_index = 0; capture_index < view.options.captures.size(); ++capture_index)

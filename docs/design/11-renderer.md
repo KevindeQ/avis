@@ -449,6 +449,10 @@ That's 20 bytes per pixel plus 4 for depth. On frames where the user clicked the
   Later passes overwrite earlier ones, so the result is "what the user sees on top" at the clicked pixel.
 - **Readback:** a copy pass inside the graph copies a 9×9 texel window around the cursor into a `memory_type::readback` buffer the graph imported, read through `mapped_bytes` once `when_complete` reports the frame's submission done ([09 §11.2](09-rhi.md#112-readback)). Standalone readbacks outside the frame (tests, tools) use `graphics::readback_queue` instead ([17 §8](17-graphics-frames-and-transfers.md#8-graphicsreadback_queueh)). The Visualizer picks the non-zero id closest to the centre, which makes 1–2 px lines and small points clickable.
 - The id the renderer reports is the opaque `object_id`. The Visualizer maps it back to the entity ([12 §5](12-visualizer.md#5-camera)).
+- *As implemented* (task 11.19):
+  - `picking_id` isn't an extra target of the G-buffer, forward and overlay passes (the table above, §4.6 and §5). A click frame adds a picking pass after the overlays instead. It draws the camera's `world` and `overlay` groups, then `overlay_on_top`, again into `picking_id`, with the overlay's depth test (none on top) and no blending. Key order is draw order, so the rule is the same: what the user sees on top wins. The colour passes are unchanged, so a click frame's image is a normal frame's.
+  - The pixel shader discards instances that aren't `pickable` and pixels covered less than 0.1 (a blend material's alpha times a line's edge coverage).
+  - A compute pass copies the 9 × 9 window into a small buffer, with zeros outside the view, and a copy pass copies that into one of up to 8 readback buffers. `scene_renderer::take_pick_results()` returns the results of completed frames in request order.
 
 ## 6. Lighting
 

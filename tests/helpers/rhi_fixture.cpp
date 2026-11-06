@@ -108,7 +108,7 @@ namespace avis::tests
     std::vector<std::string> test_rhi::error_lines() const
     {
         std::vector<std::string> errors;
-        for (auto& line : capture_.lines())
+        for (auto& line : errors_.lines())
         {
             if (line.starts_with("[error]") || line.starts_with("[critical]"))
             {

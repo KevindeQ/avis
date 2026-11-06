@@ -27,6 +27,7 @@
 #include "rendering/geometry_arena.h"
 #include "rendering/material_table.h"
 #include "rendering/passes/overlay_pass.h"
+#include "rendering/picking.h"
 #include "rendering/pipeline_variant_registry.h"
 #include "rendering/progressive_lod.h"
 #include "rendering/range_walker.h"
@@ -167,11 +168,14 @@ namespace avis::visualizer::rendering
             std::chrono::steady_clock::time_point wall_now)
         {
             build_failure_ = build_frame(frame, snapshot, views, wall_now);
+            const std::uint64_t frame_index = frame.index();
             if (build_failure_)
             {
                 forget_frame(); // nothing was copied or baked: a later frame mustn't rely on this one
+                drop_picks(frame_index);
             }
-            // A frame that fails to execute didn't copy its arrays either
+            // A frame that fails to execute didn't copy its arrays either, nor read back its picks. A submitted frame's
+            // picks wait for its submissions to complete (take_pick_results).
             auto sender = stdexec::just() |
                           stdexec::let_value(
                               [this, &frame]()
@@ -182,16 +186,24 @@ namespace avis::visualizer::rendering
                                   }
                                   return graph_.execute(frame);
                               }) |
+                          stdexec::then(
+                              [this, frame_index](graphics::submitted_frame submitted)
+                              {
+                                  picks_submitted(frame_index, submitted);
+                                  return submitted;
+                              }) |
                           stdexec::let_error(
-                              [this]<typename Error>(Error&& error) noexcept
+                              [this, frame_index]<typename Error>(Error&& error) noexcept
                               {
                                   forget_frame();
+                                  drop_picks(frame_index);
                                   return stdexec::just_error(std::forward<Error>(error));
                               }) |
                           stdexec::let_stopped(
-                              [this]() noexcept
+                              [this, frame_index]() noexcept
                               {
                                   forget_frame();
+                                  drop_picks(frame_index);
                                   return stdexec::just_stopped();
                               }) |
                           threading::into_internal_error();
@@ -202,6 +214,12 @@ namespace avis::visualizer::rendering
         // Frame `completed_frame_index` and every earlier one are complete on the GPU: called by the frame chain when
         // begin_frame recycles a context (11 §3.6, 17 §4). Frees the geometry ranges no frame can read any more.
         void retire(std::uint64_t completed_frame_index);
+
+        // The results of the pick requests (view_options::pick, 11 §5.1) whose frames are complete on the GPU, in
+        // request order, each once. Polled by the frame chain, which posts them to the GUI with its per-frame state. A
+        // request whose frame failed, or made while every readback slot was in use, gets no result (the latter logs a
+        // warning).
+        std::vector<pick_result> take_pick_results();
 
         renderer_debug_information debug_information() const;
 
@@ -377,6 +395,7 @@ namespace avis::visualizer::rendering
             rhi::compute_pipeline_handle exposure_adapt;
             rhi::compute_pipeline_handle tonemap;
             rhi::compute_pipeline_handle selection_outline;
+            rhi::compute_pipeline_handle pick_window;
             rhi::texture_handle blue_noise; // the tonemap's dither (blue_noise.h)
             graphics::upload_ticket blue_noise_upload;
             std::unique_ptr<environment_baker> environment;
@@ -398,6 +417,31 @@ namespace avis::visualizer::rendering
         // The frame being built didn't run: its frame data slots, its environment bake, its cluster bounds and its
         // exposure resets are done again by the next frame
         void forget_frame() noexcept;
+
+        // Picking's readback ring (11 §5.1). A slot holds one pick from its request until its result is taken; the
+        // ring grows to maximum_pick_slots.
+        static constexpr std::size_t maximum_pick_slots = 8;
+
+        struct pending_pick
+        {
+            std::string view;
+            pick_request request;
+            std::uint64_t frame_index = 0;
+            std::uint64_t sequence = 0; // the request's place in take_pick_results' order
+            std::optional<graphics::submitted_frame> submitted; // set once the frame's work is submitted
+        };
+
+        struct pick_slot
+        {
+            rhi::buffer_handle readback; // pick_window_bytes, memory_type::readback
+            std::optional<pending_pick> pending;
+        };
+
+        // A free slot for a pick of `view` in frame `frame_index`, or nullptr when every slot is in use. Fails when a
+        // new slot's buffer can't be created.
+        result<pick_slot*> acquire_pick_slot(const view_description& view, std::uint64_t frame_index);
+        void picks_submitted(std::uint64_t frame_index, const graphics::submitted_frame& submitted);
+        void drop_picks(std::uint64_t frame_index) noexcept;
 
         // The reuse shortcut's condition (11 §3.5)
         bool can_reuse_extraction(const scene::snapshot& snapshot, const frame_interpolation& interpolation) const;
@@ -453,6 +497,10 @@ namespace avis::visualizer::rendering
         rhi::compute_pipeline_handle exposure_adapt_pipeline_;
         rhi::compute_pipeline_handle tonemap_pipeline_;
         rhi::compute_pipeline_handle selection_outline_pipeline_;
+        rhi::compute_pipeline_handle pick_window_pipeline_;
+        std::vector<pick_slot> pick_slots_;
+        std::uint64_t pick_sequence_ = 0; // the order of the requests, for take_pick_results
+        std::optional<std::chrono::steady_clock::time_point> last_pick_warning_;
         rhi::texture_handle blue_noise_texture_;
         // The blue noise's upload, queued at creation and flushed by the first frame, which resolves it into
         // blue_noise_ready_; every frame's import waits on that point

@@ -68,6 +68,8 @@ namespace avis::visualizer::rendering
         inline constexpr std::string_view tonemap = "tonemap.main.cs";
         // The selection outline into ldr_color, from selection_mask (11.17)
         inline constexpr std::string_view selection_outline = "selection_outline.main.cs";
+        // The pick window around a click, from picking_id (11.19)
+        inline constexpr std::string_view pick_window = "pick_window.main.cs";
 
         inline constexpr std::array all{ binding_probe,
                                          generate_mips,
@@ -88,7 +90,8 @@ namespace avis::visualizer::rendering
                                          exposure_histogram,
                                          exposure_adapt,
                                          tonemap,
-                                         selection_outline };
+                                         selection_outline,
+                                         pick_window };
     } // namespace shader_ids
 
     // Where the build deploys the shaders, relative to the executable's directory

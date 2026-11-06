@@ -51,7 +51,9 @@ namespace avis::visualizer::rendering
         std::uint32_t slice = 0;
     };
 
-    // A click in the view, in pixels from the top-left corner (11 §5.1; handled by the picking task, 11.19)
+    // A click in the view, in pixels from the top-left corner (11 §5.1, docs/tasks/11-renderer.md §11.19). Its frame
+    // draws the pickable instances into picking_id and reads back the window around the click; the result comes from
+    // scene_renderer::take_pick_results once the frame is complete on the GPU.
     struct pick_request
     {
         std::uint32_t x = 0;
@@ -63,7 +65,8 @@ namespace avis::visualizer::rendering
     // copy_destination, and be in `common`, where the frame leaves it. Resources: depth, linear_depth, depth_mips,
     // gbuffer_albedo, gbuffer_normal, gbuffer_material, gbuffer_emissive, velocity, hdr_color (11.11), cascade_index
     // (R8_UINT, the sun's shadow cascade of each pixel or gpu::no_cascade, 11.12), ao_raw, ao_edges, ao (11.13),
-    // reactive_mask (11.14), taa_output (RGBA16F; hdr_color when TAA is off, 11.15), ldr_color.
+    // reactive_mask (11.14), taa_output (RGBA16F; hdr_color when TAA is off, 11.15), ldr_color, selection_mask (R8, on
+    // a frame with a selected instance, 11.17), picking_id (R32G32_UINT, on a click frame, 11.19).
     struct resource_capture
     {
         std::string resource;

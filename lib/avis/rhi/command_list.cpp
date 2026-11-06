@@ -18,6 +18,7 @@
 
 #include <array>
 #include <format>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -389,6 +390,11 @@ namespace avis::rhi
 
         barrier_array<D3D12_TEXTURE_BARRIER> textures{ texture_barriers.size() };
         UINT texture_count = 0;
+        // Discards of render and depth targets into another layout. The debug layer counts a discard as their
+        // initialisation only into their target layout, so a target first written as a UAV (a compute pass's output
+        // that a later pass draws into) is discarded into it first, in a Barrier call of its own (§10.1).
+        barrier_array<D3D12_TEXTURE_BARRIER> initialisations{ texture_barriers.size() };
+        UINT initialisation_count = 0;
         for (const texture_barrier& entry : texture_barriers)
         {
             const auto* const texture = found<d3d12::texture_record, texture_handle>(call.resources().find(entry.texture), "barrier", "texture");
@@ -396,7 +402,7 @@ namespace avis::rhi
             {
                 continue;
             }
-            textures.data()[texture_count++] = {
+            D3D12_TEXTURE_BARRIER native{
                 .SyncBefore = d3d12::to_native(entry.before.synchronization),
                 .SyncAfter = d3d12::to_native(entry.after.synchronization),
                 .AccessBefore = d3d12::to_native(entry.before.access),
@@ -407,6 +413,58 @@ namespace avis::rhi
                 .Subresources = d3d12::to_native(entry.range, texture->description),
                 .Flags = entry.discard ? D3D12_TEXTURE_BARRIER_FLAG_DISCARD : D3D12_TEXTURE_BARRIER_FLAG_NONE,
             };
+            if constexpr (Queue == queue_type::graphics)
+            {
+                // The target's write state: the first barrier waits as the original would, the second continues from it
+                struct target_state
+                {
+                    D3D12_BARRIER_SYNC sync;
+                    D3D12_BARRIER_ACCESS access;
+                    D3D12_BARRIER_LAYOUT layout;
+                };
+                const auto target = [&]() -> std::optional<target_state>
+                {
+                    if (texture->description.usage & texture_usage::render_target)
+                    {
+                        return target_state{ D3D12_BARRIER_SYNC_RENDER_TARGET,
+                                             D3D12_BARRIER_ACCESS_RENDER_TARGET,
+                                             D3D12_BARRIER_LAYOUT_RENDER_TARGET };
+                    }
+                    if (texture->description.usage & texture_usage::depth_stencil)
+                    {
+                        return target_state{ D3D12_BARRIER_SYNC_DEPTH_STENCIL,
+                                             D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE,
+                                             D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE };
+                    }
+                    return std::nullopt;
+                }();
+                if (entry.discard && target && native.LayoutAfter != target->layout)
+                {
+                    initialisations.data()[initialisation_count++] = {
+                        .SyncBefore = native.SyncBefore,
+                        .SyncAfter = target->sync,
+                        .AccessBefore = native.AccessBefore,
+                        .AccessAfter = target->access,
+                        .LayoutBefore = native.LayoutBefore,
+                        .LayoutAfter = target->layout,
+                        .pResource = native.pResource,
+                        .Subresources = native.Subresources,
+                        .Flags = D3D12_TEXTURE_BARRIER_FLAG_DISCARD,
+                    };
+                    native.SyncBefore = target->sync;
+                    native.AccessBefore = target->access;
+                    native.LayoutBefore = target->layout;
+                    native.Flags = D3D12_TEXTURE_BARRIER_FLAG_NONE;
+                }
+            }
+            textures.data()[texture_count++] = native;
+        }
+        if (initialisation_count > 0)
+        {
+            const D3D12_BARRIER_GROUP group{ .Type = D3D12_BARRIER_TYPE_TEXTURE,
+                                             .NumBarriers = initialisation_count,
+                                             .pTextureBarriers = initialisations.data() };
+            call.list().Barrier(1, &group);
         }
 
         std::array<D3D12_BARRIER_GROUP, 3> groups{};

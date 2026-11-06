@@ -312,6 +312,7 @@ flowchart LR
 
   *As implemented:*
   - Two more pass kinds, `overlay_on_top` and `overlay_on_top_picking`: `overlay_on_top` has no depth test (11 §3.4), which is PSO state, so it can't share the `overlay` PSO.
+  - *11.19 replaced the four `_picking` kinds, and the shaders' `PICKING` permutations, with the `picking` and `picking_on_top` kinds of a separate picking pass.*
   - Which kinds draw a key: depth, shadow and G-buffer for `opaque`/`mask`; forward for `blend`; the four overlay kinds for every key, since an overlay instance may use any material. A `screen_aligned` key is drawn only by the overlay kinds.
   - The attribute mask is `flags<scene::vertex_attribute>`. `canonical()` sets `blend_operation` to `normal` unless `alpha_mode` is `blend`, and `find` uses the canonical key.
 - [x] Each pass kind's pipeline description is built from the key:
@@ -725,7 +726,7 @@ flowchart LR
 
 *Status: implemented; the tests pass in Debug and Release.* As implemented:
 - **Passes** (`passes/overlay_pass.h/.cpp`), after the tonemap: `selection_mask` and `selection_mask_on_top`, then `selection_outline` (compute, `selection_outline.hlsl`), then `overlay` and `overlay_on_top`, which walk `scene/camera/overlay/*` and `scene/camera/overlay_on_top/*` with each set's overlay PSOs. The overlay PSOs bind the scene depth, which they don't write. `ldr_color`'s final version is the one the views present and capture.
-- **Colour** (`overlay.hlsl`). An overlay draws its material's base colour (factor × texture × vertex colour), with no exposure and no tonemap. The colour is sRGB-encoded with the exact transfer function, because `ldr_color` holds sRGB values, so a linear 0.25 gives 137. Every overlay PSO blends premultiplied, opaque materials too, so the edges of opaque lines and points fade with their coverage. The overlay passes give lines a 1 px margin for that falloff. Mask materials are alpha-tested as in the other passes. The picking target now gets the object id, as the forward pass writes it (11.19).
+- **Colour** (`overlay.hlsl`). An overlay draws its material's base colour (factor × texture × vertex colour), with no exposure and no tonemap. The colour is sRGB-encoded with the exact transfer function, because `ldr_color` holds sRGB values, so a linear 0.25 gives 137. Every overlay PSO blends premultiplied, opaque materials too, so the edges of opaque lines and points fade with their coverage. The overlay passes give lines a 1 px margin for that falloff. Mask materials are alpha-tested as in the other passes. Picking is a pass of its own (11.19).
 - **Depth bias.** The overlay and selection PSOs have a constant depth bias of 4096 (`overlay_depth_bias`), towards the camera. For D32_FLOAT, that's about 2⁻¹¹ of the depth: 0.05% to 0.1% of the distance with reverse-Z. An overlay in a wall's plane, turned 60° from the camera, covers the same pixels with and without the depth test.
 - **Screen-aligned.** The vertex variant from 11.7 needed no change: it projects the anchor and adds the offset in pixels × the device pixel ratio, at the anchor's depth.
 - **Selection mask: a separate pass, not an extra target.** The task asked for an extra target in the G-buffer, forward and overlay passes. Instead, on frames with a selected instance, the runs of the camera's `world` and `overlay` groups that hold one are drawn again into `selection_mask` (R8_UNORM, cleared to 0) with each set's `selection` PSO. That PSO is the overlay's depth test without blending. The `overlay_on_top` runs then use `selection_on_top`, which has no depth test. The pixel shader (`selection_mask.hlsl`) discards the unselected instances that share a run, and cut-away mask pixels. There are two reasons:
@@ -781,16 +782,37 @@ flowchart LR
 ## 11.19 Picking
 11 §5.1.
 
-- [ ] On a frame with `view_options::pick { x, y }`, the passes listed in 11 §5.1 (`gbuffer`, `forward_transparent`, `overlay`) bind an extra `picking_id` R32G32_UINT target (cleared to 0) with their picking PSO variant. Only `pickable` records write it, and the forward pass writes it only where coverage ≥ 0.1.
-- [ ] A `pick_readback` copy pass copies the 9 × 9 window (clamped at the edges) into an imported `readback` buffer from a small ring. When the frame's `submitted_frame` completes, the renderer reports the window. `pick_result` selects the non-zero id closest to the centre and returns `{ object_id, x, y }` through a callback or sender in `scene_renderer` (`take_pick_results()`; see Open points).
-- [ ] No click, no picking target: the graph doesn't contain it.
+*Status: implemented; the tests pass in Debug and Release.* As implemented:
+- **Passes** (`passes/picking_pass.h/.cpp`), on a click frame only, after the overlays:
+  - `picking` walks the camera's `world` and `overlay` groups with each set's `picking` PSO, into `picking_id` (R32G32_UINT, view size, cleared to 0).
+  - `picking_on_top` walks `overlay_on_top` with the `picking_on_top` PSO.
+  - `pick_window` (compute) copies the window around the click into a small buffer, and `pick_readback` copies that into the readback buffer of a ring slot.
+- **A separate pass, not extra targets.** The task asked for an extra target in the G-buffer, forward and overlay passes. Instead, as for the selection mask (11.17), the pickable instances are drawn again. The `picking` PSO is the overlay's depth test against the scene depth, with its bias, no depth write and no blending; `picking_on_top` has no depth test. Key order is draw order, so what is drawn later wins, as in the image: overlays over transparents over opaque surfaces, transparents back to front. There are three reasons:
+  - The extra targets need a picking variant of every G-buffer, forward and overlay PSO. The `gbuffer_picking`, `forward_picking`, `overlay_picking` and `overlay_on_top_picking` kinds and the `PICKING` permutations are gone. The two new kinds share one small pixel shader.
+  - The colour passes of a click frame are those of a normal frame, so the image is the same by construction.
+  - Clicks are rare, so drawing the camera's instances once more, into one target with a trivial shader, costs little.
+
+  One difference from the G-buffer's depth `EQUAL`: within the overlay's bias (about 0.1% of the distance), a surface just behind the visible one passes the test too, and wins if it's drawn later.
+- **Shader** (`picking.hlsl`). It writes the instance's `object_id` (low word in R, high word in G). It discards instances that aren't `pickable`, so what's behind them shows through, and cut-away mask pixels and pixels outside a point's circle. It also discards pixels whose coverage is below 0.1 (`picking_minimum_coverage`). The coverage is a blend material's alpha, times a line's edge coverage. The passes give lines the overlay's 1 px margin.
+- **Window** (`pick_window.hlsl`, one 9 × 9 group). Texels outside the view read as 0, so the window isn't clamped at the edges: a click in a corner sees only the texels inside the view.
+- **Ring.** The renderer keeps up to 8 readback buffers (`pick_window_bytes`, 648 bytes), created when needed. A request made while all 8 are in use is dropped with a warning (at most one per second).
+- **Results** (`picking.h/.cpp`, `scene_renderer::take_pick_results()`, the poll of Open points). It returns, in request order and once each, the results whose frames are complete on the GPU: `pick_result { view, request, frame_index, hit }`. `hit` is `pick_hit { object_id, x, y }` of the non-zero texel closest to the click (`select_pick`; at equal distances, the first in row order), or none. When a frame fails to build or execute, its requests get no result.
+- **Capture.** `picking_id` can be captured on a click frame. Without a click the graph has no picking passes, and a capture of `picking_id` fails.
+- **Validation errors uncovered.** Removing the old picking PSOs exposed two existing problems:
+  - The test fixture kept only the last 1024 lines of the `rhi` log, and checked them for errors after a renderer's teardown. That teardown's messages had pushed out errors from earlier frames. `test_rhi` now keeps the errors in a capture of their own.
+  - Those errors: `hdr_color` and `ldr_color` are render targets that a compute pass writes first (lighting, the tonemap). The debug layer counts a discard as their initialisation only into a render-target layout. A graphics list now discards such a target into its target layout first, in a `Barrier` call of its own (09 §10.1).
+- **Tests** are in `test_renderer_picking.cpp`. Beyond the list: `select_pick` as a unit test, clicks in the view's corners, a hidden overlay line, a nearly transparent box (alpha 0.05) that a click goes through, `overlay_on_top` winning, a click 8 px from a line picking nothing, and the `picking_id` capture.
+
+- [x] On a frame with `view_options::pick { x, y }`, the passes listed in 11 §5.1 (`gbuffer`, `forward_transparent`, `overlay`) bind an extra `picking_id` R32G32_UINT target (cleared to 0) with their picking PSO variant. Only `pickable` records write it, and the forward pass writes it only where coverage ≥ 0.1. *Done as a separate pass: see above.*
+- [x] A `pick_readback` copy pass copies the 9 × 9 window (clamped at the edges) into an imported `readback` buffer from a small ring. When the frame's `submitted_frame` completes, the renderer reports the window. `pick_result` selects the non-zero id closest to the centre and returns `{ object_id, x, y }` through a callback or sender in `scene_renderer` (`take_pick_results()`; see Open points). *Outside the view the window reads 0 instead of being clamped.*
+- [x] No click, no picking target: the graph doesn't contain it.
 
 **Tests** (`test_renderer_picking.cpp`, `[renderer]`):
-- [ ] A click on a cube returns its id. A click on the background returns none.
-- [ ] A translucent box in front of the cube wins. An overlay line in front of both wins.
-- [ ] A 1 px line is picked by a click 3 px away.
-- [ ] A non-`pickable` instance in front lets the one behind through.
-- [ ] A click frame and a normal frame give identical `ldr_color`.
+- [x] A click on a cube returns its id. A click on the background returns none.
+- [x] A translucent box in front of the cube wins. An overlay line in front of both wins.
+- [x] A 1 px line is picked by a click 3 px away.
+- [x] A non-`pickable` instance in front lets the one behind through.
+- [x] A click frame and a normal frame give identical `ldr_color`.
 
 ## 11.20 Debug blit and debug information
 11 §11, 10 §9.
@@ -869,7 +891,7 @@ flowchart LR
 - **`depth_mips` layout.** 11 says "min/max per tile" for clusters but "view-space Z, 5 mips" for GTAO. Proposed: an RG32F chain with min in R and max in G. GTAO reads R. Alternative: two R32F chains.
 - **Arena split.** `geometry.arena_mib` is one number, but there are two buffers. Proposed: 80% vertices, 20% indices, with a log line when either fills first. Alternative: one buffer holding both as raw ranges, which avoids the split; the index buffer view can point anywhere in a raw buffer. *Done in 11.3: 80% / 20%. The residency warning names the buffer that filled, its use and its largest free block.*
 - **Selection mask.** 11 §10.5 describes "a stencil-like mask written by the selected instances". A stencil bit would need stencil in the depth format (D32_S8) and the new `set_stencil_reference`. An R8 extra target in the passes that draw selected instances needs no RHI change. Recommended: the R8 target, written only on frames with a selection, the same way as picking. In that case `set_stencil_reference` and `clear_depth_stencil` stay unused and can be left out of 11.9. *11.9 follows the recommendation: the RHI is unchanged, and both stencil uses fail a debug check in the walker. 11.17 writes the R8 mask in its own pass, which draws only the selected instances again, rather than as an extra target.*
-- **Pick and inspector results.** How results reach 12: a `take_pick_results()` poll on the frame chain, or a sender completed per request. Recommended: the poll. The frame chain posts results to the GUI with the rest of its per-frame state.
+- **Pick and inspector results.** How results reach 12: a `take_pick_results()` poll on the frame chain, or a sender completed per request. Recommended: the poll. The frame chain posts results to the GUI with the rest of its per-frame state. *11.19 follows the recommendation for picks.*
 - **Hosek–Wilkie data.** The model's published coefficient tables (from the authors' reference implementation, under a BSD-style licence) need to be vendored, either as a header under `apps/visualizer/rendering/third_party/` or in `external/`. Check the licence first. Alternative: Preetham, which is simpler, analytic and lower quality. *11.11 uses Preetham for now; vendoring Hosek–Wilkie only replaces `sky_model.cpp` and `sky.hlsli`.*
 - **Blue-noise texture.** The dithering and possibly GTAO want a 64² blue-noise texture. Either generate one offline (void-and-cluster, a `dt` command) or vendor a CC0 one. *Done in 11.16: generated at startup by void-and-cluster (`blue_noise.h`), so nothing is checked in.*
 - **Point and spot shadows.** These are out of iteration 1 (11 §6.2). Nothing to do; it's listed so 11.11 doesn't grow them.

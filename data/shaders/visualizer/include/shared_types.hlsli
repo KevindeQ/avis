@@ -44,6 +44,11 @@ namespace avis::visualizer::rendering::gpu
         uint x, y;
     };
 
+    struct int2
+    {
+        int x, y;
+    };
+
     struct uint4
     {
         uint x, y, z, w;
@@ -161,6 +166,11 @@ AVIS_SHARED_CONSTANT(uint, blue_noise_size, 64);
 
 // The selection outline (11 §10.5): pixels within this many pixels of a selected one (a disc) are outlined
 AVIS_SHARED_CONSTANT(uint, selection_outline_radius, 2);
+
+// Picking (11 §5.1): the texels read back around a click, per side, and the coverage below which a pixel isn't picked
+// (a blend material's alpha times a line's edge coverage)
+AVIS_SHARED_CONSTANT(uint, pick_window_size, 9);
+AVIS_SHARED_CONSTANT(float, picking_minimum_coverage, 0.1f);
 
 // The sun's shadow cascades (11 §7): at most shadow_maximum_cascades slices of the shadow map. cascade_index (the
 // debug output of deferred_lighting) is no_cascade for a pixel no cascade covers.
@@ -506,7 +516,17 @@ struct exposure_constants
     float maximum_exposure;
 };
 
-// The pass constants (b1) of the tonemap (11 §10.4, §2.3 pass 13)
+// The pass constants (b1) of the pick window (11 §5.1)
+struct pick_window_constants
+{
+    uint picking_id; // Texture2D<uint2> SRV, R32G32_UINT
+    uint window; // RWByteAddressBuffer UAV: pick_window_size² texels of 8 bytes, row by row
+    int2 origin; // the window's top-left texel; may be outside the view
+    uint2 size; // the view's size, pixels
+    uint2 padding0;
+};
+
+// The pass constants (b1) of the selection outline (11 §10.5)
 struct selection_outline_constants
 {
     uint selection_mask; // Texture2D<float> SRV, R8_UNORM: 1 where a selected instance is visible
@@ -515,6 +535,7 @@ struct selection_outline_constants
     float4 color; // the outline's, sRGB-encoded, alpha 1
 };
 
+// The pass constants (b1) of the tonemap (11 §10.4, §2.3 pass 13)
 struct tonemap_constants
 {
     uint color; // Texture2D<float4> SRV, taa_output
@@ -715,6 +736,7 @@ static_assert(offsetof(exposure_constants, maximum_exposure) == 44);
 
 static_assert(sizeof(tonemap_constants) == 32);
 static_assert(sizeof(selection_outline_constants) == 32);
+static_assert(sizeof(pick_window_constants) == 32);
 static_assert(offsetof(tonemap_constants, size) == 16);
 static_assert(offsetof(tonemap_constants, tonemapper) == 24);
 

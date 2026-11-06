@@ -1,10 +1,9 @@
-// @avis-shader entry=pixel_main stage=ps permutations=PICKING,UNLIT,UNLIT_PICKING,LINES,LINES_PICKING,LINES_UNLIT,LINES_UNLIT_PICKING,POINTS,POINTS_PICKING,POINTS_UNLIT,POINTS_UNLIT_PICKING
+// @avis-shader entry=pixel_main stage=ps permutations=UNLIT,LINES,LINES_UNLIT,POINTS,POINTS_UNLIT
 //
 // The forward pixel shader of translucent world geometry (docs/design/11-renderer.md §10.1, §2.3 pass 10,
 // docs/tasks/11-renderer.md §11.7, §11.14). Permutation parts, in this order:
 //   LINES, POINTS  the topology (line coverage falloff, point circles); none for triangles
 //   UNLIT          shading_model unlit
-//   PICKING        also writes picking_id (SV_Target2)
 //
 // Targets:
 //   SV_Target0  hdr_color, RGBA16F: pre-exposed radiance, premultiplied by alpha (base colour alpha × line or point
@@ -14,7 +13,6 @@
 //               the pixel's transparents. Normal blending: its alpha, the fraction of the background it replaces (how
 //               much the luminance changes would need the background, which a blended target can't read). Additive
 //               and subtractive: the luminance it adds or takes away, pre-exposed, which is the change exactly.
-//   SV_Target2  picking_id, R32G32_UINT, the object id (11 §5.1; 11.19)
 //
 // Lit materials are shaded like deferred_lighting: the sun with its cascaded shadow, the point and spot lights of the
 // pixel's cluster, the image-based ambient light and the emissive radiance, with the material's own occlusion and
@@ -36,34 +34,26 @@ AVIS_PASS_CONSTANTS(forward_pass_constants, forward);
 AVIS_VIEW_CONSTANTS(view_constants, view);
 
 // ---- permutation features ----
-#if defined(LINES) || defined(LINES_PICKING) || defined(LINES_UNLIT) || defined(LINES_UNLIT_PICKING)
+#if defined(LINES) || defined(LINES_UNLIT)
 #    define AVIS_LINES 1
 #else
 #    define AVIS_LINES 0
 #endif
-#if defined(POINTS) || defined(POINTS_PICKING) || defined(POINTS_UNLIT) || defined(POINTS_UNLIT_PICKING)
+#if defined(POINTS) || defined(POINTS_UNLIT)
 #    define AVIS_POINTS 1
 #else
 #    define AVIS_POINTS 0
 #endif
-#if defined(UNLIT) || defined(UNLIT_PICKING) || defined(LINES_UNLIT) || defined(LINES_UNLIT_PICKING) || defined(POINTS_UNLIT) || defined(POINTS_UNLIT_PICKING)
+#if defined(UNLIT) || defined(LINES_UNLIT) || defined(POINTS_UNLIT)
 #    define AVIS_UNLIT 1
 #else
 #    define AVIS_UNLIT 0
-#endif
-#if defined(PICKING) || defined(UNLIT_PICKING) || defined(LINES_PICKING) || defined(LINES_UNLIT_PICKING) || defined(POINTS_PICKING) || defined(POINTS_UNLIT_PICKING)
-#    define AVIS_PICKING 1
-#else
-#    define AVIS_PICKING 0
 #endif
 
 struct forward_output
 {
     float4 color : SV_Target0; // RGBA16_FLOAT, premultiplied
     float reactive : SV_Target1; // R8_UNORM
-#if AVIS_PICKING
-    uint2 picking : SV_Target2; // R32G32_UINT
-#endif
 };
 
 float luminance(float3 color)
@@ -160,9 +150,5 @@ forward_output pixel_main(scene_varyings input, bool front_face : SV_IsFrontFace
     output.color = float4(radiance * (load_current_exposure(forward.lighting.exposure_buffer) * alpha), alpha);
     output.reactive =
         saturate(material.blend_operation == blend_operation_normal ? alpha : luminance(output.color.rgb));
-#if AVIS_PICKING
-    const instance_data instance = load_instance(forward.scene, input.instance);
-    output.picking = uint2(instance.object_id_low, instance.object_id_high);
-#endif
     return output;
 }

@@ -109,23 +109,25 @@ TEST_CASE("each pass kind draws the keys of its layer", "[renderer][unit]")
     pipeline_set_key label = opaque;
     label.screen_aligned = true;
 
-    for (const pass_kind kind : { pass_kind::depth, pass_kind::shadow, pass_kind::gbuffer, pass_kind::gbuffer_picking })
+    for (const pass_kind kind : { pass_kind::depth, pass_kind::shadow, pass_kind::gbuffer })
     {
         CHECK(draws(kind, opaque));
         CHECK(draws(kind, mask));
         CHECK_FALSE(draws(kind, blend));
         CHECK_FALSE(draws(kind, label));
     }
-    for (const pass_kind kind : { pass_kind::forward, pass_kind::forward_picking })
+    for (const pass_kind kind : { pass_kind::forward })
     {
         CHECK_FALSE(draws(kind, opaque));
         CHECK(draws(kind, blend));
         CHECK_FALSE(draws(kind, label));
     }
     for (const pass_kind kind : { pass_kind::overlay,
-                                  pass_kind::overlay_picking,
                                   pass_kind::overlay_on_top,
-                                  pass_kind::overlay_on_top_picking })
+                                  pass_kind::selection,
+                                  pass_kind::selection_on_top,
+                                  pass_kind::picking,
+                                  pass_kind::picking_on_top })
     {
         CHECK(draws(kind, opaque));
         CHECK(draws(kind, blend));
@@ -181,14 +183,8 @@ TEST_CASE("pipeline state per pass kind", "[renderer][unit]")
         CHECK(state.render_target_formats[4] == rhi::format::rg16_float);
         CHECK_FALSE(state.blend[0].enable);
 
-        const rhi::graphics_pipeline_state picking =
-            pipeline_state_for(pass_kind::gbuffer_picking, opaque, write_mask::all);
-        REQUIRE(picking.render_target_count == 6);
-        CHECK(picking.render_target_formats[5] == rhi::format::rg32_uint);
-        CHECK_FALSE(picking.blend[5].enable);
-
         CHECK(shader_ids_for(pass_kind::gbuffer, opaque).vertex == "scene_vertex.vertex_main.uv.vs");
-        CHECK(shader_ids_for(pass_kind::gbuffer_picking, opaque).pixel == "gbuffer.pixel_main.picking.ps");
+        CHECK(shader_ids_for(pass_kind::gbuffer, opaque).pixel == "gbuffer.pixel_main.ps");
     }
 
     SECTION("forward: blend state from the blend operation")
@@ -220,9 +216,7 @@ TEST_CASE("pipeline state per pass kind", "[renderer][unit]")
 
         blend.shading_model = scene::shading_model::unlit;
         blend.topology = scene::mesh_topology::lines;
-        CHECK(
-            shader_ids_for(pass_kind::forward_picking, blend).pixel ==
-            "forward_transparent.pixel_main.lines_unlit_picking.ps");
+        CHECK(shader_ids_for(pass_kind::forward, blend).pixel == "forward_transparent.pixel_main.lines_unlit.ps");
     }
 
     SECTION("overlay: depth test with a bias, without writes; on top: no test")
@@ -248,7 +242,7 @@ TEST_CASE("pipeline state per pass kind", "[renderer][unit]")
                                 .screen_aligned = true };
         CHECK(
             shader_ids_for(pass_kind::overlay, label).vertex == "scene_vertex.vertex_main.screen_aligned_uv_color.vs");
-        CHECK(shader_ids_for(pass_kind::overlay_picking, label).pixel == "overlay.pixel_main.picking.ps");
+        CHECK(shader_ids_for(pass_kind::overlay, label).pixel == "overlay.pixel_main.ps");
     }
 
     SECTION("selection: the overlay's depth test into R8, unblended; on top: no test")
@@ -277,6 +271,32 @@ TEST_CASE("pipeline state per pass kind", "[renderer][unit]")
         CHECK(shader_ids_for(pass_kind::selection_on_top, masked).pixel == "selection_mask.pixel_main.alpha_mask.ps");
     }
 
+    SECTION("picking: the overlay's depth test into RG32_UINT, unblended; on top: no test (11.19)")
+    {
+        const pipeline_set_key additive{ .alpha_mode = scene::alpha_mode::blend,
+                                         .blend_operation = scene::blend_operation::additive,
+                                         .topology = scene::mesh_topology::lines };
+        const rhi::graphics_pipeline_state picking = pipeline_state_for(pass_kind::picking, additive, write_mask::all);
+        CHECK(picking.depth.test);
+        CHECK_FALSE(picking.depth.write);
+        CHECK(picking.rasterizer.depth_bias == overlay_depth_bias);
+        REQUIRE(picking.render_target_count == 1);
+        CHECK(picking.render_target_formats[0] == rhi::format::rg32_uint);
+        CHECK_FALSE(picking.blend[0].enable);
+        const rhi::graphics_pipeline_state on_top =
+            pipeline_state_for(pass_kind::picking_on_top, opaque, write_mask::all);
+        CHECK_FALSE(on_top.depth.test);
+        CHECK(on_top.render_target_formats[0] == rhi::format::rg32_uint);
+
+        // A blended set shares the opaque set's pixel shader, which reads the coverage from the material
+        CHECK(shader_ids_for(pass_kind::picking, additive).pixel == "picking.pixel_main.lines.ps");
+        pipeline_set_key masked = opaque;
+        masked.alpha_mode = scene::alpha_mode::mask;
+        CHECK(shader_ids_for(pass_kind::picking_on_top, masked).pixel == "picking.pixel_main.alpha_mask.ps");
+        CHECK(to_string(pass_kind::picking) == "picking");
+        CHECK(to_string(pass_kind::picking_on_top) == "picking_on_top");
+    }
+
     SECTION("sidedness and write masks")
     {
         pipeline_set_key double_sided = opaque;
@@ -288,7 +308,7 @@ TEST_CASE("pipeline state per pass kind", "[renderer][unit]")
         const rhi::graphics_pipeline_state color_only = pipeline_state_for(pass_kind::depth, opaque, write_mask::color);
         CHECK_FALSE(color_only.depth.write);
         const rhi::graphics_pipeline_state red =
-            pipeline_state_for(pass_kind::gbuffer_picking, opaque, write_mask::red | write_mask::depth);
+            pipeline_state_for(pass_kind::gbuffer, opaque, write_mask::red | write_mask::depth);
         for (std::uint32_t target = 0; target < red.render_target_count; ++target)
         {
             CHECK(red.blend[target].write_mask == write_mask::red);
@@ -323,13 +343,13 @@ TEST_CASE("startup creates the base pipeline sets", "[renderer]")
         CHECK(set.slot(pass_kind::depth).drawn() == opaque_or_mask(set.key));
         CHECK(set.slot(pass_kind::shadow).drawn() == opaque_or_mask(set.key));
         CHECK(set.slot(pass_kind::gbuffer).drawn() == opaque_or_mask(set.key));
-        CHECK(set.slot(pass_kind::gbuffer_picking).drawn() == opaque_or_mask(set.key));
         CHECK(set.slot(pass_kind::forward).drawn() == !opaque_or_mask(set.key));
-        CHECK(set.slot(pass_kind::forward_picking).drawn() == !opaque_or_mask(set.key));
         for (const pass_kind kind : { pass_kind::overlay,
-                                      pass_kind::overlay_picking,
                                       pass_kind::overlay_on_top,
-                                      pass_kind::overlay_on_top_picking })
+                                      pass_kind::selection,
+                                      pass_kind::selection_on_top,
+                                      pass_kind::picking,
+                                      pass_kind::picking_on_top })
         {
             CHECK(set.slot(kind).drawn());
         }
@@ -425,7 +445,7 @@ TEST_CASE("a key outside the base sets is created on first use", "[renderer]")
     const pipeline_set& set = registry.set(*created);
     CHECK_FALSE(set.base);
     CHECK(set.slot(pass_kind::overlay).drawn());
-    CHECK(set.slot(pass_kind::overlay_on_top_picking).drawn());
+    CHECK(set.slot(pass_kind::picking_on_top).drawn());
     CHECK_FALSE(set.slot(pass_kind::depth).drawn());
     CHECK_FALSE(set.slot(pass_kind::forward).drawn());
     CHECK(registry.statistics().first_use_sets == 1);

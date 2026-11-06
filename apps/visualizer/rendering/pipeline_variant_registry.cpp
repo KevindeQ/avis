@@ -36,19 +36,23 @@ namespace avis::visualizer::rendering
 
         bool is_picking(const pass_kind kind) noexcept
         {
-            return kind == pass_kind::gbuffer_picking || kind == pass_kind::forward_picking ||
-                   kind == pass_kind::overlay_picking || kind == pass_kind::overlay_on_top_picking;
+            return kind == pass_kind::picking || kind == pass_kind::picking_on_top;
         }
 
         bool is_overlay(const pass_kind kind) noexcept
         {
-            return kind == pass_kind::overlay || kind == pass_kind::overlay_picking ||
-                   kind == pass_kind::overlay_on_top || kind == pass_kind::overlay_on_top_picking;
+            return kind == pass_kind::overlay || kind == pass_kind::overlay_on_top;
         }
 
         bool is_selection(const pass_kind kind) noexcept
         {
             return kind == pass_kind::selection || kind == pass_kind::selection_on_top;
+        }
+
+        // The passes that redraw instances of any layer into a mask of their own, without blending
+        bool is_redraw(const pass_kind kind) noexcept
+        {
+            return is_selection(kind) || is_picking(kind);
         }
 
         bool is_depth_only(const pass_kind kind) noexcept
@@ -58,12 +62,12 @@ namespace avis::visualizer::rendering
 
         bool is_gbuffer(const pass_kind kind) noexcept
         {
-            return kind == pass_kind::gbuffer || kind == pass_kind::gbuffer_picking;
+            return kind == pass_kind::gbuffer;
         }
 
         bool is_forward(const pass_kind kind) noexcept
         {
-            return kind == pass_kind::forward || kind == pass_kind::forward_picking;
+            return kind == pass_kind::forward;
         }
 
         // The key with only what `kind`'s PSO depends on, so sets that differ elsewhere share it
@@ -77,9 +81,9 @@ namespace avis::visualizer::rendering
             }
             // The G-buffer writes the shading model as a value (11 §5); overlays are always unlit (11 §3.4)
             result.shading_model = scene::shading_model::lit;
-            if (is_selection(kind) && result.alpha_mode == scene::alpha_mode::blend)
+            if (is_redraw(kind) && result.alpha_mode == scene::alpha_mode::blend)
             {
-                // The mask isn't blended
+                // The mask isn't blended (picking.hlsl reads a blend material's coverage from the material)
                 result.alpha_mode = scene::alpha_mode::opaque;
                 result.blend_operation = scene::blend_operation::normal;
             }
@@ -183,16 +187,10 @@ namespace avis::visualizer::rendering
                                               rhi::format::rgba8_unorm,
                                               rhi::format::r11g11b10_float,
                                               rhi::format::rg16_float };
-        constexpr std::array gbuffer_picking_targets{ rhi::format::rgba8_unorm_srgb, rhi::format::rg16_unorm,
-                                                      rhi::format::rgba8_unorm,      rhi::format::r11g11b10_float,
-                                                      rhi::format::rg16_float,       rhi::format::rg32_uint };
         constexpr std::array forward_targets{ rhi::format::rgba16_float, rhi::format::r8_unorm };
-        constexpr std::array forward_picking_targets{ rhi::format::rgba16_float,
-                                                      rhi::format::r8_unorm,
-                                                      rhi::format::rg32_uint };
         constexpr std::array overlay_targets{ rhi::format::rgba8_unorm };
-        constexpr std::array overlay_picking_targets{ rhi::format::rgba8_unorm, rhi::format::rg32_uint };
         constexpr std::array selection_targets{ rhi::format::r8_unorm };
+        constexpr std::array picking_targets{ rhi::format::rg32_uint };
 
         // A recipe: the reduced key of one pass kind, with a write mask. Equal recipes have equal PSO descriptions.
         struct recipe
@@ -247,24 +245,20 @@ namespace avis::visualizer::rendering
             return "shadow";
         case pass_kind::gbuffer:
             return "gbuffer";
-        case pass_kind::gbuffer_picking:
-            return "gbuffer_picking";
         case pass_kind::forward:
             return "forward";
-        case pass_kind::forward_picking:
-            return "forward_picking";
         case pass_kind::overlay:
             return "overlay";
-        case pass_kind::overlay_picking:
-            return "overlay_picking";
         case pass_kind::overlay_on_top:
             return "overlay_on_top";
-        case pass_kind::overlay_on_top_picking:
-            return "overlay_on_top_picking";
         case pass_kind::selection:
             return "selection";
         case pass_kind::selection_on_top:
             return "selection_on_top";
+        case pass_kind::picking:
+            return "picking";
+        case pass_kind::picking_on_top:
+            return "picking_on_top";
         }
         return "invalid";
     }
@@ -278,21 +272,17 @@ namespace avis::visualizer::rendering
             return {};
         case pass_kind::gbuffer:
             return { gbuffer_targets };
-        case pass_kind::gbuffer_picking:
-            return { gbuffer_picking_targets };
         case pass_kind::forward:
             return { forward_targets };
-        case pass_kind::forward_picking:
-            return { forward_picking_targets };
         case pass_kind::overlay:
         case pass_kind::overlay_on_top:
             return { overlay_targets };
-        case pass_kind::overlay_picking:
-        case pass_kind::overlay_on_top_picking:
-            return { overlay_picking_targets };
         case pass_kind::selection:
         case pass_kind::selection_on_top:
             return { selection_targets };
+        case pass_kind::picking:
+        case pass_kind::picking_on_top:
+            return { picking_targets };
         }
         return {};
     }
@@ -376,7 +366,7 @@ namespace avis::visualizer::rendering
 
     bool draws(const pass_kind kind, const pipeline_set_key& key) noexcept
     {
-        if (is_overlay(kind) || is_selection(kind))
+        if (is_overlay(kind) || is_redraw(kind))
         {
             return true;
         }
@@ -406,7 +396,6 @@ namespace avis::visualizer::rendering
               has(reduced_key.attributes, scene::vertex_attribute::color0) ? "COLOR" : "" },
             "vs");
 
-        const std::string_view picking = is_picking(kind) ? "PICKING" : "";
         if (is_depth_only(kind))
         {
             // Opaque triangles and lines are depth-only
@@ -418,8 +407,7 @@ namespace avis::visualizer::rendering
         }
         else if (is_gbuffer(kind))
         {
-            ids.pixel =
-                shader_id("gbuffer", "pixel_main", { points ? "POINTS" : "", mask ? "ALPHA_MASK" : "", picking }, "ps");
+            ids.pixel = shader_id("gbuffer", "pixel_main", { points ? "POINTS" : "", mask ? "ALPHA_MASK" : "" }, "ps");
         }
         else if (is_forward(kind))
         {
@@ -427,14 +415,13 @@ namespace avis::visualizer::rendering
                 "forward_transparent",
                 "pixel_main",
                 { topology_part(reduced_key.topology),
-                  reduced_key.shading_model == scene::shading_model::unlit ? "UNLIT" : "",
-                  picking },
+                  reduced_key.shading_model == scene::shading_model::unlit ? "UNLIT" : "" },
                 "ps");
         }
-        else if (is_selection(kind))
+        else if (is_redraw(kind))
         {
             ids.pixel = shader_id(
-                "selection_mask",
+                is_picking(kind) ? "picking" : "selection_mask",
                 "pixel_main",
                 { topology_part(reduced_key.topology), mask ? "ALPHA_MASK" : "" },
                 "ps");
@@ -442,10 +429,7 @@ namespace avis::visualizer::rendering
         else
         {
             ids.pixel = shader_id(
-                "overlay",
-                "pixel_main",
-                { topology_part(reduced_key.topology), mask ? "ALPHA_MASK" : "", picking },
-                "ps");
+                "overlay", "pixel_main", { topology_part(reduced_key.topology), mask ? "ALPHA_MASK" : "" }, "ps");
         }
         return ids;
     }
@@ -508,23 +492,21 @@ namespace avis::visualizer::rendering
             state.rasterizer.depth_clip = false;
             break;
         case pass_kind::gbuffer:
-        case pass_kind::gbuffer_picking:
             // The prepass wrote the depth: shade only the visible surface, without overdraw (11 §5)
             state.depth = { .test = true, .write = false, .compare = rhi::comparison::equal };
             break;
         case pass_kind::forward:
-        case pass_kind::forward_picking:
             state.depth = { .test = true, .write = false, .compare = rhi::comparison::greater_equal };
             break;
         case pass_kind::overlay:
-        case pass_kind::overlay_picking:
         case pass_kind::selection:
+        case pass_kind::picking:
             state.depth = { .test = true, .write = false, .compare = rhi::comparison::greater_equal };
             state.rasterizer.depth_bias = overlay_depth_bias; // reverse-Z: towards the camera
             break;
         case pass_kind::overlay_on_top:
-        case pass_kind::overlay_on_top_picking:
         case pass_kind::selection_on_top:
+        case pass_kind::picking_on_top:
             state.depth = { .test = false, .write = false, .compare = rhi::comparison::always };
             break;
         }
@@ -546,7 +528,7 @@ namespace avis::visualizer::rendering
             // Premultiplied for every material: opaque lines and points fade at their edges by their coverage
             state.blend[0] = translucent_blend(canonical_key.blend_operation);
         }
-        // The picking target is never blended (11 §5.1); the blend states default to disabled
+        // The selection mask and the picking target are never blended (11 §5.1); the blend states default to disabled
 
         // set_write_mask only takes writes away (11 §4.7)
         for (std::uint32_t target = 0; target < state.render_target_count; ++target)
