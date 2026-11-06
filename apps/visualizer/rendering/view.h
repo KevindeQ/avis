@@ -61,7 +61,8 @@ namespace avis::visualizer::rendering
     // A copy of one of the view's textures into a caller's texture at the end of the view's frame, for tests and tools
     // (docs/tasks/11-renderer.md §11.10). The texture must have the resource's format and the mip's size, allow
     // copy_destination, and be in `common`, where the frame leaves it. Resources: depth, linear_depth, depth_mips,
-    // gbuffer_albedo, gbuffer_normal, gbuffer_material, gbuffer_emissive, velocity, hdr_color (11.11), ldr_color.
+    // gbuffer_albedo, gbuffer_normal, gbuffer_material, gbuffer_emissive, velocity, hdr_color (11.11), cascade_index
+    // (R8_UINT, the sun's shadow cascade of each pixel or gpu::no_cascade, 11.12), ldr_color.
     struct resource_capture
     {
         std::string resource;

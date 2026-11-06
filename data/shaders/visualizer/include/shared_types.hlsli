@@ -133,6 +133,11 @@ AVIS_SHARED_CONSTANT(uint, environment_prefiltered_mips, 6); // mip m is for rou
 AVIS_SHARED_CONSTANT(uint, environment_irradiance_coefficients, 9); // SH9, one float4 (RGB) each
 AVIS_SHARED_CONSTANT(uint, brdf_lut_size, 128); // texel (i, j) is NoV = (i + 0.5) / 128, roughness = (j + 0.5) / 128
 
+// The sun's shadow cascades (11 §7): at most shadow_maximum_cascades slices of the shadow map. cascade_index (the
+// debug output of deferred_lighting) is no_cascade for a pixel no cascade covers.
+AVIS_SHARED_CONSTANT(uint, shadow_maximum_cascades, 4);
+AVIS_SHARED_CONSTANT(uint, no_cascade, 255);
+
 // ---- Structures ----
 
 // One material slot of the renderer's material buffer (11 §3.3): glTF 2.0 metallic-roughness plus the generic extensions
@@ -309,6 +314,34 @@ struct cluster_build_constants
     uint2 padding1;
 };
 
+// One shadow cascade, as the receiver reads it (11 §7)
+struct shadow_cascade_data
+{
+    float4x4 shadow_from_world; // clip of the cascade: x, y in [-1, 1], z the reverse-Z depth (1 towards the sun)
+    float split_far; // the view depth the cascade ends at
+    float blend_start; // the view depth its blend into the next cascade (or into "lit") starts at
+    float texel_size; // metres per shadow-map texel
+    float padding0;
+};
+
+// The sun's shadow (11 §7): the cascades and the receiver's filter. The cascades are members rather than an array
+// (the layout rules above); shadows.hlsli indexes them.
+struct shadow_constants
+{
+    shadow_cascade_data cascade0;
+    shadow_cascade_data cascade1;
+    shadow_cascade_data cascade2;
+    shadow_cascade_data cascade3;
+    uint shadow_map; // SRV of the D32F Texture2DArray; 0: no shadows, everything is lit
+    uint cascade_count;
+    float resolution; // texels per side of a slice
+    float normal_offset; // texels of the receiver's cascade along its normal, times sin of the normal-sun angle
+    float filter_radius; // the Poisson disk's radius, texels
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
 // The pass constants (b1) of deferred_lighting (11 §6.5); bindless indices of the G-buffer, the clusters and the baked
 // environment
 struct deferred_lighting_constants
@@ -328,13 +361,14 @@ struct deferred_lighting_constants
     uint irradiance; // StructuredBuffer<float4>, environment_irradiance_coefficients SH9 coefficients
     uint prefiltered; // TextureCube SRV
     uint brdf_lut; // Texture2D SRV, RG16F
-    uint shadow_map; // reserved for the cascades (11.12); 0: everything is lit
+    uint cascade_index; // UAV of the cascade_index debug output (R8_UINT); 0: not written
     uint2 size; // pixels
     uint2 tile_size; // pixels per cluster tile
     float exposure; // pre-exposure: hdr_color = radiance · exposure
     float ambient_intensity; // scales the image-based lighting
     uint padding0;
     uint padding1;
+    shadow_constants shadow; // the sun's
 };
 
 // The pass constants (b1) of the sky pass (11 §2.3 pass 9)
@@ -467,12 +501,30 @@ static_assert(offsetof(cluster_build_constants, bounds) == 64);
 static_assert(offsetof(cluster_build_constants, size) == 72);
 static_assert(offsetof(cluster_build_constants, tile_size) == 80);
 
-static_assert(sizeof(deferred_lighting_constants) == 96);
+static_assert(sizeof(shadow_cascade_data) == 80);
+static_assert(offsetof(shadow_cascade_data, shadow_from_world) == 0);
+static_assert(offsetof(shadow_cascade_data, split_far) == 64);
+static_assert(offsetof(shadow_cascade_data, blend_start) == 68);
+static_assert(offsetof(shadow_cascade_data, texel_size) == 72);
+
+static_assert(sizeof(shadow_constants) == 352);
+static_assert(offsetof(shadow_constants, cascade0) == 0);
+static_assert(offsetof(shadow_constants, cascade1) == 80);
+static_assert(offsetof(shadow_constants, cascade2) == 160);
+static_assert(offsetof(shadow_constants, cascade3) == 240);
+static_assert(offsetof(shadow_constants, shadow_map) == 320);
+static_assert(offsetof(shadow_constants, cascade_count) == 324);
+static_assert(offsetof(shadow_constants, resolution) == 328);
+static_assert(offsetof(shadow_constants, normal_offset) == 332);
+static_assert(offsetof(shadow_constants, filter_radius) == 336);
+
+static_assert(sizeof(deferred_lighting_constants) == 448);
 static_assert(offsetof(deferred_lighting_constants, albedo) == 0);
 static_assert(offsetof(deferred_lighting_constants, depth) == 16);
 static_assert(offsetof(deferred_lighting_constants, cluster_lights) == 32);
 static_assert(offsetof(deferred_lighting_constants, irradiance) == 48);
-static_assert(offsetof(deferred_lighting_constants, shadow_map) == 60);
+static_assert(offsetof(deferred_lighting_constants, cascade_index) == 60);
+static_assert(offsetof(deferred_lighting_constants, shadow) == 96);
 static_assert(offsetof(deferred_lighting_constants, size) == 64);
 static_assert(offsetof(deferred_lighting_constants, tile_size) == 72);
 static_assert(offsetof(deferred_lighting_constants, exposure) == 80);

@@ -1,5 +1,7 @@
 #include "rendering/pipeline_variant_registry.h"
 
+#include "rendering/cascades.h"
+
 #include "avis/graphics/error.h"
 #include "avis/graphics/pipeline_cache.h"
 #include "avis/graphics/root_signature_registry.h"
@@ -474,8 +476,14 @@ namespace avis::visualizer::rendering
         switch (kind)
         {
         case pass_kind::depth:
+            state.depth = { .test = true, .write = true, .compare = rhi::comparison::greater_equal };
+            break;
         case pass_kind::shadow:
             state.depth = { .test = true, .write = true, .compare = rhi::comparison::greater_equal };
+            // Reverse-Z: a negative slope-scaled bias moves the casters away from the sun. Without depth clipping,
+            // casters between the sun and the cascade's near plane are flattened onto it (11 §7, cascades.h).
+            state.rasterizer.slope_scaled_depth_bias = -shadow_slope_scaled_depth_bias;
+            state.rasterizer.depth_clip = false;
             break;
         case pass_kind::gbuffer:
         case pass_kind::gbuffer_picking:

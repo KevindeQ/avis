@@ -5,17 +5,20 @@
 // render graph (10). Scene-agnostic: it reads the snapshot and the views, nothing else (11 §2.1).
 //
 // Each view's frame (11 §2.3) is, so far: depth_prepass, linearize_depth with the depth_mips chain, cluster_build and
-// light_cull on async compute, gbuffer (11.10), deferred_lighting and sky into hdr_color (11.11), then a placeholder
-// tonemap (Reinhard and sRGB, until 11.16), and present_to_shared, which copies ldr_color into the view's output.
-// Before the views, the environment baker bakes the sky cubemap, the prefiltered cubemap and the SH9 irradiance when
-// the snapshot's environment changes, and the BRDF LUT once (11 §6.4). Residency runs in every frame's prepare stage:
-// the snapshot's meshes are uploaded into the geometry arena (11.3), its textures into their own RHI textures and its
-// materials into the material table (11.4). The arena and the material table are imported into the graph, and the frame
-// generates the mip chains of newly uploaded images. Extraction (11.5) then builds the frame's instance and light
-// arrays, interpolated at the frame's time, and pass 0 (upload_frame_data) copies them into persistent ring-indexed
-// buffers. Startup creates the pipeline sets the passes draw with (11.7). Each view's draw list (11.8) is cut into runs
-// before pass 0, which uploads their instance indices; the passes record their key ranges with the range walker (11.9).
+// light_cull on async compute, gbuffer (11.10), shadow_cascades when the sun casts shadows (11.12), deferred_lighting
+// and sky into hdr_color (11.11), then a placeholder tonemap (Reinhard and sRGB, until 11.16), and present_to_shared,
+// which copies ldr_color into the view's output. The cascades are computed per view before the draw lists, which cull
+// the shadow casters into them. Before the views, the environment baker bakes the sky cubemap, the prefiltered cubemap
+// and the SH9 irradiance when the snapshot's environment changes, and the BRDF LUT once (11 §6.4). Residency runs in
+// every frame's prepare stage: the snapshot's meshes are uploaded into the geometry arena (11.3), its textures into
+// their own RHI textures and its materials into the material table (11.4). The arena and the material table are
+// imported into the graph, and the frame generates the mip chains of newly uploaded images. Extraction (11.5) then
+// builds the frame's instance and light arrays, interpolated at the frame's time, and pass 0 (upload_frame_data) copies
+// them into persistent ring-indexed buffers. Startup creates the pipeline sets the passes draw with (11.7). Each view's
+// draw list (11.8) is cut into runs before pass 0, which uploads their instance indices; the passes record their key
+// ranges with the range walker (11.9).
 
+#include "rendering/cascades.h"
 #include "rendering/draw_lists.h"
 #include "rendering/environment_baker.h"
 #include "rendering/extraction.h"
@@ -287,6 +290,13 @@ namespace avis::visualizer::rendering
             return instance_indices_;
         }
 
+        // The shadow cascades of the frame being built, one per view in view order (11.12); count 0 for a view without
+        // them (no sun, or a sun that casts no shadows). Valid until the next render.
+        std::span<const shadow_cascades> view_cascades() const noexcept
+        {
+            return view_cascades_;
+        }
+
         // The frame's mesh table, parallel to extraction().meshes: what the draw lists and the range walks read
         std::span<const draw_mesh> draw_meshes() const noexcept
         {
@@ -343,8 +353,12 @@ namespace avis::visualizer::rendering
         std::optional<error> add_buffer_captures(
             const view_description& view, graphics::buffer cluster_lights, graphics::buffer light_indices);
 
-        // The view's draw list (11 §4.5), in the graph's arena
-        draw_list build_view_draw_list(const scene::snapshot& snapshot, const view_description& view);
+        // The view's shadow cascades (11 §7): none without a sun that casts shadows
+        shadow_cascades compute_view_cascades(const view_description& view) const;
+
+        // The view's draw list (11 §4.5), in the graph's arena, with the cascades' shadow casters
+        draw_list build_view_draw_list(
+            const scene::snapshot& snapshot, const view_description& view, const shadow_cascades& cascades);
 
         renderer_dependencies dependencies_;
         graphics::render_graph& graph_;
@@ -379,6 +393,7 @@ namespace avis::visualizer::rendering
         std::unique_ptr<frame_data_upload> frame_data_;
         frame_buffers frame_buffers_; // of the frame being built
         std::vector<draw_mesh> draw_meshes_; // the frame's meshes for the draw lists, parallel to extraction_.meshes
+        std::vector<shadow_cascades> view_cascades_; // of the frame being built, per view
         std::vector<draw_list> draw_lists_; // of the frame being built, per view
         std::vector<prepared_draw_list> prepared_draw_lists_; // their runs, per view (11.9)
         std::vector<std::uint32_t> instance_indices_; // of every view's draw runs, uploaded by pass 0

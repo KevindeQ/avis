@@ -83,7 +83,9 @@ namespace avis::visualizer::rendering
             graphics::buffer irradiance;
             graphics::texture prefiltered;
             graphics::texture brdf_lut;
+            graphics::texture shadow_map;
             graphics::texture hdr_color;
+            graphics::texture cascade_index;
         };
 
         struct sky_data
@@ -188,77 +190,90 @@ namespace avis::visualizer::rendering
         return { .bounds = culled.bounds, .lights = culled.cluster_lights, .indices = culled.light_indices };
     }
 
-    graphics::texture add_deferred_lighting(graphics::render_graph& graph, const deferred_lighting_inputs& inputs)
+    deferred_lighting_outputs
+        add_deferred_lighting(graphics::render_graph& graph, const deferred_lighting_inputs& inputs)
     {
         const graphics::texture_extent tile = cluster_tile_size(
             { static_cast<std::uint32_t>(inputs.view_constants.size.x),
               static_cast<std::uint32_t>(inputs.view_constants.size.y) });
-        return graph
-            .add_compute_pass<deferred_lighting_data>(
-                "deferred_lighting",
-                [&](graphics::render_pass_builder& builder, deferred_lighting_data& data)
+        const deferred_lighting_data& lit = graph.add_compute_pass<deferred_lighting_data>(
+            "deferred_lighting",
+            [&](graphics::render_pass_builder& builder, deferred_lighting_data& data)
+            {
+                const auto srv = graphics::texture_read::srv_compute;
+                data.albedo = builder.read(inputs.gbuffer.albedo, srv);
+                data.normal = builder.read(inputs.gbuffer.normal, srv);
+                data.material = builder.read(inputs.gbuffer.material, srv);
+                data.emissive = builder.read(inputs.gbuffer.emissive, srv);
+                data.depth = builder.read(inputs.depth, srv);
+                data.linear_depth = builder.read(inputs.linear_depth, srv);
+                data.lights = builder.read(inputs.frame.lights, graphics::buffer_read::srv_compute);
+                data.cluster_lights = builder.read(inputs.clusters.lights, graphics::buffer_read::srv_compute);
+                data.light_indices = builder.read(inputs.clusters.indices, graphics::buffer_read::srv_compute);
+                data.irradiance = builder.read(inputs.environment.irradiance, graphics::buffer_read::srv_compute);
+                data.prefiltered = builder.read(inputs.environment.prefiltered, srv);
+                data.brdf_lut = builder.read(inputs.environment.brdf_lut, srv);
+                if (inputs.shadow_map.valid())
                 {
-                    const auto srv = graphics::texture_read::srv_compute;
-                    data.albedo = builder.read(inputs.gbuffer.albedo, srv);
-                    data.normal = builder.read(inputs.gbuffer.normal, srv);
-                    data.material = builder.read(inputs.gbuffer.material, srv);
-                    data.emissive = builder.read(inputs.gbuffer.emissive, srv);
-                    data.depth = builder.read(inputs.depth, srv);
-                    data.linear_depth = builder.read(inputs.linear_depth, srv);
-                    data.lights = builder.read(inputs.frame.lights, graphics::buffer_read::srv_compute);
-                    data.cluster_lights = builder.read(inputs.clusters.lights, graphics::buffer_read::srv_compute);
-                    data.light_indices = builder.read(inputs.clusters.indices, graphics::buffer_read::srv_compute);
-                    data.irradiance = builder.read(inputs.environment.irradiance, graphics::buffer_read::srv_compute);
-                    data.prefiltered = builder.read(inputs.environment.prefiltered, srv);
-                    data.brdf_lut = builder.read(inputs.environment.brdf_lut, srv);
-                    data.hdr_color = builder.write(
+                    data.shadow_map = builder.read(inputs.shadow_map, srv);
+                }
+                data.hdr_color = builder.write(
+                    builder.create_texture(
+                        "hdr_color", { .size = graphics::view_relative(1.0f), .format = rhi::format::rgba16_float }),
+                    graphics::texture_write::uav);
+                if (inputs.cascade_index)
+                {
+                    data.cascade_index = builder.write(
                         builder.create_texture(
-                            "hdr_color",
-                            { .size = graphics::view_relative(1.0f), .format = rhi::format::rgba16_float }),
+                            "cascade_index", { .size = graphics::view_relative(1.0f), .format = rhi::format::r8_uint }),
                         graphics::texture_write::uav);
-                },
-                [pipeline = inputs.pipeline,
-                 lights_srv = inputs.frame.lights_srv,
-                 sun = inputs.sun,
-                 exposure = inputs.exposure,
-                 ambient_intensity = inputs.ambient_intensity,
-                 tile,
-                 view_constants = inputs.view_constants](
-                    const deferred_lighting_data& data,
-                    const graphics::resource_bag& resources,
-                    graphics::compute_pass_context& context)
-                {
-                    const std::uint32_t width = resources.width(data.hdr_color);
-                    const std::uint32_t height = resources.height(data.hdr_color);
-                    gpu::deferred_lighting_constants constants{};
-                    constants.albedo = resources.srv(data.albedo).value;
-                    constants.normal = resources.srv(data.normal).value;
-                    constants.material = resources.srv(data.material).value;
-                    constants.emissive = resources.srv(data.emissive).value;
-                    constants.depth = resources.srv(data.depth).value;
-                    constants.linear_depth = resources.srv(data.linear_depth).value;
-                    constants.hdr_color = resources.uav(data.hdr_color).value;
-                    constants.lights = lights_srv.value;
-                    constants.cluster_lights = resources.srv(data.cluster_lights).value;
-                    constants.light_indices = resources.srv(data.light_indices).value;
-                    constants.sun = sun;
-                    constants.ambient_occlusion = 0; // GTAO comes with 11.13
-                    constants.irradiance = resources.srv(data.irradiance).value;
-                    constants.prefiltered = resources.srv(data.prefiltered).value;
-                    constants.brdf_lut = resources.srv(data.brdf_lut).value;
-                    constants.shadow_map = 0; // the cascades come with 11.12
-                    constants.size = { width, height };
-                    constants.tile_size = { tile.width, tile.height };
-                    constants.exposure = exposure;
-                    constants.ambient_intensity = ambient_intensity;
+                }
+            },
+            [pipeline = inputs.pipeline,
+             lights_srv = inputs.frame.lights_srv,
+             sun = inputs.sun,
+             exposure = inputs.exposure,
+             ambient_intensity = inputs.ambient_intensity,
+             tile,
+             shadow = inputs.shadow,
+             view_constants = inputs.view_constants](
+                const deferred_lighting_data& data,
+                const graphics::resource_bag& resources,
+                graphics::compute_pass_context& context)
+            {
+                const std::uint32_t width = resources.width(data.hdr_color);
+                const std::uint32_t height = resources.height(data.hdr_color);
+                gpu::deferred_lighting_constants constants{};
+                constants.albedo = resources.srv(data.albedo).value;
+                constants.normal = resources.srv(data.normal).value;
+                constants.material = resources.srv(data.material).value;
+                constants.emissive = resources.srv(data.emissive).value;
+                constants.depth = resources.srv(data.depth).value;
+                constants.linear_depth = resources.srv(data.linear_depth).value;
+                constants.hdr_color = resources.uav(data.hdr_color).value;
+                constants.lights = lights_srv.value;
+                constants.cluster_lights = resources.srv(data.cluster_lights).value;
+                constants.light_indices = resources.srv(data.light_indices).value;
+                constants.sun = sun;
+                constants.ambient_occlusion = 0; // GTAO comes with 11.13
+                constants.irradiance = resources.srv(data.irradiance).value;
+                constants.prefiltered = resources.srv(data.prefiltered).value;
+                constants.brdf_lut = resources.srv(data.brdf_lut).value;
+                constants.cascade_index = data.cascade_index.valid() ? resources.uav(data.cascade_index).value : 0;
+                constants.size = { width, height };
+                constants.tile_size = { tile.width, tile.height };
+                constants.exposure = exposure;
+                constants.ambient_intensity = ambient_intensity;
+                constants.shadow = shadow;
+                constants.shadow.shadow_map = data.shadow_map.valid() ? resources.srv(data.shadow_map).value : 0;
 
-                    rhi::compute_recorder& recorder = context.recorder();
-                    recorder.set_pipeline(pipeline);
-                    graphics::binding_layout::set_pass_constants(recorder, context.allocate_constants(constants));
-                    graphics::binding_layout::set_view_constants(recorder, context.allocate_constants(view_constants));
-                    recorder.dispatch(groups(width), groups(height), 1);
-                })
-            .hdr_color;
+                rhi::compute_recorder& recorder = context.recorder();
+                recorder.set_pipeline(pipeline);
+                graphics::binding_layout::set_pass_constants(recorder, context.allocate_constants(constants));
+                graphics::binding_layout::set_view_constants(recorder, context.allocate_constants(view_constants));
+                recorder.dispatch(groups(width), groups(height), 1);
+            });
+        return { .hdr_color = lit.hdr_color, .cascade_index = lit.cascade_index };
     }
 
     rhi::graphics_pipeline_state sky_pipeline_state() noexcept

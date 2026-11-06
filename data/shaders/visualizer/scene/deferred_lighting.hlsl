@@ -2,23 +2,34 @@
 //
 // Deferred lighting (docs/design/11-renderer.md §6.5, §2.3 pass 8, docs/tasks/11-renderer.md §11.11): one pixel per
 // thread in 8 × 8 groups. It reconstructs the world position from the depth buffer, then sums
-//   - the sun, with its shadow (all lit until the cascades exist, 11.12);
+//   - the sun, with its shadow from the cascaded shadow maps (shadows.hlsli, 11.12);
 //   - the point and spot lights of the pixel's cluster;
 //   - the image-based ambient light of the baked environment, with ambient occlusion (the material's, and GTAO's once
 //     it exists, 11.13) and Lagarde's specular occlusion;
 //   - the emissive radiance.
 // Unlit pixels pass their base colour through. The result is pre-exposed: hdr_color = radiance · exposure. Pixels with
-// nothing drawn (depth 0) are left at 0 for the sky pass.
+// nothing drawn (depth 0) are left at 0 for the sky pass. When constants.cascade_index names a UAV, each pixel's shadow
+// cascade goes there (no_cascade where none applies), for the debug blit (11.20) and the tests.
 
 #include "bindless.hlsli"
 #include "brdf.hlsli"
 #include "environment.hlsli"
 #include "lighting.hlsli"
 #include "packing.hlsli"
+#include "shadows.hlsli"
 #include "shared_types.hlsli"
 
 AVIS_PASS_CONSTANTS(deferred_lighting_constants, constants);
 AVIS_VIEW_CONSTANTS(view_constants, view);
+
+void write_cascade_index(uint2 pixel, uint index)
+{
+    if (avis_has_descriptor(constants.cascade_index))
+    {
+        RWTexture2D<uint> cascade_index = ResourceDescriptorHeap[constants.cascade_index];
+        cascade_index[pixel] = index;
+    }
+}
 
 [numthreads(8, 8, 1)] void main(uint3 thread : SV_DispatchThreadID)
 {
@@ -34,6 +45,7 @@ AVIS_VIEW_CONSTANTS(view_constants, view);
     if (device_depth <= 0.0)
     {
         hdr_color[thread.xy] = float4(0.0, 0.0, 0.0, 1.0);
+        write_cascade_index(thread.xy, no_cascade);
         return;
     }
 
@@ -50,6 +62,7 @@ AVIS_VIEW_CONSTANTS(view_constants, view);
     {
         // Unlit: the base colour, as it is
         hdr_color[thread.xy] = float4(albedo.rgb * constants.exposure, 1.0);
+        write_cascade_index(thread.xy, no_cascade);
         return;
     }
 
@@ -62,18 +75,27 @@ AVIS_VIEW_CONSTANTS(view_constants, view);
     const surface s = make_surface(position, normal, albedo.rgb, material.r, material.g);
 
     float3 radiance = emissive;
+    const float view_depth = linear_depth.Load(texel);
 
     StructuredBuffer<light_data> lights = ResourceDescriptorHeap[constants.lights];
+    uint cascade = no_cascade;
     if (constants.sun != no_light)
     {
-        const float shadow = 1.0; // the cascades come with 11.12
-        radiance += evaluate_directional_light(lights[constants.sun], s, to_view, shadow);
+        const light_data sun = lights[constants.sun];
+        const float n_dot_l = dot(normal, -sun.direction);
+        float shadow = 1.0;
+        if (sun.casts_shadows != 0 && n_dot_l > 0.0)
+        {
+            shadow = sun_shadow(
+                constants.shadow, view_depth, position, normal, n_dot_l, float2(thread.xy), view.frame_index, cascade);
+        }
+        radiance += evaluate_directional_light(sun, s, to_view, shadow);
     }
+    write_cascade_index(thread.xy, cascade);
 
     StructuredBuffer<cluster_lights> clusters = ResourceDescriptorHeap[constants.cluster_lights];
     StructuredBuffer<uint> light_indices = ResourceDescriptorHeap[constants.light_indices];
-    const cluster_lights cluster =
-        clusters[cluster_index(pixel_cluster(thread.xy, constants.tile_size, linear_depth.Load(texel)))];
+    const cluster_lights cluster = clusters[cluster_index(pixel_cluster(thread.xy, constants.tile_size, view_depth))];
     for (uint index = 0; index < cluster.count; ++index)
     {
         radiance += evaluate_punctual_light(lights[light_indices[cluster.offset + index]], s, to_view);

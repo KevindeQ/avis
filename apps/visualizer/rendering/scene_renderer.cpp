@@ -4,6 +4,7 @@
 #include "rendering/passes/gbuffer_pass.h"
 #include "rendering/passes/lighting_passes.h"
 #include "rendering/passes/scene_range_pass.h"
+#include "rendering/passes/shadow_pass.h"
 #include "rendering/renderer_shaders.h"
 #include "rendering/view_constants.h"
 
@@ -385,6 +386,7 @@ namespace avis::visualizer::rendering
     {
         graph_.reset();
         rebuilt_clusters_.clear();
+        view_cascades_.clear();
         draw_lists_.clear(); // they were in the arena
         prepared_draw_lists_.clear();
         instance_indices_.clear();
@@ -459,10 +461,12 @@ namespace avis::visualizer::rendering
 
         // Each view's draw list, culled, keyed and sorted (11 §4.5), then cut into runs whose instance indices pass 0
         // uploads (11.9): a serial prefix pass, so the passes' recording groups don't race
+        view_cascades_.reserve(views.size());
         draw_lists_.reserve(views.size());
         for (const view_description& view : views)
         {
-            draw_lists_.push_back(build_view_draw_list(snapshot, view));
+            view_cascades_.push_back(compute_view_cascades(view));
+            draw_lists_.push_back(build_view_draw_list(snapshot, view, view_cascades_.back()));
         }
         prepared_draw_lists_.reserve(draw_lists_.size());
         for (const draw_list& list : draw_lists_)
@@ -687,7 +691,27 @@ namespace avis::visualizer::rendering
         return std::nullopt;
     }
 
-    draw_list scene_renderer::build_view_draw_list(const scene::snapshot& snapshot, const view_description& view)
+    shadow_cascades scene_renderer::compute_view_cascades(const view_description& view) const
+    {
+        if (!extraction_.sun || *extraction_.sun >= extraction_.lights.size())
+        {
+            return {};
+        }
+        const gpu::light_data& sun = extraction_.lights[*extraction_.sun];
+        if (sun.casts_shadows == 0)
+        {
+            return {};
+        }
+        const float aspect_ratio = static_cast<float>(view.size.width) / static_cast<float>(view.size.height);
+        return compute_cascades(
+            view.camera,
+            aspect_ratio,
+            { sun.direction.x, sun.direction.y, sun.direction.z },
+            cascade_parameters_of(settings_.shadows));
+    }
+
+    draw_list scene_renderer::build_view_draw_list(
+        const scene::snapshot& snapshot, const view_description& view, const shadow_cascades& cascades)
     {
         // The material state of the slot extraction gave the instance: the material's current slot, or the default
         // material (lit, opaque, single-sided). A set that can't be created is tried again next frame.
@@ -696,7 +720,7 @@ namespace avis::visualizer::rendering
             .snapshot = snapshot,
             .extraction = extraction_,
             .meshes = draw_meshes_,
-            .cascades = {}, // the shadow cascades come with 11.12
+            .cascades = cascades.used_viewpoints(),
             .commands = {},
             .lookup = { .material =
                             [this](const scene::material_handle material)
@@ -814,10 +838,19 @@ namespace avis::visualizer::rendering
               .depth_mip_count = depth_mips,
               .view_constants = inputs.view_constants });
 
-        // Pass 4 (11.10), then lighting and the sky (11.11), then the placeholder tonemap until 11.16
+        // Pass 4 (11.10), the shadow cascades (11.12; declared after GTAO once it exists, 11 §2.3), then lighting and
+        // the sky (11.11), then the placeholder tonemap until 11.16
         const gbuffer_targets gbuffer = add_gbuffer_pass(graph_, inputs, depth);
+        const shadow_cascades& cascades = view_cascades_[index];
+        graphics::texture shadow_map;
+        if (cascades.count > 0)
+        {
+            shadow_map = add_shadow_cascades(graph_, inputs, cascades, static_cast<std::uint32_t>(frame.index()));
+        }
+        const bool wants_cascade_index = std::ranges::any_of(
+            view.options.captures, [](const resource_capture& capture) { return capture.resource == "cascade_index"; });
         const float exposure = manual_exposure(settings_.exposure.ev100); // until the exposure pass (11.16)
-        const graphics::texture lit = add_deferred_lighting(
+        const deferred_lighting_outputs lit = add_deferred_lighting(
             graph_,
             { .pipeline = deferred_lighting_pipeline_,
               .gbuffer = gbuffer,
@@ -829,11 +862,14 @@ namespace avis::visualizer::rendering
               .environment = environment_resources_,
               .exposure = exposure,
               .ambient_intensity = ambient_intensity_,
-              .view_constants = inputs.view_constants });
+              .view_constants = inputs.view_constants,
+              .shadow_map = shadow_map,
+              .shadow = make_shadow_constants(cascades, 0),
+              .cascade_index = wants_cascade_index });
         const sky_outputs sky = add_sky_pass(
             graph_,
             { .pipeline = sky_pipeline_,
-              .hdr_color = lit,
+              .hdr_color = lit.hdr_color,
               .depth = gbuffer.depth,
               .sky = environment_->sky(),
               .exposure = exposure,
@@ -851,6 +887,7 @@ namespace avis::visualizer::rendering
             capturable{ "gbuffer_emissive", gbuffer.emissive, rhi::format::r11g11b10_float },
             capturable{ "velocity", gbuffer.velocity, rhi::format::rg16_float },
             capturable{ "hdr_color", sky.hdr_color, rhi::format::rgba16_float },
+            capturable{ "cascade_index", lit.cascade_index, rhi::format::r8_uint },
             capturable{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
         };
         for (std::size_t capture_index = 0; capture_index < view.options.captures.size(); ++capture_index)
@@ -880,24 +917,44 @@ namespace avis::visualizer::rendering
             const rhi::access_state common = rhi::access_states::common;
             const graphics::texture destination =
                 graph_.import_texture(std::format("capture_{}", capture_index), capture.texture, common, common);
-            graph_.add_copy_pass<capture_data>(
-                std::format("copy_capture_{}", capture_index),
-                [&](graphics::render_pass_builder& builder, capture_data& data)
-                {
-                    const graphics::subresource_range mip{ .first_mip = static_cast<std::uint16_t>(capture.mip),
-                                                           .mip_count = 1 };
-                    data.source = builder.read(found->texture, graphics::texture_read::copy_source, mip);
-                    data.destination = builder.write(destination, graphics::texture_write::copy_destination);
-                    data.mip = capture.mip;
-                },
-                [](const capture_data& data, const graphics::resource_bag& bag, graphics::copy_pass_context& context)
-                {
-                    context.recorder().copy_texture(
-                        bag.texture_handle(data.destination),
-                        {},
-                        bag.texture_handle(data.source),
-                        rhi::subresource{ .mip = static_cast<std::uint16_t>(data.mip) });
-                });
+            const auto setup = [&](graphics::render_pass_builder& builder, capture_data& data)
+            {
+                const graphics::subresource_range mip{ .first_mip = static_cast<std::uint16_t>(capture.mip),
+                                                       .mip_count = 1 };
+                data.source = builder.read(found->texture, graphics::texture_read::copy_source, mip);
+                data.destination = builder.write(destination, graphics::texture_write::copy_destination);
+                data.mip = capture.mip;
+            };
+            const auto execute = [](const capture_data& data, const graphics::resource_bag& bag, auto& context)
+            {
+                context.recorder().copy_texture(
+                    bag.texture_handle(data.destination),
+                    {},
+                    bag.texture_handle(data.source),
+                    rhi::subresource{ .mip = static_cast<std::uint16_t>(data.mip) });
+            };
+            const std::string pass_name = std::format("copy_capture_{}", capture_index);
+            if (rhi::traits(found->format).depth)
+            {
+                // On the graphics queue, which can decompress a compressed depth buffer; a copy queue may not
+                graph_.add_graphics_pass<capture_data>(
+                    pass_name,
+                    setup,
+                    [execute](
+                        const capture_data& data,
+                        const graphics::resource_bag& bag,
+                        graphics::graphics_pass_context& context) { execute(data, bag, context); });
+            }
+            else
+            {
+                graph_.add_copy_pass<capture_data>(
+                    pass_name,
+                    setup,
+                    [execute](
+                        const capture_data& data,
+                        const graphics::resource_bag& bag,
+                        graphics::copy_pass_context& context) { execute(data, bag, context); });
+            }
         }
 
         if (auto failed = add_buffer_captures(view, clusters.lights, clusters.indices))

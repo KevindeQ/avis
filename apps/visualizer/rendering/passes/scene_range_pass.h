@@ -7,10 +7,11 @@
 //
 // A range is recorded in one graph pass per recording part (split_runs): "<name>", then "<name>_part1", … Every part
 // writes the same attachments, so the graph orders them and puts them into recording groups recorded in parallel. The
-// first part creates the attachments that don't exist yet, and clears the ones asked for. Every part reads the frame's
-// instances and instance indices, the geometry arena (the index buffer as both index buffer and SRV, for line meshes)
-// and the material table, and binds them as scene_pass_constants (b1). The camera viewport is bound with the view's
-// constants (b2).
+// first part creates the attachments that don't exist yet, and records the clears asked for (every layer, to the
+// description's clear value), since the graph's write_flags::needs_clear only declares the need. Every part reads the
+// frame's instances and instance indices, the geometry arena (the index buffer as both index buffer and SRV, for line
+// meshes) and the material table, and binds them as scene_pass_constants (b1). Each viewport of the key the pass draws
+// is bound to its layer of the attachments with its own view constants (b2): by default the camera, with the view's.
 
 #include "rendering/frame_data.h"
 #include "rendering/pipeline_variant_registry.h"
@@ -69,12 +70,21 @@ namespace avis::visualizer::rendering
         std::size_t parts = 0;
     };
 
+    // One viewport of the key a pass draws, bound to one layer of its attachments
+    struct scene_viewport
+    {
+        rendering::viewport point;
+        std::uint32_t layer = 0; // the attachments' array slice
+        gpu::view_constants view_constants;
+    };
+
     struct scene_range_pass
     {
         std::string_view name;
         pass_kind kind = pass_kind::depth;
         key_range range;
         float line_margin = 0.0f; // scene_pass_constants::line_margin
+        std::span<const scene_viewport> viewports; // empty: the camera, layer 0, with inputs.view_constants
     };
 
     // Adds the parts of `pass` to the open view of `graph`. The attachments' formats must be attachment_formats(kind).

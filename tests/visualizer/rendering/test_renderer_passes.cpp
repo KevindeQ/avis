@@ -147,7 +147,8 @@ TEST_CASE("the TAA jitter is Halton(2, 3) over 16 distinct sub-pixel samples", "
     CHECK(halton(3, 2) == Catch::Approx(0.75f));
     CHECK(halton(1, 3) == Catch::Approx(1.0f / 3.0f));
     CHECK(halton(2, 3) == Catch::Approx(2.0f / 3.0f));
-    CHECK(halton(4, 3) == Catch::Approx(1.0f / 9.0f));
+    CHECK(halton(3, 3) == Catch::Approx(1.0f / 9.0f)); // 3 is "10" in base 3
+    CHECK(halton(4, 3) == Catch::Approx(4.0f / 9.0f)); // "11": 1/3 + 1/9
 
     std::set<std::pair<float, float>> samples;
     for (std::uint64_t sequence = 0; sequence < jitter_sample_count; ++sequence)

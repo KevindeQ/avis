@@ -417,11 +417,16 @@ TEST_CASE_METHOD(tests::renderer_fixture, "the renderer extracts the snapshot an
     CHECK(information.extraction.lights == 2);
     CHECK(information.extraction.skipped_not_resident == 0);
     CHECK(information.frame_data.uploads == 1);
-    // Plus the instance indices of the draw runs (11.9): one per drawn item
-    CHECK(information.instance_indices == 2);
+    // Plus the instance indices of the draw runs (11.9): one per drawn item, in the camera and in the sun's shadow
+    // cascades (11.12)
+    REQUIRE(information.draw_lists.size() == 1);
+    const std::size_t drawn = information.draw_lists[0].items;
+    CHECK(information.draw_lists[0].camera_items == 2);
+    CHECK(drawn > 2);
+    CHECK(information.instance_indices == drawn);
     CHECK(
         information.frame_data.uploaded_bytes ==
-        2 * sizeof(gpu::instance_data) + 2 * sizeof(gpu::light_data) + 2 * sizeof(std::uint32_t));
+        2 * sizeof(gpu::instance_data) + 2 * sizeof(gpu::light_data) + drawn * sizeof(std::uint32_t));
     REQUIRE(renderer->extraction().sun.has_value());
 
     const graphics::pass_debug_information* upload = find_pass(*this, "upload_frame_data");

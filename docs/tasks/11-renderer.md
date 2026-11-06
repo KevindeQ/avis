@@ -501,7 +501,7 @@ flowchart LR
 ## 11.10 Depth prepass, G-buffer, linearize depth, points and lines
 11 §2.3 passes 1, 2, 4, §3.2, §5, §9.1, §9.2.
 
-*Status: implemented and compiled, tests written but not run yet.* Windows Application Control blocked the test binary (and data-trace's `dt.exe`, which writes the shader manifest), so the items below stay unchecked until the tests pass. As implemented:
+*Status: implemented. The tests first ran with 11.12, and pass in Debug and Release after two test fixes: the Halton check expected 1/9 for Halton(4, 3), which is 4/9, and the fixture's depth capture textures can't allow `depth_stencil` (a copy into one can leave stale compression data, which read back as zeros). The items below aren't checked yet: review them against the implementation first.* As implemented:
 - **Passes** in `rendering/passes/`. `scene_range_pass` adds the graph passes that walk a key range, one per recording part. `depth_passes` holds `depth_prepass`, `linearize_depth` and `depth_mips_<mip>`. `gbuffer_pass` holds `gbuffer` and a placeholder `tonemap`, which shows the base colour over `background_color` until 11.11 and 11.16.
 - **`depth_mips`** is RG32F (min in R, max in G, as the Open point proposes), 5 mips, with mip 0 at full resolution. A destination texel covers 2 × 2 source texels, or 3 on the last row or column of an odd size. Pixels with nothing drawn are +infinity. Normal frames cull it, since nothing reads it before 11.11.
 - **Render graph:** new buffer reads `srv_graphics` and `index_and_srv_graphics` (10 §6.3), because the vertex shader pulls from the frame and arena buffers. The G-buffer declares a depth write, although its PSOs don't write, because the RHI's depth views are writable.
@@ -530,7 +530,7 @@ flowchart LR
 ## 11.11 Clustered lighting, deferred lighting, sky, IBL
 11 §6, passes 3, 8, 9.
 
-*Status: implemented and compiled in Debug and Release, tests written but not run yet.* Windows Application Control blocks the test binary, so the items below stay unchecked until the tests pass. As implemented:
+*Status: implemented. The tests first ran with 11.12 and pass in Debug and Release. The items below aren't checked yet: some differ from the implementation as written (the light units, the sky model, see below), so review them first.* As implemented:
 - **Sky model: Preetham, not Hosek–Wilkie.** Hosek–Wilkie needs its authors' coefficient tables vendored, and their licence checked first (Open points). `sky_model.h/.cpp` computes Preetham's Perez coefficients and zenith values on the CPU. `sky.hlsli` evaluates them for both the bake and the sky pass. The interface (`gpu::sky_constants`, `sky_radiance`) doesn't depend on the model, so Hosek–Wilkie can replace it later.
   - The turbidity is clamped to 2–10.
   - A sun below the horizon is evaluated at the horizon, and the sky fades out by 0.1 below it.
@@ -590,7 +590,15 @@ flowchart LR
 ## 11.12 Cascaded shadow maps
 11 §7, pass 7.
 
-- [ ] `cascades.h/.cpp`, CPU:
+*Status: implemented; the tests pass in Debug and Release.* Only the progressive LOD stays open, for 11.18. As implemented:
+- **CPU** (`cascades.h/.cpp`). Each cascade's sphere is the smallest one centred on the view axis that holds its frustum slice, so its radius only depends on the projection. The light's view has a fixed rotation, and the sphere's light-space x and y are rounded to whole texels. Depth 1 is 200 m (`caster_extension`) beyond the sphere towards the sun, depth 0 its far side. The renderer computes the cascades per view before the draw lists, which cull the casters into them, and only when the frame's sun casts shadows. `scene_renderer::view_cascades()` exposes them for tests.
+- **Pass** (`passes/shadow_pass.h/.cpp`): `shadow_cascades` walks `scene/shadow_cascade[0 … count − 1]/world/opaque` into `shadow_map`, cascade *c* into layer *c* with its own view constants (orthographic, near plane 0, no jitter). `scene_range_pass` gained per-viewport bindings (`scene_viewport`). The shadow PSO has a slope-scaled bias of −1.5 and no depth clipping, so casters in front of the cascade are flattened onto it. The pass is declared after the G-buffer; it moves after GTAO with 11.13.
+- **Clears.** The graph's `write_flags::needs_clear` only declares the need: nothing recorded a clear, so 11.10's depth prepass and G-buffer weren't cleared either. `scene_range_pass`'s first part now records the clears of the attachments that ask for one, over every layer.
+- **Receiver** (`shadows.hlsli`, read by `deferred_lighting`): the normal offset is 1 texel × sin of the normal–sun angle, the Poisson disk's radius 1 texel. The cascade constants travel in `deferred_lighting_constants::shadow` (`shadow_constants`, the cascades as four members, since shared structs have no arrays). The last cascade blends into "lit". `cascade_index` (R8_UINT, `gpu::no_cascade` where none applies) is written only when a view captures it, until 11.20.
+- **Progressive LOD in shadow viewports** waits for 11.18, which brings progressive meshes.
+- **Tests** in `test_cascades.cpp` and `test_renderer_shadows.cpp`. The shadow tests render each scene with and without the sun's shadows and compare per pixel. The cube's shadow is checked away from two texels of its edge, and from three texels of the cube's footprint, where the slope bias may let light through at the contact.
+
+- [x] `cascades.h/.cpp`, CPU:
   - practical splits (λ = 0.8) up to `shadows.distance`
   - bounding-sphere fitting per cascade
   - texel-snapped light-space origins
@@ -599,15 +607,15 @@ flowchart LR
   - the blend ranges (the last 10%)
 
   `cascades` ≤ 4 (11 §14).
-- [ ] `shadow_cascades` (graphics): one D32F Texture2DArray of `cascades × resolution²`, walking `scene/shadow_cascade[0–3]/world/opaque` with each set's shadow PSO. The PSO has a slope-scaled bias, and the viewport per slice comes from the key's viewport field (11.9). The pass is declared after GTAO (11 §2.3).
-- [ ] Receiver: a normal-offset bias, 16-tap Poisson PCF with the comparison sampler, interleaved-gradient-noise rotation, and cascade blending. A `cascade_index` debug output is written for 11.20.
-- [ ] Progressive meshes use `shadow_lod_scale` in shadow viewports (11.18).
+- [x] `shadow_cascades` (graphics): one D32F Texture2DArray of `cascades × resolution²`, walking `scene/shadow_cascade[0–3]/world/opaque` with each set's shadow PSO. The PSO has a slope-scaled bias, and the viewport per slice comes from the key's viewport field (11.9). The pass is declared after GTAO (11 §2.3).
+- [x] Receiver: a normal-offset bias, 16-tap Poisson PCF with the comparison sampler, interleaved-gradient-noise rotation, and cascade blending. A `cascade_index` debug output is written for 11.20.
+- [ ] *(11.18)* Progressive meshes use `shadow_lod_scale` in shadow viewports (11.18).
 
 **Tests** (`test_cascades.cpp` `[renderer][unit]`, passes `[renderer]`):
-- [ ] The splits are monotonic and end at `distance`. With λ = 0, they're uniform.
-- [ ] Stabilisation: moving the camera by less than one texel along the light-space axes leaves the cascade origins unchanged, and by more moves them by whole texels.
-- [ ] A cube on a plane under a 45° sun: the shadowed region of the plane matches the analytic shadow polygon to within two texels at cascade 0. Nothing is shadowed outside it (no acne on the lit plane at 1% tolerance).
-- [ ] Casters outside the camera frustum but inside a cascade still cast.
+- [x] The splits are monotonic and end at `distance`. With λ = 0, they're uniform.
+- [x] Stabilisation: moving the camera by less than one texel along the light-space axes leaves the cascade origins unchanged, and by more moves them by whole texels.
+- [x] A cube on a plane under a 45° sun: the shadowed region of the plane matches the analytic shadow polygon to within two texels at cascade 0. Nothing is shadowed outside it (no acne on the lit plane at 1% tolerance).
+- [x] Casters outside the camera frustum but inside a cascade still cast.
 
 ## 11.13 GTAO
 11 §8, passes 5, 6.

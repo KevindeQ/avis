@@ -109,8 +109,9 @@ namespace avis::tests
 
         // An RGBA8 output texture that copies can write and read
         rhi::texture_handle make_output(graphics::texture_extent size);
-        // A texture of `format` that copies can write and read, for resource captures (a depth format also allows
-        // depth_stencil); the fixture destroys it
+        // A texture of `format` that copies can write and read, for resource captures; the fixture destroys it. A depth
+        // format doesn't allow depth_stencil: copied into, a depth-stencil texture can keep stale compression data and
+        // read back as zeros.
         rhi::texture_handle make_texture(rhi::format format, graphics::texture_extent size);
         // A readback buffer of `size` bytes that copies can write, for buffer captures; the fixture destroys it. Its
         // bytes are readable once the frames that wrote it have completed (render_and_read waits for them).

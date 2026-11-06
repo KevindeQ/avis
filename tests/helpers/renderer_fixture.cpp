@@ -410,11 +410,8 @@ namespace avis::tests
 
     rhi::texture_handle renderer_fixture::make_texture(const rhi::format format, const graphics::texture_extent size)
     {
-        avis::flags<rhi::texture_usage> usage = rhi::texture_usage::copy_destination | rhi::texture_usage::copy_source;
-        if (format == rhi::format::d32_float)
-        {
-            usage = usage | rhi::texture_usage::depth_stencil;
-        }
+        const avis::flags<rhi::texture_usage> usage =
+            rhi::texture_usage::copy_destination | rhi::texture_usage::copy_source;
         auto texture = rhi::resources{ *graphics.hardware_interface }.create_texture(
             { .width = size.width,
               .height = size.height,

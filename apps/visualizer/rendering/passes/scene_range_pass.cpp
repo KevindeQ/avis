@@ -5,6 +5,7 @@
 #include "avis/graphics/resource_bag.h"
 
 #include <format>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,13 @@ namespace avis::visualizer::rendering
             graphics::buffer vertices;
             graphics::buffer indices;
             graphics::buffer materials;
+        };
+
+        // The clears the first part records: a value per attachment that asked for one
+        struct attachment_clears
+        {
+            std::array<std::optional<std::array<float, 4>>, 8> colors{};
+            std::optional<float> depth;
         };
 
         graphics::texture write_attachment(
@@ -69,6 +77,26 @@ namespace avis::visualizer::rendering
             outputs.depth = attachments.depth->texture;
         }
 
+        std::vector<scene_viewport> viewports{ pass.viewports.begin(), pass.viewports.end() };
+        if (viewports.empty())
+        {
+            viewports.push_back({ .point = viewport::camera(), .layer = 0, .view_constants = inputs.view_constants });
+        }
+
+        attachment_clears clears;
+        for (std::size_t index = 0; index < attachments.color_count; ++index)
+        {
+            const scene_attachment& attachment = attachments.colors[index];
+            if (attachment.clear)
+            {
+                clears.colors[index] = attachment.description.clear_value.value_or(rhi::clear_value{}).color;
+            }
+        }
+        if (attachments.depth && attachments.depth->clear)
+        {
+            clears.depth = attachments.depth->description.clear_value.value_or(rhi::clear_value{}).depth;
+        }
+
         for (std::size_t part = 0; part < parts.size(); ++part)
         {
             const std::string name = part == 0 ? std::string{ pass.name } : std::format("{}_part{}", pass.name, part);
@@ -109,21 +137,36 @@ namespace avis::visualizer::rendering
                  list = &inputs.list,
                  meshes = inputs.meshes,
                  pipelines = &inputs.pipelines,
-                 view_constants = inputs.view_constants,
+                 viewports,
+                 clears = part == 0 ? clears : attachment_clears{},
                  instances_srv = inputs.frame.instances_srv,
                  instance_indices_srv = inputs.frame.instance_indices_srv](
                     const scene_pass_data& data,
                     const graphics::resource_bag& resources,
                     graphics::graphics_pass_context& context)
                 {
-                    std::array<rhi::texture_view, 8> colors{};
-                    for (std::size_t index = 0; index < data.color_count; ++index)
-                    {
-                        colors[index] = resources.render_target_view(data.colors[index]);
-                    }
                     const graphics::texture sized = data.depth.valid() ? data.depth : data.colors[0];
                     const std::uint32_t width = resources.width(sized);
                     const std::uint32_t height = resources.height(sized);
+                    const auto layers = static_cast<std::uint16_t>(resources.description(sized).depth_or_layers);
+
+                    // The first part's clears, of every layer
+                    rhi::graphics_recorder& recorder = context.recorder();
+                    for (std::size_t index = 0; index < data.color_count; ++index)
+                    {
+                        if (clears.colors[index])
+                        {
+                            rhi::texture_view all = resources.render_target_view(data.colors[index]);
+                            all.layer_count = layers;
+                            recorder.clear_render_target(all, *clears.colors[index]);
+                        }
+                    }
+                    if (clears.depth && data.depth.valid())
+                    {
+                        rhi::texture_view all = resources.depth_stencil_view(data.depth);
+                        all.layer_count = layers;
+                        recorder.clear_depth(all, *clears.depth);
+                    }
 
                     pass_bindings bindings;
                     bindings.depth_written = data.depth.valid();
@@ -136,17 +179,34 @@ namespace avis::visualizer::rendering
                                                    .line_margin = line_margin,
                                                    .padding1 = 0,
                                                    .padding2 = 0 });
-                    viewport_binding camera{
-                        .render_targets = std::span<const rhi::texture_view>{ colors }.first(data.color_count),
-                        .viewport = { 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f },
-                        .scissor = { 0, 0, static_cast<std::int32_t>(width), static_cast<std::int32_t>(height) },
-                        .view_constants = context.allocate_constants(view_constants),
-                    };
-                    if (data.depth.valid())
+                    // Each viewport's targets: its layer of every attachment
+                    std::array<std::array<rhi::texture_view, 8>, 8> colors{};
+                    for (const scene_viewport& point : viewports)
                     {
-                        camera.depth = resources.depth_stencil_view(data.depth);
+                        std::array<rhi::texture_view, 8>& targets = colors[point.point.index];
+                        for (std::size_t index = 0; index < data.color_count; ++index)
+                        {
+                            targets[index] = resources.render_target_view(data.colors[index], 0, point.layer);
+                        }
+                        viewport_binding binding{
+                            .render_targets = std::span<const rhi::texture_view>{ targets }.first(data.color_count),
+                            .viewport = { 0.0f,
+                                          0.0f,
+                                          static_cast<float>(width),
+                                          static_cast<float>(height),
+                                          0.0f,
+                                          1.0f },
+                            .scissor = { 0, 0, static_cast<std::int32_t>(width), static_cast<std::int32_t>(height) },
+                            .view_constants = context.allocate_constants(point.view_constants),
+                        };
+                        if (data.depth.valid())
+                        {
+                            rhi::texture_view depth = resources.depth_stencil_view(data.depth);
+                            depth.first_layer = static_cast<std::uint16_t>(point.layer);
+                            binding.depth = depth;
+                        }
+                        bindings.viewports[point.point.index] = binding;
                     }
-                    bindings.viewports[viewport::camera().index] = camera;
 
                     const range_walk_sources sources{ .list = *list,
                                                       .meshes = meshes,

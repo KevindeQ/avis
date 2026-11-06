@@ -6,7 +6,8 @@
 //   cluster_build      compute, async: the clusters' view-space bounds, into the view's history; only added when the
 //                      projection or the size changed since the bounds were built
 //   light_cull         compute, async: cluster_lights (offset, count, dropped per cluster) and light_indices
-//   deferred_lighting  compute, 8 × 8: hdr_color (RGBA16F), pre-exposed
+//   deferred_lighting  compute, 8 × 8: hdr_color (RGBA16F), pre-exposed, with the sun's shadow from shadow_map;
+//                      optionally cascade_index (R8_UINT), each pixel's shadow cascade, for debugging and tests
 //   sky                graphics: hdr_color where depth == 0
 //   tonemap            compute: ldr_color (RGBA8_UNORM) = sRGB(x / (1 + x)) of hdr_color, a placeholder for 11.16
 
@@ -71,10 +72,19 @@ namespace avis::visualizer::rendering
         float exposure = 1.0f;
         float ambient_intensity = 1.0f;
         gpu::view_constants view_constants;
+        graphics::texture shadow_map; // invalid: no shadows, everything is lit
+        gpu::shadow_constants shadow{}; // the cascades of shadow_map; its shadow_map index is set when recording
+        bool cascade_index = false; // write the cascade_index output
     };
 
-    // hdr_color, RGBA16F, view size: 0 where nothing was drawn
-    graphics::texture add_deferred_lighting(graphics::render_graph& graph, const deferred_lighting_inputs& inputs);
+    struct deferred_lighting_outputs
+    {
+        graphics::texture hdr_color; // RGBA16F, view size: 0 where nothing was drawn
+        graphics::texture cascade_index; // R8_UINT, view size, when asked for: no_cascade where none applies
+    };
+
+    deferred_lighting_outputs
+        add_deferred_lighting(graphics::render_graph& graph, const deferred_lighting_inputs& inputs);
 
     struct sky_inputs
     {

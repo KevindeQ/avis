@@ -483,7 +483,7 @@ A compute shader with 8×8 thread groups, one pixel per thread. It reads the G-b
 - **4 cascades**, each 2048², in one `D32_FLOAT` Texture2DArray.
 - Split scheme: practical (logarithmic/uniform blend, λ = 0.8), with a shadow distance of 200 m (configurable).
 - **Stabilisation:** bounding-sphere cascade fitting and texel-snapped light-space origins. This removes shimmering when the camera moves.
-- Reverse-Z orthographic projections, slope-scaled depth bias plus normal-offset bias in the receiver shader.
+- Reverse-Z orthographic projections, slope-scaled depth bias plus normal-offset bias in the receiver shader. *As implemented* (task 11.12): the shadow PSO disables depth clipping, so casters between the sun and a cascade's near plane are flattened onto it ("pancaking"), and each cascade reaches 200 m beyond its sphere towards the sun for the draw list's caster culling.
 - Filtering: 16-tap Poisson-disk PCF using the hardware comparison sampler (`s4`), with per-pixel rotation from interleaved gradient noise (TAA cleans it up).
 - **Cascade blending** over the last 10% of each cascade range. A cascade debug visualisation colours pixels by cascade.
 - Shadow casters come from the `shadow_cascade[c]` viewports of the draw list (§4.2, §4.6). Progressive meshes use a reduced LOD in shadow passes (`render.progressive.shadow_lod_scale`, default 0.25).

@@ -3,6 +3,7 @@
 // each slot.
 
 #include "helpers/renderer_fixture.h"
+#include "rendering/cascades.h"
 #include "rendering/pipeline_variant_registry.h"
 
 #include "avis/graphics/pipeline_cache.h"
@@ -149,6 +150,13 @@ TEST_CASE("pipeline state per pass kind", "[renderer][unit]")
             CHECK(state.rasterizer.cull == rhi::cull_mode::back);
             CHECK(state.topology == rhi::primitive_topology::triangle_list);
         }
+        // Only the shadow PSO has a bias (away from the sun: negative, reverse-Z) and pancaking (11.12)
+        const rhi::graphics_pipeline_state depth = pipeline_state_for(pass_kind::depth, opaque, write_mask::all);
+        const rhi::graphics_pipeline_state shadow = pipeline_state_for(pass_kind::shadow, opaque, write_mask::all);
+        CHECK(depth.rasterizer.slope_scaled_depth_bias == 0.0f);
+        CHECK(depth.rasterizer.depth_clip);
+        CHECK(shadow.rasterizer.slope_scaled_depth_bias == -shadow_slope_scaled_depth_bias);
+        CHECK_FALSE(shadow.rasterizer.depth_clip);
         // Opaque triangles have no pixel shader; masked ones and points do
         CHECK(shader_ids_for(pass_kind::depth, opaque).pixel.empty());
         CHECK(shader_ids_for(pass_kind::depth, opaque).vertex == "scene_vertex.vertex_main.vs");
