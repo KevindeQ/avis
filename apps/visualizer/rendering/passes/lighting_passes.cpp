@@ -39,7 +39,7 @@ namespace avis::visualizer::rendering
             std::uint32_t depth_mip_count;
             std::uint32_t cluster_lights;
             std::uint32_t light_indices;
-            std::uint32_t padding0;
+            std::uint32_t keep_front;
             std::uint32_t width;
             std::uint32_t height;
             std::uint32_t tile_width;
@@ -164,6 +164,7 @@ namespace avis::visualizer::rendering
              mips = inputs.depth_mip_count,
              size = inputs.size,
              tile,
+             keep_front = inputs.keep_front,
              view_constants = inputs.view_constants](
                 const light_cull_data& data,
                 const graphics::resource_bag& resources,
@@ -176,7 +177,7 @@ namespace avis::visualizer::rendering
                                                       .depth_mip_count = mips,
                                                       .cluster_lights = resources.uav(data.cluster_lights).value,
                                                       .light_indices = resources.uav(data.light_indices).value,
-                                                      .padding0 = 0,
+                                                      .keep_front = keep_front ? 1u : 0u,
                                                       .width = size.width,
                                                       .height = size.height,
                                                       .tile_width = tile.width,

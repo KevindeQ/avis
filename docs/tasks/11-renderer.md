@@ -541,6 +541,7 @@ flowchart LR
   - `cluster_build` writes the bounds into the view's history (`view_history::cluster_bounds`). It runs only when the unjittered projection differs from `cluster_projection`, and never for a view that writes nothing.
   - `light_cull` uses one thread per cluster and walks the lights in order, so the lists are reproducible. Each cluster has a fixed slot of 256 indices in `light_indices`, at `256 · index`. The `cluster_lights` entry `{ offset, count, dropped }` replaces an overflow counter. Reading `dropped` back for the debug information comes with 11.20's readback.
   - Tiles are skipped by the `depth_mips` level whose texels fit in a tile.
+  - Since 11.14, a cluster in front of its tile's opaque depth, or in a tile of sky only, keeps its lights when the frame draws transparents (`cluster_inputs::keep_front`): only transparents can be there.
   - Spot lights also get Wronski's cone test against the cluster's bounding sphere.
 - **Deferred lighting** (`deferred_lighting.hlsl`, `lighting.hlsli`, `brdf.hlsli`, `environment.hlsli`):
   - Pixels with nothing drawn are 0, and the sky pass fills them.
@@ -650,14 +651,22 @@ flowchart LR
 ## 11.14 Forward transparent pass
 11 §10.1, pass 10.
 
-- [ ] `forward_transparent` (graphics) walks `scene/camera/world/blended…subtractive`. The pipeline tests depth against the prepass, writes no depth and blends premultiplied into `hdr_color`. Shading uses the same BRDF, clusters, CSM and IBL as deferred lighting, without SSAO.
-- [ ] It writes `reactive_mask` (R8) with the coverage × luminance change, for TAA.
+*Status: implemented; the tests pass in Debug and Release.* As implemented:
+- **Pass** (`passes/forward_pass.h/.cpp`): `forward_transparent` is declared after `sky` and walks `forward_range()` with each set's forward PSO into `hdr_color`. It always runs, even with nothing to draw, so `reactive_mask` (R8_UNORM, cleared to 0) always exists for 11.15. `reactive_mask` can be captured.
+- **Lighting inputs.** `scene_range_pass` gained `reads` (extra SRVs read in the pixel shader) and `extension` (bytes appended to the pass constants). The forward pass uses them for `gpu::forward_pass_constants`: `scene_pass_constants` followed by `forward_lighting_constants`, which holds the lights, clusters, sun shadow, environment, exposure and ambient intensity. The scene vertex shader still reads the first 32 bytes as `scene_pass_constants`. `shading_normal` moved from `gbuffer.hlsl` to `scene_material.hlsli`.
+- **Shading.** Lit transparents are shaded like `deferred_lighting`: the sun with its cascaded shadow, the cluster's lights, the IBL with the material's own AO and Lagarde's specular occlusion, and emissive. There's no GTAO. The whole radiance is scaled by alpha, which is the base colour's alpha times line or point coverage. A lit wall drawn at alpha 1 matches the same wall drawn opaque within 0.2%.
+- **Clusters in front of opaque geometry.** `light_cull` skipped the clusters outside their tile's opaque depth range, and tiles of sky only, so transparents there got no point or spot lights. When the frame draws transparents, it now only skips the clusters behind the opaque depth (`keep_front`).
+- **Reactive mask.** It keeps the maximum over the pixel's transparents. For normal blending the value is the alpha, the fraction of the background replaced; the luminance change would need the background, which a blended target can't read. For additive and subtractive it's the luminance added or taken away (pre-exposed), which is the change exactly.
+- **Tests** are in `test_renderer_forward.cpp`.
+
+- [x] `forward_transparent` (graphics) walks `scene/camera/world/blended…subtractive`. The pipeline tests depth against the prepass, writes no depth and blends premultiplied into `hdr_color`. Shading uses the same BRDF, clusters, CSM and IBL as deferred lighting, without SSAO.
+- [x] It writes `reactive_mask` (R8) with the coverage × luminance change, for TAA.
 
 **Tests** (`[renderer]`):
-- [ ] A 50% white unlit quad over a black background gives 0.5 in `hdr_color` (pre-exposure 1).
-- [ ] Two overlapping translucent quads blend back to front in either submission order.
-- [ ] Additive and subtractive give `dst + src` and `dst − src`.
-- [ ] A translucent quad behind an opaque cube is hidden where the cube covers it.
+- [x] A 50% white unlit quad over a black background gives 0.5 in `hdr_color` (pre-exposure 1).
+- [x] Two overlapping translucent quads blend back to front in either submission order.
+- [x] Additive and subtractive give `dst + src` and `dst − src`.
+- [x] A translucent quad behind an opaque cube is hidden where the cube covers it.
 
 ## 11.15 TAA
 11 §10.2, pass 11, 10 §8.

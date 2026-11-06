@@ -7,6 +7,7 @@
 // field's neutral value, so the factors alone remain.
 
 #include "bindless.hlsli"
+#include "scene_varyings.hlsli"
 #include "shared_types.hlsli"
 
 // The texture at `texture` with the material's static sampler (binding_layout::static_sampler), or `neutral`
@@ -48,6 +49,33 @@ float4 material_base_color(material_data material, float2 uv, float4 vertex_colo
 bool material_alpha_clipped(material_data material, float alpha)
 {
     return material.alpha_mode == alpha_mode_mask && alpha < material.alpha_cutoff;
+}
+
+// The shading normal: the interpolated one (flipped on back faces, which only double-sided materials draw), perturbed
+// by the normal texture when the mesh has tangents. `filtered_length` is the length of the mip-filtered normal texel,
+// below 1 where the normals it averages diverge (1 without a normal texture), for the Toksvig term.
+float3 shading_normal(scene_varyings input, material_data material, bool front_face, out float filtered_length)
+{
+    filtered_length = 1.0;
+    float3 normal = normalize(input.normal);
+    if (!front_face)
+    {
+        normal = -normal;
+    }
+    if (input.tangent.w != 0.0 && avis_has_descriptor(material.normal_texture))
+    {
+        float3 tangent = normalize(input.tangent.xyz - normal * dot(normal, input.tangent.xyz));
+        const float3 bitangent = cross(normal, tangent) * input.tangent.w;
+        float3 texel =
+            sample_material_texture(material.normal_texture, material.sampler_index, input.uv, float4(0.5, 0.5, 1.0, 1.0))
+                .xyz *
+                2.0 -
+            1.0;
+        filtered_length = length(texel);
+        texel.xy *= material.normal_scale;
+        normal = normalize(texel.x * tangent + texel.y * bitangent + texel.z * normal);
+    }
+    return normal;
 }
 
 // Points (11 §9.1): whether a position in the point's quad lies outside its inscribed circle

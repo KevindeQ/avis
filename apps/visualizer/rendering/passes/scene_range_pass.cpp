@@ -4,6 +4,7 @@
 #include "avis/graphics/render_pass_builder.h"
 #include "avis/graphics/resource_bag.h"
 
+#include <cstring>
 #include <format>
 #include <optional>
 #include <string>
@@ -23,6 +24,7 @@ namespace avis::visualizer::rendering
             graphics::buffer vertices;
             graphics::buffer indices;
             graphics::buffer materials;
+            scene_pass_reads reads;
         };
 
         // The clears the first part records: a value per attachment that asked for one
@@ -130,6 +132,22 @@ namespace avis::visualizer::rendering
                     data.vertices = builder.read(inputs.geometry.vertices, graphics::buffer_read::srv_graphics);
                     data.indices = builder.read(inputs.geometry.indices, graphics::buffer_read::index_and_srv_graphics);
                     data.materials = builder.read(inputs.materials.table, graphics::buffer_read::srv_graphics);
+                    for (std::size_t index = 0; index < pass.reads.textures.size(); ++index)
+                    {
+                        if (pass.reads.textures[index].valid())
+                        {
+                            data.reads.textures[index] =
+                                builder.read(pass.reads.textures[index], graphics::texture_read::srv_pixel);
+                        }
+                    }
+                    for (std::size_t index = 0; index < pass.reads.buffers.size(); ++index)
+                    {
+                        if (pass.reads.buffers[index].valid())
+                        {
+                            data.reads.buffers[index] =
+                                builder.read(pass.reads.buffers[index], graphics::buffer_read::srv_pixel);
+                        }
+                    }
                 },
                 [runs = parts[part],
                  kind = pass.kind,
@@ -138,6 +156,7 @@ namespace avis::visualizer::rendering
                  meshes = inputs.meshes,
                  pipelines = &inputs.pipelines,
                  viewports,
+                 extension = pass.extension,
                  clears = part == 0 ? clears : attachment_clears{},
                  instances_srv = inputs.frame.instances_srv,
                  instance_indices_srv = inputs.frame.instance_indices_srv](
@@ -170,15 +189,37 @@ namespace avis::visualizer::rendering
 
                     pass_bindings bindings;
                     bindings.depth_written = data.depth.valid();
-                    bindings.pass_constants = context.allocate_constants(
-                        gpu::scene_pass_constants{ .instances = instances_srv.value,
-                                                   .instance_indices = instance_indices_srv.value,
-                                                   .vertices = resources.srv(data.vertices).value,
-                                                   .indices = resources.srv(data.indices).value,
-                                                   .materials = resources.srv(data.materials).value,
-                                                   .line_margin = line_margin,
-                                                   .padding1 = 0,
-                                                   .padding2 = 0 });
+                    const gpu::scene_pass_constants scene_constants{ .instances = instances_srv.value,
+                                                                     .instance_indices = instance_indices_srv.value,
+                                                                     .vertices = resources.srv(data.vertices).value,
+                                                                     .indices = resources.srv(data.indices).value,
+                                                                     .materials = resources.srv(data.materials).value,
+                                                                     .line_margin = line_margin,
+                                                                     .padding1 = 0,
+                                                                     .padding2 = 0 };
+                    if (extension)
+                    {
+                        scene_pass_read_srvs srvs;
+                        for (std::size_t index = 0; index < srvs.textures.size(); ++index)
+                        {
+                            const graphics::texture texture = data.reads.textures[index];
+                            srvs.textures[index] = texture.valid() ? resources.srv(texture).value : 0;
+                            const graphics::buffer buffer = data.reads.buffers[index];
+                            srvs.buffers[index] = buffer.valid() ? resources.srv(buffer).value : 0;
+                        }
+                        const std::vector<std::byte> appended = extension(srvs);
+                        std::vector<std::byte> bytes(sizeof(scene_constants) + appended.size());
+                        std::memcpy(bytes.data(), &scene_constants, sizeof(scene_constants));
+                        if (!appended.empty())
+                        {
+                            std::memcpy(bytes.data() + sizeof(scene_constants), appended.data(), appended.size());
+                        }
+                        bindings.pass_constants = context.allocate_constants(std::span<const std::byte>{ bytes });
+                    }
+                    else
+                    {
+                        bindings.pass_constants = context.allocate_constants(scene_constants);
+                    }
                     // Each viewport's targets: its layer of every attachment
                     std::array<std::array<rhi::texture_view, 8>, 8> colors{};
                     for (const scene_viewport& point : viewports)

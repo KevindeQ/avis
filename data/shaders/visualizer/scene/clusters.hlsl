@@ -5,9 +5,10 @@
 //   build_main  cluster_build: the view-space bounds of every cluster, from the unjittered projection. Run only when
 //               the projection or the view size changes; the bounds live in the view's history.
 //   cull_main   light_cull: the point and spot lights touching each cluster, at most cluster_maximum_lights, in light
-//               order (so the frame is reproducible). Clusters whose depth slice misses the depth range of their tile
-//               (from depth_mips, min in R and max in G) get no lights. Directional lights aren't clustered: the sun is
-//               lit separately.
+//               order (so the frame is reproducible). Clusters whose depth slice is behind the depth range of their
+//               tile (from depth_mips, min in R and max in G) get no lights; so do those in front of it, and tiles of
+//               sky only, unless keep_front is set because the frame draws transparents (11.14). Directional lights
+//               aren't clustered: the sun is lit separately.
 // clusters.cpp mirrors the bounds and the intersection tests on the CPU for the tests.
 
 #include "bindless.hlsli"
@@ -82,7 +83,7 @@ struct light_cull_constants
     uint depth_mip_count;
     uint cluster_lights; // UAV, RWStructuredBuffer<cluster_lights>
     uint light_indices; // UAV, RWStructuredBuffer<uint>
-    uint padding0;
+    uint keep_front; // 1: keep the clusters in front of the tile's opaque depth, where transparents can be (11.14)
     uint2 size; // the view's size, pixels
     uint2 tile_size; // pixels per cluster tile
 };
@@ -162,7 +163,11 @@ float2 tile_depth_range(uint2 first, uint2 last)
         const float2 drawn = tile_depth_range(first, last);
         const float slice_near = cluster.z == 0 ? 0.0 : cluster_slice_depth(cluster.z);
         const float slice_far = cluster.z == cluster_count_z - 1 ? infinity : cluster_slice_depth(cluster.z + 1);
-        skipped = isinf(drawn.x) || drawn.x > slice_far || drawn.y < slice_near;
+        // Behind every opaque surface of the tile, nothing is visible. In front of them only transparents can be,
+        // so those clusters are skipped unless the frame draws transparents; then a tile of sky only keeps them too.
+        const bool behind = drawn.y < slice_near;
+        const bool in_front = isinf(drawn.x) || drawn.x > slice_far;
+        skipped = behind || (in_front && cull.keep_front == 0);
     }
 
     if (!skipped)

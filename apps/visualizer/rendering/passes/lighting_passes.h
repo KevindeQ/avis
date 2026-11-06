@@ -49,6 +49,9 @@ namespace avis::visualizer::rendering
         graphics::texture depth_mips;
         std::uint32_t depth_mip_count = 1;
         gpu::view_constants view_constants;
+        // Keep the lights of the clusters in front of their tile's opaque depth, and of tiles of sky only: the frame
+        // draws transparents, which can be there (11.14)
+        bool keep_front = false;
     };
 
     struct light_clusters

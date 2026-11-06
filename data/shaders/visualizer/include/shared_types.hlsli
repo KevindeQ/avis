@@ -416,6 +416,31 @@ struct gtao_denoise_constants
     uint padding2;
 };
 
+// What forward_transparent shades with (11 §10.1): the lights, clusters, shadows and baked environment of deferred
+// lighting, without GTAO. The pass constants (b1) are forward_pass_constants: scene_pass_constants first, so the
+// scene vertex shader reads them as its own.
+struct forward_lighting_constants
+{
+    uint lights; // StructuredBuffer<light_data>
+    uint cluster_lights; // StructuredBuffer<cluster_lights>
+    uint light_indices; // StructuredBuffer<uint>
+    uint sun; // index of the sun in lights, or no_light
+    uint irradiance; // StructuredBuffer<float4>, SH9
+    uint prefiltered; // TextureCube SRV
+    uint brdf_lut; // Texture2D SRV, RG16F
+    uint padding0;
+    uint2 tile_size; // pixels per cluster tile
+    float exposure; // pre-exposure: hdr_color = radiance · exposure
+    float ambient_intensity; // scales the image-based lighting
+    shadow_constants shadow; // the sun's
+};
+
+struct forward_pass_constants
+{
+    scene_pass_constants scene;
+    forward_lighting_constants lighting;
+};
+
 #ifdef __cplusplus
 
 static_assert(sizeof(float2) == 8 && sizeof(float3) == 12 && sizeof(float4) == 16);
@@ -579,6 +604,17 @@ static_assert(offsetof(gtao_constants, intensity) == 48);
 
 static_assert(sizeof(gtao_denoise_constants) == 32);
 static_assert(offsetof(gtao_denoise_constants, size) == 16);
+
+static_assert(sizeof(forward_lighting_constants) == 400);
+static_assert(offsetof(forward_lighting_constants, irradiance) == 16);
+static_assert(offsetof(forward_lighting_constants, tile_size) == 32);
+static_assert(offsetof(forward_lighting_constants, exposure) == 40);
+static_assert(offsetof(forward_lighting_constants, ambient_intensity) == 44);
+static_assert(offsetof(forward_lighting_constants, shadow) == 48);
+
+static_assert(sizeof(forward_pass_constants) == 432);
+static_assert(offsetof(forward_pass_constants, scene) == 0);
+static_assert(offsetof(forward_pass_constants, lighting) == 32);
 
 } // namespace avis::visualizer::rendering::gpu
 

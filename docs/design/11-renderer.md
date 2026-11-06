@@ -469,7 +469,7 @@ Point and spot lights don't cast shadows in iteration 1. Limits: 4,096 lights pe
 ### 6.3 Clustered light culling
 - The cluster grid is **16 × 9 screen tiles × 24 exponential depth slices** per view (near 0.1 m, far 2 km).
 - `cluster_build` (async compute) builds view-space AABBs per cluster. They're rebuilt only when the projection changes.
-- `light_cull` tests every light's bounding sphere or cone against each cluster AABB, appending into `light_index_list` (a compact per-cluster offset/count + global index buffer). Tiles with no geometry are skipped using min/max depth from `depth_mips`.
+- `light_cull` tests every light's bounding sphere or cone against each cluster AABB, appending into `light_index_list` (a compact per-cluster offset/count + global index buffer). Tiles with no geometry are skipped using min/max depth from `depth_mips`. *As implemented* (task 11.14): when the frame draws transparents, only the clusters behind the tile's opaque depth are skipped, because transparents can be in front of it or over the sky.
 
 ### 6.4 Image-based / ambient lighting
 - A **procedural sky** (Hosek–Wilkie analytic model) driven by the snapshot's `environment` (sun azimuth and elevation). *As implemented* (task 11.11): the Preetham model until the Hosek–Wilkie tables are vendored, behind the same `sky_constants` interface.
@@ -532,6 +532,9 @@ Generic geometry features. The renderer doesn't know what the points or lines re
 - Walks the translucent `world` groups of the draw list: `world`-layer instances with `alpha_mode = blend`, sorted back to front (§4.3). Depth test against the prepass depth, no depth writes. Premultiplied-alpha blending into `hdr_color`.
 - Uses the same `brdf.hlsli` and the cluster lookup, so transparents get all lights, CSM and IBL (without SSAO).
 - Writes a **reactive mask** that reduces TAA history weight where transparents changed.
+- *As implemented* (task 11.14):
+  - The whole lit radiance is scaled by alpha (glTF's coverage).
+  - The reactive mask is the maximum over a pixel's transparents. It's the alpha for normal blending, and the added or removed luminance for additive and subtractive.
 
 ### 10.2 TAA
 - Jitter: a Halton(2,3) 16-sample sequence applied to the projection (sub-pixel), with the inverse jitter tracked for velocity.

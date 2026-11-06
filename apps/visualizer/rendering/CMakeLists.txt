@@ -12,6 +12,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	geometry_arena.cpp
 	material_table.cpp
 	passes/depth_passes.cpp
+	passes/forward_pass.cpp
 	passes/gbuffer_pass.cpp
 	passes/gtao_pass.cpp
 	passes/lighting_passes.cpp

@@ -1,6 +1,7 @@
 #include "rendering/scene_renderer.h"
 
 #include "rendering/passes/depth_passes.h"
+#include "rendering/passes/forward_pass.h"
 #include "rendering/passes/gbuffer_pass.h"
 #include "rendering/passes/gtao_pass.h"
 #include "rendering/passes/lighting_passes.h"
@@ -843,11 +844,12 @@ namespace avis::visualizer::rendering
               .frame = frame_buffers_,
               .depth_mips = linearized.depth_mips,
               .depth_mip_count = depth_mips,
-              .view_constants = inputs.view_constants });
+              .view_constants = inputs.view_constants,
+              .keep_front = !inputs.list.list->range(forward_range()).empty() });
 
         // Pass 4 (11.10); passes 5 and 6 on async compute, declared after the G-buffer and before the shadow cascades
-        // (11.12), so they overlap them (11 §2.3); then lighting and the sky (11.11), and the placeholder tonemap until
-        // 11.16
+        // (11.12), so they overlap them (11 §2.3); then lighting and the sky (11.11), the transparents (11.14), and the
+        // placeholder tonemap until 11.16
         const gbuffer_targets gbuffer = add_gbuffer_pass(graph_, inputs, depth);
         gtao_outputs ambient_occlusion;
         if (ao_parameters_.intensity > 0.0f)
@@ -896,12 +898,25 @@ namespace avis::visualizer::rendering
               .sky = environment_->sky(),
               .exposure = exposure,
               .view_constants = inputs.view_constants });
-        const graphics::texture ldr_color = add_tonemap_preview(graph_, tonemap_preview_pipeline_, sky.hdr_color);
+        const forward_outputs transparent = add_forward_transparent(
+            graph_,
+            inputs,
+            { .hdr_color = sky.hdr_color,
+              .depth = sky.depth,
+              .clusters = clusters,
+              .sun = extraction_.sun.value_or(gpu::no_light),
+              .environment = environment_resources_,
+              .exposure = exposure,
+              .ambient_intensity = ambient_intensity_,
+              .shadow_map = shadow_map,
+              .shadow = make_shadow_constants(cascades, 0) });
+        const graphics::texture ldr_color =
+            add_tonemap_preview(graph_, tonemap_preview_pipeline_, transparent.hdr_color);
 
         // Captures, for tests and tools: copies of the final versions
         const graphics::texture_extent ao_size = gtao_extent(ao_parameters_, view.size);
         const std::array resources{
-            capturable{ "depth", sky.depth, rhi::format::d32_float },
+            capturable{ "depth", transparent.depth, rhi::format::d32_float },
             capturable{ "linear_depth", linearized.linear_depth, rhi::format::r32_float },
             capturable{ "depth_mips", linearized.depth_mips, rhi::format::rg32_float, depth_mips },
             capturable{ "gbuffer_albedo", gbuffer.albedo, rhi::format::rgba8_unorm_srgb },
@@ -912,7 +927,8 @@ namespace avis::visualizer::rendering
             capturable{ "ao_raw", ambient_occlusion.raw, rhi::format::r8_unorm, 1, ao_size },
             capturable{ "ao_edges", ambient_occlusion.edges, rhi::format::r8_unorm, 1, ao_size },
             capturable{ "ao", ambient_occlusion.ao, rhi::format::r8_unorm, 1, ao_size },
-            capturable{ "hdr_color", sky.hdr_color, rhi::format::rgba16_float },
+            capturable{ "hdr_color", transparent.hdr_color, rhi::format::rgba16_float },
+            capturable{ "reactive_mask", transparent.reactive_mask, rhi::format::r8_unorm },
             capturable{ "cascade_index", lit.cascade_index, rhi::format::r8_uint },
             capturable{ "ldr_color", ldr_color, rhi::format::rgba8_unorm },
         };
