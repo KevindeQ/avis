@@ -1,4 +1,5 @@
 ﻿#include "log_location.h"
+#include "ui/viewport_renderer.h"
 #include "visualizer_configuration.h"
 #include "visualizer_driver.h"
 
@@ -149,8 +150,15 @@ int main(int argc, char* argv[])
         log->info("loaded the configuration {}", utf8(configuration_path));
     }
 
-    // Force usage of Direct3D12 for rendering
+    // Qt Quick renders with Direct3D 12, on its own QRhi; the Avis renderer joins it on the same adapter (12 §3.2)
     QQuickWindow::setGraphicsApi(QSGRendererInterface::GraphicsApi::Direct3D12);
+
+    // Before Qt's device exists: turning the debug layer on later would remove it
+    const visualizer::rendering::render_settings& render = loaded->configuration.render;
+    if (const auto unavailable = visualizer::ui::enable_d3d12_debugging(render.debug_layer, render.gpu_validation))
+    {
+        log->warn("the D3D12 debug layer could not be turned on: {}", unavailable->toStdString());
+    }
 
     QGuiApplication app(argc, argv);
 
@@ -168,6 +176,19 @@ int main(int argc, char* argv[])
         &app,
         []() { QCoreApplication::exit(-1); },
         Qt::QueuedConnection);
+    // Graphics start on Qt's adapter once the window's scene graph exists (12 §3.2), so the window is watched as soon
+    // as QML creates it, before the event loop shows it
+    QObject::connect(
+        &engine,
+        &QQmlApplicationEngine::objectCreated,
+        &app,
+        [&driver](QObject* object, const QUrl&)
+        {
+            if (auto* const window = qobject_cast<QQuickWindow*>(object); window != nullptr)
+            {
+                driver.watch_window(*window);
+            }
+        });
     engine.load(QUrl{ "qrc:///avis/imports/Avis/Visualizer/main.qml" });
 
     return app.exec();

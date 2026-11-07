@@ -8,6 +8,7 @@ add_subdirectory(simulation)
 qt_add_executable(AVIS_VISUALIZER
 	main.cpp
 	visualizer_driver.cpp
+	ui/viewport_renderer.cpp
 )
 
 # qml/main.qml is served as main.qml at the module's root, next to its qmldir, so it sees the module's types
@@ -79,6 +80,9 @@ target_link_libraries(AVIS_VISUALIZER
 		Qt6::Gui
 		Qt6::GuiPrivate
 		Qt6::Quick
+
+		# ui/viewport_renderer.cpp: the debug layer before Qt's device, and later the shared frame ring's handles
+		d3d12
 )
 
 qt_deploy_windows(AVIS_VISUALIZER ${CMAKE_CURRENT_SOURCE_DIR})

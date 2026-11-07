@@ -13,8 +13,14 @@ Window {
     minimumWidth: 250
     minimumHeight: 250
 
-    // main() created the driver, which started graphics and the renderer, before loading this file
+    // Set when graphics fail to start, which happens once Qt's scene graph is up (12 §3.2)
     readonly property string startupError: VisualizerDriver.startupError
+
+    onStartupErrorChanged: {
+        if (root.startupError !== "") {
+            startup_error_dialog.open()
+        }
+    }
 
     // Window geometry is per-user UI state, kept with QSettings (12 §8); the panel layout joins it with the panels
     // (12.13). Restored when the window is created, saved when it closes. A maximised window keeps the normal

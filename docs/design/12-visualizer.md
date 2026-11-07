@@ -24,7 +24,7 @@ The Visualizer is the application a user works in to **open, edit and save a sim
 
 It is **agnostic to the vehicle model**. It doesn't read datasets, interpret sensor data or know where a vehicle can drive: it shows what the Driver sends.
 
-UI technology: **Qt 6.11.1, Qt Quick / QML**. The 3D viewport uses **`QQuickRhiItem`**. Qt and Avis use **separate D3D12 devices**, sharing frames through **shared handles and fences** (idea.md).
+UI technology: **Qt 6.11.1, Qt Quick / QML**. The 3D viewport uses **`QQuickRhiItem`**. Qt and the Avis RHI each create their D3D12 device, with their own queues, sharing frames through **shared handles and fences** (idea.md). In one process both get the same device object (§3.1).
 
 ## 2. Source layout
 ```
@@ -53,6 +53,7 @@ apps/visualizer/
     draw_lists.{h,cpp}             # culling, (key, value) items, 64-bit sort keys, sorting, run building (11 §4)
     pipeline_variant_registry.{h,cpp}
     shader_manifest_parser.{h,cpp}   # manifest.yaml → graphics::shader_manifest (§10)
+    render_system.{h,cpp}          # the RHI and every graphics object, created and destroyed in order (§3.2, §3.4)
     shared_frame_ring.{h,cpp}      # interop ring (§3)
   ui/
     viewport_item.{h,cpp}          # QQuickRhiItem subclass (replaces viewport.{h,cpp})
@@ -80,12 +81,18 @@ data/shaders/visualizer/
 ## 3. Viewport integration: QQuickRhiItem + shared handles
 
 ### 3.1 Why two devices
-Qt Quick renders with its own QRhi D3D12 device on the Qt render thread. The Avis renderer keeps its own device, queues (including async compute and copy) and frame pacing. Separate devices keep them decoupled, so a slow scene frame never stalls the UI. Frames cross over as **shared textures** synchronised by **shared fences**.
+Qt Quick renders with its own QRhi D3D12 device on the Qt render thread. The Avis renderer keeps its own device, queues (including async compute and copy) and frame pacing. Separate queues and fences keep them decoupled, so a slow scene frame never stalls the UI. Frames cross over as **shared textures** synchronised by **shared fences**.
+
+> **One device object in practice** (found in task 12.3): D3D12 devices are singletons per adapter in a process, so the Avis RHI's `D3D12CreateDevice` on Qt's adapter returns Qt's device. The decoupling still holds, because it comes from the queues and fences, and the shared-handle protocol works unchanged. What follows from it:
+> - **The debug layer and GPU-based validation must be on before Qt creates its device.** Turning either on later removes every device in the process (`DXGI_ERROR_DEVICE_RESET`). `main.cpp` applies `render.debug_layer` and `render.gpu_validation` first, through `ui/viewport_renderer.cpp`, and the RHI's own calls then change nothing (§3.2 step 1).
+> - The RHI's info-queue callback and storage filter, and its live-object report at shutdown, cover Qt's objects too.
+> - A device removal affects both sides at once.
+> - A test that needs a really separate second device (12.4) uses a second adapter, for example WARP next to the GPU.
 
 ### 3.2 Setup sequence
-1. `main.cpp` calls `QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D12)` **before** creating the window.
-2. When `QQuickWindow::sceneGraphInitialized` fires, read Qt's adapter from `QRhi::nativeHandles()` → `QRhiD3D12NativeHandles { dev, minimumFeatureLevel, adapterLuidLow, adapterLuidHigh, commandQueue }`.
-3. Create the Avis `rhi::render_hardware_interface` with `adapter = {adapterLuidLow, adapterLuidHigh}` ([09 §4.5](09-rhi.md#45-adapter-selection)). Both devices are now on the same GPU, which shared NT handles require.
+1. `main.cpp` calls `QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D12)` **before** creating the window. It also turns on the D3D12 debug layer and GPU-based validation when the `render` settings ask for them, before Qt's device exists (§3.1).
+2. When `QQuickWindow::sceneGraphInitialized` fires, read Qt's adapter from `QRhi::nativeHandles()` → `QRhiD3D12NativeHandles { dev, minimumFeatureLevel, adapterLuidLow, adapterLuidHigh, commandQueue }`. It's emitted on the render thread; the LUID goes to the controller on the GUI thread with a queued call.
+3. Create the Avis `rhi::render_hardware_interface` with `adapter = {adapterLuidLow, adapterLuidHigh}` ([09 §4.5](09-rhi.md#45-adapter-selection)). Both devices are now on the same GPU, which shared NT handles require. `rendering::render_system` creates the RHI and the graphics objects of §3.4 in one call; its first failure, with the step that failed, is the startup error of §7.
 4. The renderer creates the **shared frame ring** (§3.3) at the viewport's pixel size and exports the handles.
 5. The `viewport_renderer` (Qt render thread) opens the handles on Qt's device: `ID3D12Device::OpenSharedHandle` for the textures and the fences. It wraps each texture with `QRhiTexture::createFrom({ quint64(resource), D3D12_RESOURCE_STATE_COMMON })`.
 
@@ -156,9 +163,9 @@ in parallel, per frame: when_reached(produced, n) → publish latest_completed �
 - Publishing a frame to Qt is a separate small sender per frame (`when_reached(produced, n)`), spawned into the same async scope. The next frame doesn't wait for it.
 - No stage blocks a thread: GPU completions resume the chain from the completion driver, timers from IO completions, and CPU work runs on parallel workers.
 - **Driving GPU completions.** The RHI owns no thread ([09 §5.2](09-rhi.md#52-driving-completions)). A `QWinEventNotifier` on `rhi::completion_driver::completion_event()`, in Qt's GUI event loop, calls `poll_completions()` whenever the event fires (D-93). That completes every GPU wait of the Visualizer: `begin_frame` (which doesn't drive the RHI itself, D-94), `shared_slot_free()`, the `when_reached` publishes, uploads and readbacks, and it frees destroyed objects. It covers waits on Qt's `consumed` fence while Avis renders nothing. Completions run on the GUI thread, so every continuation that does real work moves to the parallel scheduler with `continues_on` (each stage above already starts with one).
-- **Who holds the RHI.** The renderer creates the `rhi::render_hardware_interface` and is its only holder (D-96). It builds the views each component takes ([09 §4.3](09-rhi.md#43-subsystem-views)): `completion_driver` for the notifier; `synchronization` and `transient_objects` for the frame scheduler; `transient_objects` and the queues for the GPU profiler; `resources`, `command_lists` and the queues for the render graph, which also gets the frame scheduler and the profiler; `memory` and `resources` for its transient pool; and the upload queue, readback queue and pipeline cache get theirs.
+- **Who holds the RHI.** The renderer creates the `rhi::render_hardware_interface` and is its only holder (D-96): `rendering::render_system`, which the controller creates once Qt's adapter is known (§3.2). It builds the views each component takes ([09 §4.3](09-rhi.md#43-subsystem-views)): `completion_driver` for the notifier; `synchronization` and `transient_objects` for the frame scheduler; `transient_objects` and the queues for the GPU profiler; `resources`, `command_lists` and the queues for the render graph, which also gets the frame scheduler and the profiler; `memory` and `resources` for its transient pool; and the upload queue, readback queue and pipeline cache get theirs.
 - The chain keeps running while the simulation is paused, so camera motion stays fluid.
-- Errors (device lost) arrive on `set_error`, and `frame_loop` turns them into the fatal-error path (§7). The exception is `transient_memory_exhausted` from `render_graph::execute`: the frame's upload memory or descriptors ran out, so `frame_loop` ends the frame with no submissions, skips it and re-arms the next one ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh), D-98). The log warning names the budget to raise. Stopping requests stop on the scope's stop source; the chain finishes its current frame and completes with `set_stopped`. A frame stopped before anything was submitted, including one whose token is still inside the opening `when_all`, ends with no submissions: the dropped token ends itself ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh), D-102). The controller then waits for the scope to drain at shutdown. After that the renderer destroys the notifier and the graphics-layer objects (render graph, GPU profiler, frame scheduler, upload and readback queues, pipeline cache), then the RHI, whose destructor waits for the GPU (`render_hardware_interface::wait_idle`, D-93).
+- Errors (device lost) arrive on `set_error`, and `frame_loop` turns them into the fatal-error path (§7). The exception is `transient_memory_exhausted` from `render_graph::execute`: the frame's upload memory or descriptors ran out, so `frame_loop` ends the frame with no submissions, skips it and re-arms the next one ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh), D-98). The log warning names the budget to raise. Stopping requests stop on the scope's stop source; the chain finishes its current frame and completes with `set_stopped`. A frame stopped before anything was submitted, including one whose token is still inside the opening `when_all`, ends with no submissions: the dropped token ends itself ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh), D-102). The controller then waits for the scope to drain at shutdown. After that the controller destroys the notifier, and `render_system` waits for the GPU (`render_hardware_interface::wait_idle`, D-93, which also completes the senders still waiting on it), destroys the graphics-layer objects in the reverse creation order (renderer, shaders, pipeline cache, root signature registry, readback and upload queues, render graph, transient pool, GPU profiler, frame scheduler), then the RHI.
 
 ## 4. Threads (Visualizer view)
 See [01 §4.1](01-system-architecture.md#41-visualizer). Communication paths:
@@ -416,8 +423,8 @@ The renderer starts after the RHI exists (§3.2 step 3) and before the first fra
 | Duplicate id or hash collision | From the parser (with lines) or `shader_library::create` (`duplicate_shader_id`) |
 | Missing shader for a pipeline | `shader_not_found` from `graphics::pipeline_cache`, naming the pipeline's debug name |
 
-*As implemented* (task 11.22), until `frame_loop` exists:
-- `visualizer_driver` runs these steps when QML first reads its singleton, waiting for the load on the GUI thread. The RHI's and the frame scheduler's failures are startup errors too.
+*As implemented* (tasks 11.22 and 12.3), until `frame_loop` exists:
+- `rendering::render_system::create` runs these steps once Qt's adapter is known (task 12.3, §3.2), waiting for the load on the GUI thread. The failures of the RHI and of every graphics object are startup errors too.
 - The message is prefixed with the step that failed, for example *"the renderer's shaders could not be loaded: manifest.yaml not found in …"*, and logged in full.
 - `main.qml` shows it in a `QtQuick.Dialogs` `MessageDialog`, then exits with code 1.
 - The log is `visualizer.log` next to the executable until `visualizer.yaml`'s `logging` section is read.

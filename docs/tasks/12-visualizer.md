@@ -127,18 +127,28 @@ flowchart LR
 ## 12.3 Device setup, RHI ownership, completions
 12 §3.2, §3.4, §7, D-93, D-94, D-96.
 
-- [ ] `main.cpp` calls `QQuickWindow::setGraphicsApi(Direct3D12)` before the window exists. It's already done; keep it.
-- [ ] `ui/viewport_renderer` reads `QRhiD3D12NativeHandles` on `sceneGraphInitialized` and passes the adapter LUID to the controller on the GUI thread.
-- [ ] The renderer creates the RHI there, with `adapter = { luid_low, luid_high }` and the `render` settings (debug layer, GBV), and is its only holder (D-96). A capability-gate failure becomes the startup dialog of 12 §7, after which the application exits.
-- [ ] Build the views of 12 §3.4 for each graphics object:
+- [x] `main.cpp` calls `QQuickWindow::setGraphicsApi(Direct3D12)` before the window exists. It's already done; keep it.
+
+  *As implemented:* it also turns on the D3D12 debug layer and GPU-based validation there when `render.debug_layer` or `render.gpu_validation` ask for them (`ui::enable_d3d12_debugging`). D3D12 devices are singletons per adapter in a process, so the RHI gets Qt's device, and turning the debug layer on after Qt created it removed the device (`DXGI_ERROR_DEVICE_RESET` at the RHI's `D3D12CreateDevice`). 12 §3.1 records this and what follows from it.
+- [x] `ui/viewport_renderer` reads `QRhiD3D12NativeHandles` on `sceneGraphInitialized` and passes the adapter LUID to the controller on the GUI thread.
+
+  *As implemented:* `ui/viewport_renderer.h/.cpp` holds `read_qt_adapter(QRhi&)` until 12.5 adds the item renderer. `visualizer_driver::watch_window`, called by `main()` from `QQmlApplicationEngine::objectCreated`, connects to `sceneGraphInitialized` with `Qt::DirectConnection`, reads the adapter and its name on the render thread, and queues `start_graphics` on the GUI thread. A later re-initialisation is ignored (with a warning if the adapter changed). A Qt not on D3D12 is a startup error.
+- [x] The renderer creates the RHI there, with `adapter = { luid_low, luid_high }` and the `render` settings (debug layer, GBV), and is its only holder (D-96). A capability-gate failure becomes the startup dialog of 12 §7, after which the application exits.
+
+  *As implemented:* `rendering/render_system.h/.cpp`, in the Qt-free rendering library: `render_system::create(configuration)` takes the adapter, the `render` settings and the shader directory, and creates everything below; the first failure comes back with its step in front ("the graphics device could not be created: …"). `startupError` became a notified property, since graphics now start after the window exists; `main.qml` opens the dialog when it changes.
+- [x] Build the views of 12 §3.4 for each graphics object:
   - the frame scheduler with `frames_in_flight`
   - the GPU profiler
   - the render graph and its transient pool
   - the upload and readback queues
   - the pipeline cache and root signature registry
   - task 11's `scene_renderer`, created after `load_renderer_shaders`, whose failure is the shader startup dialog (12 §7, 12a §5)
-- [ ] A `QWinEventNotifier` on `completion_driver::completion_event()`, in the GUI event loop, calls `poll_completions()` when it fires (D-93). Continuations doing work move to the parallel scheduler with `continues_on` (12 §3.4).
-- [ ] The shutdown order of 12 §3.4, in four steps:
+
+  *As implemented:* in that order, each with only its views. The render graph gets the profiler and `render.async_compute` and `render.graph_aliasing`; the scene renderer gets the profiler too, so the frame chain must call `gpu_profiler::prepare_frame` before `render` (12.7). `render_system` exposes the objects and the `completion_driver` and `synchronization` views; `hardware_interface()` is for the composition's own views (the ring's `sharing`, 12.4) and tests.
+- [x] A `QWinEventNotifier` on `completion_driver::completion_event()`, in the GUI event loop, calls `poll_completions()` when it fires (D-93). Continuations doing work move to the parallel scheduler with `continues_on` (12 §3.4).
+
+  *As implemented:* the controller owns the notifier, created right after the render system. Nothing continues from a completion yet; the frame loop (12.7) follows the rule.
+- [x] The shutdown order of 12 §3.4, in four steps:
   1. Stop the frame loop's scope and wait for it to drain.
   2. Destroy the notifier.
   3. Destroy the graphics objects in reverse creation order.
@@ -146,9 +156,15 @@ flowchart LR
 
   The simulation thread stops first, before the frame loop, because the snapshot buffer outlives both.
 
+  *As implemented:* the controller's destructor destroys the notifier, then the render system. `~render_system` calls `wait_idle` before step 3, because the upload and readback queues must have nothing outstanding when they're destroyed; the RHI's destructor waits again. Step 1 and the simulation thread join with 12.6 and 12.7, before the notifier.
+
 **Tests:**
-- [ ] `[visualizer]`: on WARP, with no Qt, create the full object set from a LUID, run 10 empty frames through `poll_completions` driven by a test loop on the event, and shut down. The debug layer reports no live objects.
-- [ ] Manual: the Visualizer starts on the GPU Qt picked (log the adapter name for both devices and check that they're equal).
+- [x] `[visualizer]`: on WARP, with no Qt, create the full object set from a LUID, run 10 empty frames through `poll_completions` driven by a test loop on the event, and shut down. The debug layer reports no live objects.
+
+  *As implemented:* `tests/visualizer/rendering/test_render_system.cpp`. Each frame is `begin_frame` completed from the event loop, `prepare_frame`, `retire`, the renderer's `render` with no view on an empty snapshot, and `end_frame`; with two frames in flight, later frames wait for the GPU through the event. The last frame's points complete through the event too. After the shutdown, the test holds the last reference to the device and reads `ReportLiveDeviceObjects` from its info queue: only the device itself is listed. A fence leaked on purpose showed up there, so the check can fail. A second test checks that an unknown LUID and a missing shader directory fail with their step named.
+- [x] Manual: the Visualizer starts on the GPU Qt picked (log the adapter name for both devices and check that they're equal).
+
+  *As implemented:* the log shows "Qt Quick renders on AMD Radeon RX 7800 XT (LUID 00000000:00012ba5)" and "the renderer's device is on AMD Radeon RX 7800 XT (LUID 00000000:00012ba5)", with the debug layer and with GPU-based validation, and the Visualizer closes without errors. A missing shader directory showed the startup dialog. A temporary check in `test_qt_interop.cpp` confirmed that `D3D12CreateDevice` on Qt's adapter returns Qt's device.
 
 ## 12.4 Shared frame ring
 12 §3.3, §3.4, 09 §13.
@@ -174,7 +190,7 @@ flowchart LR
   - When Qt stops picking, Avis alternates between the other two.
   - The slot released longest ago is preferred.
   - A random interleaving of 100,000 Avis and Qt operations never gives a slot to Avis while Qt still samples it (model check with a reference model).
-- [ ] `[visualizer]`, on the RHI fixture with a second device standing in for Qt (`OpenSharedHandle` on a second WARP or hardware device):
+- [ ] `[visualizer]`, on the RHI fixture with a second device standing in for Qt (`OpenSharedHandle` on a second WARP or hardware device). It must be on a **different adapter** from the first: in one process, a second device on the same adapter is the same device (12 §3.1).
   - frames written by Avis read back correctly on the second device after waiting on `produced`
   - `shared_slot_free()` completes through `when_reached` once the second device signals `consumed`
   - a resize keeps the old ring alive until it's released

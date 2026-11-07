@@ -1,26 +1,25 @@
 #include "visualizer_driver.h"
 
 #include "log_location.h"
+#include "rendering/render_system.h"
 #include "rendering/renderer_shaders.h"
-#include "rendering/scene_renderer.h"
+#include "ui/viewport_renderer.h"
 
 #include "avis/log.h"
-#include "avis/rhi/command_list.h"
-#include "avis/rhi/memory.h"
-#include "avis/rhi/pipeline.h"
-#include "avis/rhi/queue.h"
-#include "avis/rhi/resources.h"
-#include "avis/rhi/synchronization.h"
-#include "avis/rhi/transient.h"
 #include "avis/runtime.h"
 #include "avis/threading/parallel_helpers.h"
 
 #include <QCoreApplication>
 #include <QJSEngine>
+#include <QMetaObject>
 #include <QQmlEngine>
+#include <QQuickWindow>
+#include <QWinEventNotifier>
 
+#include <cstdint>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -59,11 +58,9 @@ namespace
         return {};
     }
 
-    // Prefixes the step that failed to the error's message, keeping its domain and code
-    avis::error startup_failure(avis::error error, const std::string_view step)
+    std::string luid_text(const avis::rhi::adapter_luid luid)
     {
-        error.message = std::format("{}: {}", step, error.message);
-        return error;
+        return std::format("{:08x}:{:08x}", static_cast<std::uint32_t>(luid.high), luid.low);
     }
 } // namespace
 
@@ -78,24 +75,15 @@ visualizer_driver::visualizer_driver(
 
     load_vehicle_proxy();
     publish_snapshot();
-
-    avis::result<void> started = create_graphics().and_then([this] { return create_renderer(); });
-    if (!started)
-    {
-        // A startup error (12 §7, 12a §5): main.qml shows it and exits
-        avis::log::get("ui")->error("the Visualizer could not start: {}", std::format("{}", started.error()));
-        startup_error_ = QString::fromStdString(started.error().message);
-    }
 }
 
 visualizer_driver::~visualizer_driver()
 {
-    // The renderer's upload flushes may still run on the copy queue; the members after rhi_ go in reverse order
-    if (rhi_ != nullptr)
-    {
-        rhi_->wait_idle();
-    }
-    renderer_.reset();
+    // The shutdown order of 12 §3.4. The simulation thread (12.6) stops first and the frame loop's scope (12.7)
+    // drains next; then the notifier goes, and the render system destroys the graphics objects in reverse and the
+    // RHI last, waiting for the GPU.
+    completion_notifier_.reset();
+    graphics_.reset();
     if (vehicle_proxy_)
     {
         assets_.release_all(*vehicle_proxy_);
@@ -116,89 +104,87 @@ QString visualizer_driver::log_file() const
     return QString::fromStdWString(visualizer_log::file_path().wstring());
 }
 
-avis::result<void> visualizer_driver::create_graphics()
+void visualizer_driver::watch_window(QQuickWindow& window)
 {
-    avis::rhi::render_hardware_interface_configuration configuration;
-    configuration.debug.debug_layer = true;
-
-    auto created = avis::rhi::render_hardware_interface::create(configuration);
-    if (!created)
-    {
-        return std::unexpected(startup_failure(std::move(created.error()), "the graphics device could not be created"));
-    }
-    rhi_ = std::move(*created);
-
-    auto frames = avis::graphics::frame_scheduler::create(
-        avis::rhi::synchronization{ *rhi_ }, avis::rhi::transient_objects{ *rhi_ }, {});
-    if (!frames)
-    {
-        return std::unexpected(startup_failure(std::move(frames.error()), "the frame scheduler could not be created"));
-    }
-    frames_ = std::move(*frames);
-    transient_pool_ = std::make_unique<avis::graphics::transient_resource_pool>(
-        avis::rhi::memory{ *rhi_ }, avis::rhi::resources{ *rhi_ }, frames_->frames_in_flight());
-    graph_ = std::make_unique<avis::graphics::render_graph>(
-        avis::rhi::resources{ *rhi_ },
-        avis::rhi::command_lists{ *rhi_ },
-        avis::rhi::queue<avis::rhi::queue_type::graphics>{ *rhi_ },
-        avis::rhi::queue<avis::rhi::queue_type::compute>{ *rhi_ },
-        avis::rhi::queue<avis::rhi::queue_type::copy>{ *rhi_ },
-        *transient_pool_,
-        *frames_);
-    return {};
+    // Emitted on the render thread, where Qt's QRhi may be read; the result goes to the GUI thread. A later
+    // re-initialisation (after sceneGraphInvalidated) is ignored by start_graphics.
+    QObject::connect(
+        &window,
+        &QQuickWindow::sceneGraphInitialized,
+        this,
+        [this, &window]()
+        {
+            std::optional<avis::visualizer::ui::qt_adapter> adapter;
+            if (QRhi* const rhi = window.rhi(); rhi != nullptr)
+            {
+                adapter = avis::visualizer::ui::read_qt_adapter(*rhi);
+            }
+            QMetaObject::invokeMethod(this, [this, adapter]() { start_graphics(adapter); }, Qt::QueuedConnection);
+        },
+        Qt::DirectConnection);
 }
 
-avis::result<void> visualizer_driver::create_renderer()
+void visualizer_driver::start_graphics(const std::optional<avis::visualizer::ui::qt_adapter>& adapter)
 {
-    auto uploads = avis::graphics::upload_queue::create(
-        avis::rhi::resources{ *rhi_ },
-        avis::rhi::command_lists{ *rhi_ },
-        avis::rhi::queue<avis::rhi::queue_type::copy>{ *rhi_ },
-        avis::rhi::synchronization{ *rhi_ },
-        {});
-    if (!uploads)
+    const auto log = avis::log::get("ui");
+    if (graphics_requested_)
     {
-        return std::unexpected(startup_failure(std::move(uploads.error()), "the upload queue could not be created"));
+        if (adapter && graphics_ != nullptr && adapter->luid != graphics_->capabilities().luid)
+        {
+            log->warn(
+                "Qt's scene graph moved to {} (LUID {}); the renderer stays on {}",
+                adapter->name.toStdString(),
+                luid_text(adapter->luid),
+                graphics_->capabilities().adapter_name);
+        }
+        return;
     }
-    uploads_ = std::move(*uploads);
-    root_signatures_ = std::make_unique<avis::graphics::root_signature_registry>(avis::rhi::pipelines{ *rhi_ });
-    pipeline_cache_ =
-        std::make_unique<avis::graphics::pipeline_cache>(avis::rhi::pipelines{ *rhi_ }, *root_signatures_);
+    graphics_requested_ = true;
 
-    // At startup, on the GUI thread, where waiting is allowed (12a §5)
-    const std::filesystem::path shader_directory =
-        rendering::resolve_shader_directory(configuration_.render, executable_directory());
-    auto library = avis::threading::sync_wait_result(rendering::load_renderer_shaders(shader_directory));
-    if (!library)
+    if (!adapter)
     {
-        return std::unexpected(
-            startup_failure(std::move(library.error()), "the renderer's shaders could not be loaded"));
+        set_startup_error("Qt Quick isn't rendering with Direct3D 12, so the renderer can't share its frames with it");
+        return;
     }
-    shaders_ = std::make_unique<avis::graphics::shader_library>(std::move(*library));
-    avis::log::get("render")->info("loaded the renderer's shaders from {}", shader_directory.string());
+    log->info("Qt Quick renders on {} (LUID {})", adapter->name.toStdString(), luid_text(adapter->luid));
 
-    auto renderer = rendering::scene_renderer::create(
-        rendering::renderer_dependencies{
-            .resources = avis::rhi::resources{ *rhi_ },
-            .pipelines = avis::rhi::pipelines{ *rhi_ },
-            .synchronization = avis::rhi::synchronization{ *rhi_ },
-            .graph = *graph_,
-            .pool = *transient_pool_,
-            .frames = *frames_,
-            .profiler = nullptr, // GPU timings come with 12's frame chain
-            .pipeline_cache = *pipeline_cache_,
-            .root_signatures = *root_signatures_,
-            .uploads = *uploads_,
-            .memory_budget = [this] { return rhi_->local_memory_budget(); },
-        },
-        configuration_.render,
-        *shaders_);
-    if (!renderer)
+    rendering::render_system_configuration configuration{
+        .adapter = adapter->luid,
+        .settings = configuration_.render,
+        .shader_directory = rendering::resolve_shader_directory(configuration_.render, executable_directory()),
+    };
+    auto created = rendering::render_system::create(configuration);
+    if (!created)
     {
-        return std::unexpected(startup_failure(std::move(renderer.error()), "the renderer could not be created"));
+        log->error("the Visualizer could not start: {}", std::format("{}", created.error()));
+        set_startup_error(QString::fromStdString(created.error().message));
+        return;
     }
-    renderer_ = std::move(*renderer);
-    return {};
+    graphics_ = std::move(*created);
+
+    // GPU waits complete from the GUI event loop (12 §3.4, D-93): the frame loop's begin_frame, the ring's
+    // when_reached senders, uploads and readbacks. Continuations doing real work move to the parallel scheduler.
+    completion_notifier_ = std::make_unique<QWinEventNotifier>(graphics_->completion_driver().completion_event());
+    QObject::connect(completion_notifier_.get(), &QWinEventNotifier::activated, this, [this]() { poll_completions(); });
+    completion_notifier_->setEnabled(true);
+}
+
+void visualizer_driver::set_startup_error(const QString& message)
+{
+    if (!startup_error_.isEmpty())
+    {
+        return;
+    }
+    startup_error_ = message;
+    Q_EMIT startup_error_changed();
+}
+
+void visualizer_driver::poll_completions()
+{
+    if (graphics_ != nullptr)
+    {
+        graphics_->completion_driver().poll_completions();
+    }
 }
 
 void visualizer_driver::load_vehicle_proxy()

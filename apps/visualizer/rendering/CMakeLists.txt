@@ -31,6 +31,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	progressive_lod.cpp
 	range_walker.cpp
 	render_settings.cpp
+	render_system.cpp
 	renderer_shaders.cpp
 	residency_cache.cpp
 	scene_renderer.cpp

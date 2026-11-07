@@ -4,14 +4,6 @@
 #include "visualizer_configuration.h"
 
 #include "avis/error.h"
-#include "avis/graphics/frame_scheduler.h"
-#include "avis/graphics/pipeline_cache.h"
-#include "avis/graphics/render_graph.h"
-#include "avis/graphics/root_signature_registry.h"
-#include "avis/graphics/shader_library.h"
-#include "avis/graphics/transient_resource_pool.h"
-#include "avis/graphics/upload_queue.h"
-#include "avis/rhi/render_hardware_interface.h"
 #include "avis/scene/assets/asset_cache.h"
 #include "avis/scene/assets/gltf.h"
 #include "avis/scene/scene.h"
@@ -27,25 +19,33 @@
 
 class QJSEngine;
 class QQmlEngine;
+class QQuickWindow;
+class QWinEventNotifier;
 
 namespace avis::visualizer::rendering
 {
-    class scene_renderer;
+    class render_system;
+}
+
+namespace avis::visualizer::ui
+{
+    struct qt_adapter;
 }
 
 // The application controller (12 §2). main() creates the one instance on the GUI thread, before the QML engine, and
 // QML reaches it as the VisualizerDriver singleton. It owns, in this order: the configuration, the asset cache, the
-// scene, the snapshot buffer, then (from 12.6 and 12.7) the simulation thread and the frame loop, and the graphics
-// objects until the frame loop takes them over.
+// scene, the snapshot buffer, then (from 12.6 and 12.7) the simulation thread and the frame loop. The graphics objects
+// (rendering::render_system, the RHI's only holder) and the completion notifier follow once Qt's adapter is known
+// (12 §3.2).
 class visualizer_driver : public QObject
 {
     Q_OBJECT
     QML_NAMED_ELEMENT(VisualizerDriver)
     QML_SINGLETON
 
-    // Why the Visualizer can't run, empty when it started (12 §7, 12a §5): main.qml shows it in a modal dialog, then
-    // exits. Set by the constructor and never changed afterwards.
-    Q_PROPERTY(QString startupError READ startup_error CONSTANT)
+    // Why the Visualizer can't run, empty while it can (12 §7, 12a §5): main.qml shows it in a modal dialog, then
+    // exits. Set at most once, when graphics fail to start.
+    Q_PROPERTY(QString startupError READ startup_error NOTIFY startup_error_changed)
     // The log file the dialog names (log_location.h)
     Q_PROPERTY(QString logFile READ log_file CONSTANT)
 
@@ -53,7 +53,7 @@ public:
     // `configuration_path` is where the configuration is written back (12.16)
     visualizer_driver(
         avis::visualizer::visualizer_configuration configuration, std::filesystem::path configuration_path);
-    ~visualizer_driver() override; // waits for the GPU, then releases the renderer before what it uses
+    ~visualizer_driver() override; // the shutdown order of 12 §3.4
 
     visualizer_driver(const visualizer_driver&) = delete;
     visualizer_driver& operator=(const visualizer_driver&) = delete;
@@ -68,14 +68,24 @@ public:
 
     QString log_file() const;
 
+    // Starts graphics on Qt's adapter once the window's scene graph is initialised (12 §3.2 steps 2 and 3). Call once,
+    // on the GUI thread, right after the QML engine created the window, before the event loop shows it.
+    void watch_window(QQuickWindow& window);
+
+Q_SIGNALS:
+    void startup_error_changed();
+
 private:
     // Loads data/assets/vehicle_proxy.glb when it exists (08 §5.1); the representation task adds the file
     void load_vehicle_proxy();
 
-    // The RHI, the frame scheduler and the graph, then the renderer's services, its shaders and the renderer itself
-    // (12 §3.2 step 3, 12a §5). The first failure is the startup error.
-    avis::result<void> create_graphics();
-    avis::result<void> create_renderer();
+    // On the GUI thread, with what read_qt_adapter found on the render thread: creates the render system on Qt's
+    // adapter, then the completion notifier. A failure is the startup error (12 §7).
+    void start_graphics(const std::optional<avis::visualizer::ui::qt_adapter>& adapter);
+    void set_startup_error(const QString& message);
+
+    // Runs the RHI's housekeeping when its completion event fires (12 §3.4, D-93)
+    void poll_completions();
 
     // The tick sequence of 08 §9.6 into snapshots_: update the transforms, make the snapshot, publish, end the tick
     void publish_snapshot();
@@ -96,21 +106,13 @@ private:
     avis::scene::snapshot_buffer snapshots_;
 
     QString startup_error_;
+    bool graphics_requested_ = false; // the window's first sceneGraphInitialized arrived
 
-    // Null when graphics couldn't start (startup_error_ says why). Destroyed last: the graphics objects below use it.
-    std::unique_ptr<avis::rhi::render_hardware_interface> rhi_;
+    // Null until Qt's adapter is known, and when graphics couldn't start (startup_error_ says why)
+    std::unique_ptr<avis::visualizer::rendering::render_system> graphics_;
 
-    // The render graph and what it executes with. Executing frames needs the frame chain and a completion driver (12).
-    std::unique_ptr<avis::graphics::frame_scheduler> frames_;
-    std::unique_ptr<avis::graphics::transient_resource_pool> transient_pool_;
-    std::unique_ptr<avis::graphics::render_graph> graph_;
-
-    // The renderer's services and shaders; each outlives the renderer, declared after them
-    std::unique_ptr<avis::graphics::upload_queue> uploads_;
-    std::unique_ptr<avis::graphics::root_signature_registry> root_signatures_;
-    std::unique_ptr<avis::graphics::pipeline_cache> pipeline_cache_;
-    std::unique_ptr<avis::graphics::shader_library> shaders_;
-    std::unique_ptr<avis::visualizer::rendering::scene_renderer> renderer_;
+    // In the GUI event loop, on the RHI's completion event; destroyed before graphics_
+    std::unique_ptr<QWinEventNotifier> completion_notifier_;
 };
 
 #endif
