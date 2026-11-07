@@ -167,7 +167,7 @@ int main(int argc, char* argv[])
     QCoreApplication::setApplicationName("Visualizer");
 
     // The controller, which QML reaches as the VisualizerDriver singleton; it outlives the engine
-    visualizer_driver driver{ std::move(loaded->configuration), configuration_path };
+    visualizer_driver driver{ std::move(loaded->configuration), configuration_path, options->demo_scene };
 
     QQmlApplicationEngine engine;
     QObject::connect(

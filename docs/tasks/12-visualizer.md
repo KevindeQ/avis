@@ -248,7 +248,7 @@ flowchart LR
 ## 12.6 Simulation thread (presentation path) and the demo scene
 12 §4, §4.1, 03 §4.4, D-42.
 
-- [ ] `simulation/simulation_thread.h/.cpp` is an application thread from the runtime's pool (task 4). It owns the `scene` and the representation, and runs the loop of 03 §4.2 **without steps** in Part A:
+- [x] `simulation/simulation_thread.h/.cpp` is an application thread from the runtime's pool (task 4). It owns the `scene` and the representation, and runs the loop of 03 §4.2 **without steps** in Part A:
   - It drains `command_queue<simulation_command>` (MPSC with a condition variable).
   - It applies presentation commands (12 §4.1).
   - It republishes when the snapshot is dirty, coalesced to one republish per 16 ms (03 §4.4). The tick sequence of 08 §9.6 runs steps 4–6 only.
@@ -259,20 +259,74 @@ flowchart LR
     - the follow target's bounds when the target or its extent changes
 
   Part B adds the step handling (12.19).
-- [ ] `simulation_command`: a variant of the simulation commands (start, pause, resume, single step, stop, set speed, placeholders until 12.19) and the presentation commands of 12 §4.1 (select, clear, entity and category visibility, helper toggles, representation settings, labels, trails, staleness, `visualization` edits, *Reset*).
-- [ ] The time anchor is set to `{ t, now, 0 }` in Part A; `step` is 0.
-- [ ] `simulation/demo_scene.h/.cpp`, a scene source that is used with `--demo-scene` and by tests, and that Part B keeps for offline UI work:
+
+  *As implemented:* two classes in `simulation_thread.h`:
+  - **`simulation_loop`** does the work for a time it's given: `handle(command, now)`, `update(now)` and `next_due()`. It's a plain object on the thread that constructed it, so the tests drive it on the test thread with a made-up clock. It creates the scene (whose owner-thread check needs that) and a `helpers` group for the Visualizer's helpers (08 §4.2), then publishes the first snapshot.
+  - **`simulation_thread`** starts a pool thread named `simulation` that creates the loop, then alternates `update` and `command_queue::wait_and_drain` until the next due time, a command or a stop request. `simulation/command_queue.h` is a mutex, a vector and a `condition_variable_any` that waits on the stop token too. The controller owns the thread and stops it first at shutdown, and the scene goes with it. `post()` is safe from any thread.
+
+  On top of that:
+  - **The scene moved out of the controller.** It's created on the simulation thread, so `visualizer_driver` keeps only the asset cache and the snapshot buffer.
+  - **The representation is a hook until 12.8.** `representation/scene_representation.h` is the interface that step 4 calls on every tick and republish. `representation/presentation_state.h` holds what the presentation commands set. The loop takes no representation yet, so semantic components get no meshes.
+  - **Selection and visibility flags.** The loop applies them after step 4, so 12.8 needs no extra pass. `selected` goes on the selected entity's `render_options` and on each helper that `represents` it. Selecting a helper selects its owner. `visibility.visible` is the entity's own toggle and its category's. A helper follows its owner, and ancestors don't hide their children. Visibility is recomputed after a structural change or a visibility command, and written only where it changes. A selection whose entity is destroyed clears.
+  - **The coalescing window opens at the first change.** A dirty snapshot is republished 16 ms after the command that dirtied it, so a burst shorter than 16 ms gives one republish. A tick's publish clears the flag (03 §4.4).
+  - **Step 7 runs at the start of the next tick.** `end_tick` sets `previous_world = world`. Run straight after the publish, as 08 §9.6 orders it, it made a republish between two ticks show `world_previous == world_current`, which breaks 03 §4.4. Deferred, the next tick sees the same state, and republishes in between keep the tick's values. Republishes also update the transforms before step 4, so the representation reads current worlds after a command changed the scene (*Reset*).
+  - **What the GUI gets** (`simulation/gui_sink.h`):
+    - `tree_changed` after each publish that had structural changes.
+    - `selected_entity_changed` at most every 50 ms: after the selection changes, and after each publish while something is selected. `nullopt` once it's cleared.
+    - `statistics_changed` every 500 ms.
+    - `follow_target_changed` when the target changes or its `display_shape` extent does. The target is the selected vehicle, otherwise the primary one. The world bounds go with the post but don't trigger it, since they change whenever the target turns.
+
+    `ui/simulation_bridge.h/.cpp` is the Qt side. It queues each call to the GUI thread, keeps the latest values and emits a signal. `visualizer_driver::simulation_updates()` exposes it for 12.12–12.14. The status line (clock state, effective speed) comes with the clock in 12.19.
+  - ***Reset*** destroys every entity with `driver_entity`, then every helper whose owner is gone (trails live under `helpers`, 08 §8.2). It also clears the per-entity visibility and trail toggles.
+- [x] `simulation_command`: a variant of the simulation commands (start, pause, resume, single step, stop, set speed, placeholders until 12.19) and the presentation commands of 12 §4.1 (select, clear, entity and category visibility, helper toggles, representation settings, labels, trails, staleness, `visualization` edits, *Reset*).
+
+  *As implemented:* `simulation/simulation_command.h`. The simulation commands are logged ("needs a connected Driver") and ignored. `set_visualization` carries `scene::environment_settings` and calls `scene::set_environment`. `visualizer_driver::post()` sends a command from the GUI.
+- [x] The time anchor is set to `{ t, now, 0 }` in Part A; `step` is 0.
+
+  *As implemented:* without a scene source the snapshots carry step 0 and the anchor `{ 0, start time, 0 }`. Demo-scene ticks are steps committed while running: step `k`, times `t_{k−1}` and `t_k` at 100 ms per step, and the anchor `{ t_{k−1}, tick time, 1 }` (03 §5.2), so interpolation runs between ticks.
+- [x] `simulation/demo_scene.h/.cpp`, a scene source that is used with `--demo-scene` and by tests, and that Part B keeps for offline UI work:
   - Each tick (a timer at 10 Hz, on the simulation thread) it writes the components that `scene_stream` writes in Part B (08 §3.1), through the same `scene` calls: `driver_entity`, `display_shape`, `vehicle`, `sensor`, `properties`, `belief_geometry` and `lidar_points`.
   - It creates a primary vehicle with two camera sensors and a lidar driving a circle, a shadow vehicle with a trajectory line, 30 boxes moving and appearing and disappearing, a drivable-area triangle chunk and a synthetic lidar sweep each tick.
   - It runs the full tick sequence (08 §9.6) with a fake step counter, so interpolation, trails and stamps work.
   - Ids use a Driver source byte of 1, never the helper range.
 
+  *As implemented:* the hierarchy follows 08 §4.2:
+  - `ego_vehicle` drives a 25 m circle at 8 m/s, with `image_00`, `image_01` (frustums) and `velodyne` (axes, `lidar_points` keeping 3 sweeps).
+  - `shadow_vehicle` is a ghost (opacity 0.4) that drifts across the ego's path. Its child `trajectory` is a line strip of its next 3 s.
+  - `perception` holds the boxes: cars, pedestrians and cyclists, in three colours. Each lives 2–8 s, and up to two new ones appear per tick while there are fewer than 30.
+  - `belief/drivable_area` is a ring of triangles around the track.
+
+  The lidar sweep has 16 rings × 256 azimuths of ground and a wavy wall. The update stamps follow 08 §3.1. The loop's timer runs one tick per `update` at most: a late loop skips ticks rather than bursting (03 §4.2). The demo keeps running after *Reset* and recreates its entities on the next tick. Randomness comes from a seeded `std::mt19937`.
+- [x] `--demo-scene` (not in the original list): `parse_command_line` sets `command_line_options::demo_scene`, and `main()` passes it to the controller, which starts the simulation thread with it. Manual check: the Visualizer started with `--demo-scene` logs "the demo scene stands in for the Driver", runs, and exits with code 0 and no warnings. Nothing is drawn yet: the meshes come with the representation (12.8) and the frames with the frame loop (12.7).
+
 **Tests** (`test_simulation_thread.cpp`, `[visualizer][unit]`):
-- [ ] 100 presentation commands within 16 ms give one republish, and the republish keeps the step fields and `world_previous`.
-- [ ] *Reset* leaves only the helpers.
-- [ ] Select and clear move the `selected` flag in the next snapshot.
-- [ ] The `gui_sink` (a recording fake) gets tree changes after a structural change, the selected entity at no more than 20 Hz, and statistics at 2 Hz.
-- [ ] The demo scene runs 1,000 ticks with no debug check firing, and its entity count stays bounded.
+
+*As implemented:* the tests drive a `simulation_loop` with a made-up clock and a recording `gui_sink`. A fake representation gives every entity with a display shape a shared triangle mesh, so the snapshots have instances.
+- [x] 100 presentation commands within 16 ms give one republish, and the republish keeps the step fields and `world_previous`.
+
+  *As implemented:* after two demo ticks, 100 commands in 10 ms (the loop updating between them) give no republish until 16 ms after the first, then exactly one. The republished snapshot has the same step, times, anchor, and the ego's `world_previous` and `world_current`, which differ from each other. Run with `end_tick` straight after the publish, this test failed.
+- [x] *Reset* leaves only the helpers.
+
+  *As implemented:* only helper-category entities are left after the republish. A trail-like helper under `helpers` that represents the ego goes too, and the snapshot has no instances. The demo recreates its entities on the next tick.
+- [x] Select and clear move the `selected` flag in the next snapshot.
+
+  *As implemented:* selecting a helper that represents the shadow vehicle flags both. Selecting the ego moves the flag, and clearing removes it.
+- [x] The `gui_sink` (a recording fake) gets tree changes after a structural change, the selected entity at no more than 20 Hz, and statistics at 2 Hz.
+
+  *As implemented:* four sections:
+  - **Tree changes:** `added` for the helpers group at startup, `added` for the ego after the first tick, `removed` after *Reset*, and nothing but box changes on ticks that only move things.
+  - **Selected entity:** over one simulated second of 1 ms updates, with a command every 5 ms, the selected entity arrives 10–21 times, at least 50 ms apart, with its components and properties. After a clear comes `nullopt`, then nothing.
+  - **Statistics:** exactly 5 posts in 2 s, 500 ms apart.
+  - **Follow target:** the primary vehicle, not re-posted while it moves and turns but re-posted when its extent changes. A selected vehicle takes over, and a selected box doesn't.
+- [x] The demo scene runs 1,000 ticks with no debug check firing, and its entity count stays bounded.
+
+  *As implemented:* recorded assertions and the `scene` and `visualizer` error logs stay empty. At most 39 Driver entities (9 fixed and 30 boxes) exist at once, and over 100 boxes were removed along the way. Every Driver id has source byte 1, the lidar keeps 3 sweeps, the stamps are at step 1000, and the ego is primary.
+- [x] Not in the original list:
+  - Visibility toggles reach the snapshot. Hiding the ego, then the object category, clears `visible` on their instances, and boxes created later in a hidden category are hidden too.
+  - The time fields: step 0 with an anchor at rest without a scene source, and a tick's step, times and anchor with the demo.
+  - Simulation commands log and don't republish.
+  - The real thread: the demo ticks, statistics and tree changes arrive, a posted selection reaches the sink, a second thread doesn't fit a one-thread pool, and destroying the thread joins it.
+  - `test_visualizer_configuration.cpp`: `--demo-scene` on the command line.
 
 ## 12.7 Frame loop
 12 §3.4, 17 §4, D-98, D-102.
@@ -622,7 +676,7 @@ Starts once [task 13](13-network.md) (network), [task 14](14-simulation-core.md)
 - **Library targets.** Like task 11's `AVIS_VISUALIZER_RENDERING`, the non-Qt parts (`representation/`, `simulation/`) build as static libraries so Catch2 tests can link them. The alternative is testing them only through the application.
 - **UI tests.** Qt Test with `QAbstractItemModelTester` covers the models. QML and interaction are covered by manual checklists. Qt Quick Test (`qmltestrunner`) or Squish could automate them later; recommended: not in iteration 1.
 - **Interop spike outcome.** Settled by 12.2: on Qt 6.11.1, `afterFrameEnd` follows the submission, so rule 4's direct path is used, and `createFrom` works on a shared texture in `COMMON`, with the hand-back to `COMMON` of rule 4. `test_qt_interop.cpp` re-checks both after a Qt upgrade.
-- **Demo scene.** It isn't in design 12. It's proposed because Part A must run without a Driver, and it stays useful for offline UI work and screenshots in docs. It needs a line in 12 §2.
+- **Demo scene.** Settled by 12.6: `simulation/demo_scene` is in 12 §2, and `--demo-scene` turns it on. Part A runs without a Driver, and it stays useful for offline UI work and screenshots in docs.
 - **Follow camera pose.** 12 §5 says following uses "the interpolated vehicle pose at render rate". The camera is GUI state, but the interpolation happens in the renderer's extraction. Proposed: the frame loop computes the follow camera after extraction, from the target's interpolated instance, so the camera and the drawn vehicle never disagree. The GUI sends only the mode, target and orbit offset.
 - **Font.** The label font is still open (08 §8.6). It needs an OFL-style licence and the glyph set listed there.
 - **Vehicle proxy.** `data/assets/vehicle_proxy.glb` needs a model with a redistributable licence, or a simple procedural mesh built with `mesh_builder`. Recommended: the procedural mesh first (no licence question), with a glTF later.

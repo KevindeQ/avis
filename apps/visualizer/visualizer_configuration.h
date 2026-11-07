@@ -114,11 +114,12 @@ namespace avis::visualizer
     struct command_line_options
     {
         std::optional<std::filesystem::path> configuration; // --configuration <path>
+        bool demo_scene = false; // --demo-scene: the demo scene stands in for the Driver (12.6)
     };
 
     // Reads the Visualizer's options from the command line's arguments, without the program name. Other arguments are
     // left to Qt and ignored. "--configuration <path>" and "--configuration=<path>" are accepted; the last one wins.
-    // A missing path is generic_error_kind::invalid_configuration.
+    // A missing path is generic_error_kind::invalid_configuration. "--demo-scene" turns the demo scene on.
     result<command_line_options> parse_command_line(std::span<const std::wstring> arguments);
 } // namespace avis::visualizer
 

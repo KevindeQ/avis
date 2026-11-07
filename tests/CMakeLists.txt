@@ -164,6 +164,7 @@ target_sources(AVIS_TESTS
 		visualizer/rendering/test_shared_frame_ring.cpp
 		visualizer/rendering/test_sort_key.cpp
 		visualizer/rendering/test_view.cpp
+		visualizer/test_simulation_thread.cpp
 		visualizer/test_visualizer_configuration.cpp)
 
 # RHI test shaders (docs/tasks/06-rhi.md §6.8): compiled at build time into headers with the bytecode as byte arrays,

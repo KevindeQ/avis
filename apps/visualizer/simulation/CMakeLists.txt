@@ -4,7 +4,9 @@
 # every other part and must be testable without Qt.
 
 add_library(AVIS_VISUALIZER_SIMULATION STATIC
-	../visualizer_configuration.cpp)
+	../visualizer_configuration.cpp
+	demo_scene.cpp
+	simulation_thread.cpp)
 
 target_compile_features(AVIS_VISUALIZER_SIMULATION
 	PUBLIC cxx_std_${AVIS_REQUIRED_CXX_STANDARD})

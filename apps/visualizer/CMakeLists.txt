@@ -8,6 +8,8 @@ add_subdirectory(simulation)
 qt_add_executable(AVIS_VISUALIZER
 	main.cpp
 	visualizer_driver.cpp
+	ui/simulation_bridge.cpp
+	ui/simulation_bridge.h
 	ui/viewport_renderer.cpp
 )
 

@@ -69,7 +69,9 @@ namespace
 } // namespace
 
 visualizer_driver::visualizer_driver(
-    avis::visualizer::visualizer_configuration configuration, std::filesystem::path configuration_path) :
+    avis::visualizer::visualizer_configuration configuration,
+    std::filesystem::path configuration_path,
+    const bool demo_scene) :
     configuration_{ std::move(configuration) },
     configuration_path_{ std::move(configuration_path) },
     assets_{ avis::runtime::io_context() }
@@ -78,14 +80,15 @@ visualizer_driver::visualizer_driver(
     instance = this;
 
     load_vehicle_proxy();
-    publish_snapshot();
+    start_simulation(demo_scene);
 }
 
 visualizer_driver::~visualizer_driver()
 {
-    // The shutdown order of 12 §3.4. The simulation thread (12.6) stops first and the frame loop's scope (12.7)
-    // drains next; then the notifier goes, the shared frame rings (Qt left them with the window), and the render
+    // The shutdown order of 12 §3.4. The simulation thread stops first, with its scene, and the frame loop's scope
+    // (12.7) drains next; then the notifier goes, the shared frame rings (Qt left them with the window), and the render
     // system destroys the graphics objects in reverse and the RHI last, waiting for the GPU.
+    simulation_.reset();
     completion_notifier_.reset();
     frame_rings_.reset();
     graphics_.reset();
@@ -234,11 +237,32 @@ void visualizer_driver::load_vehicle_proxy()
     vehicle_proxy_ = std::move(*loaded);
 }
 
-void visualizer_driver::publish_snapshot()
+void visualizer_driver::post(avis::visualizer::simulation::simulation_command command)
 {
-    current_scene_.update_world_transforms();
-    avis::scene::snapshot& target = snapshots_.begin_write();
-    current_scene_.make_snapshot(target);
-    snapshots_.publish();
-    current_scene_.end_tick();
+    if (simulation_ != nullptr)
+    {
+        simulation_->post(std::move(command));
+    }
+}
+
+void visualizer_driver::start_simulation(const bool demo_scene)
+{
+    avis::visualizer::simulation::simulation_settings settings{
+        .representation = configuration_.representation,
+        .demo_scene = demo_scene,
+    };
+    auto started = avis::visualizer::simulation::simulation_thread::start(
+        avis::runtime::thread_pool(), assets_, snapshots_, simulation_updates_, std::move(settings));
+    if (!started)
+    {
+        avis::log::get("visualizer")->error("the simulation thread could not start: {}", started.error());
+        set_startup_error(
+            QString::fromStdString(std::format("The simulation thread could not start: {}", started.error().message)));
+        return;
+    }
+    simulation_ = std::move(*started);
+    if (demo_scene)
+    {
+        avis::log::get("visualizer")->info("the demo scene stands in for the Driver (--demo-scene)");
+    }
 }

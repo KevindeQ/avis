@@ -407,6 +407,15 @@ TEST_CASE("the command line names the configuration file", "[visualizer][unit]")
         const auto options = parse_arguments({ L"-platform", L"windows", L"scenario.yaml" });
         REQUIRE(options.has_value());
         CHECK_FALSE(options->configuration.has_value());
+        CHECK_FALSE(options->demo_scene);
+    }
+
+    SECTION("--demo-scene turns the demo scene on")
+    {
+        const auto options = parse_arguments({ L"--demo-scene", L"--configuration", L"v.yaml" });
+        REQUIRE(options.has_value());
+        CHECK(options->demo_scene);
+        CHECK(options->configuration == std::filesystem::path{ L"v.yaml" });
     }
 
     SECTION("both spellings, the last one winning")

@@ -33,11 +33,15 @@ apps/visualizer/
   visualizer_driver.{h,cpp}        # application controller: owns simulation thread, frame chain, network session
   simulation/
     simulation_thread.{h,cpp}      # tick loop (03), apply_result, snapshot publish
+    simulation_command.h, command_queue.h, gui_sink.h   # GUI ↔ simulation (§4)
+    demo_scene.{h,cpp}             # --demo-scene: a local scene source for Part A, tests and offline UI work
     driver_discovery.{h,cpp}       # scouting + describe (02 §2)
     lockstep_coordinator.{h,cpp}   # connect, load, step, unload (02)
     scene_stream.{h,cpp}           # stage scene stream messages per step, commit, apply (02 §6.3, 08 §3.1)
     scenario_model.{h,cpp}         # in-memory scenario + YAML load/save + validation (04)
   representation/                  # streamed content → meshes + materials (§9); runs on the simulation thread
+    scene_representation.h         # the step-4 interface the simulation thread calls
+    presentation_state.{h,cpp}     # what the presentation commands set (§4.1)
     representation_system.{h,cpp}
     shape_representation.{h,cpp}   # box, vehicle, axes, frustum display shapes
     geometry_representation.{h,cpp}  # belief geometry chunks
@@ -59,6 +63,7 @@ apps/visualizer/
   ui/
     viewport_item.{h,cpp}          # QQuickRhiItem subclass (replaces viewport.{h,cpp})
     viewport_renderer.{h,cpp}      # QQuickRhiItemRenderer: imports shared textures, blits
+    simulation_bridge.{h,cpp}      # gui_sink on the GUI thread: queued calls, latest values, signals
     camera_controller.{h,cpp}
     scene_tree_model.{h,cpp}       # QAbstractItemModel
     inspector_model.{h,cpp}        # reflected component values + Driver properties
@@ -214,6 +219,16 @@ UI commands sent to the simulation thread are of two kinds:
 | *Reset* | Destroys all Driver entities, so the republished snapshot has only the helpers |
 
 Camera motion, viewport size, debug-blit selection and render settings are **not** presentation commands: they go straight to the renderer as latest-value state (table above) and need no snapshot.
+
+> **As implemented** (task 12.6, `simulation/simulation_thread.h`):
+> - **The loop and the thread are separate.** `simulation_loop` does the work for a time it's given (`handle`, `update`, `next_due`), so tests drive it with a made-up clock. `simulation_thread` runs one on a pool thread, fed by `command_queue`. The scene is created on that thread, because `scene` checks its owner thread, so the controller keeps only the asset cache and the snapshot buffer.
+> - **Step 7 of the tick sequence runs at the start of the next tick.** `end_tick` sets `previous_world = world`. Run straight after the publish ([08 §9.6](08-scene-management.md#96-tick-sequence)), it gave a republish between two ticks `world_previous == world_current`, against [03 §4.4](03-simulation-core.md#44-presentation-only-republish). Deferred, the next tick sees the same state, and republishes keep the tick's transforms.
+> - **Coalescing** opens its 16 ms window at the first change, so a burst shorter than that gives one republish.
+> - **The simulation thread applies the `selected` and `visible` flags** after the representation (step 4), on the entity and the helpers that `represent` it.
+> - **The follow target is re-posted when its `display_shape` extent changes**, not its world bounds, which change whenever the target turns.
+> - **The representation is reached through `representation::scene_representation`**, the interface 12.8's `representation_system` implements.
+> - **The GUI side** is `ui::simulation_bridge`, which implements `gui_sink` with queued calls to the GUI thread.
+> - **Part A without a Driver** publishes step 0 with the anchor `{0, start, 0}`. With `--demo-scene`, `demo_scene` ticks at 10 Hz as steps committed while running (anchor `{t_{k−1}, now, 1}`).
 
 ## 5. Camera
 The camera is a **presentation concept**: it isn't part of the simulation state and doesn't affect determinism. Two modes:

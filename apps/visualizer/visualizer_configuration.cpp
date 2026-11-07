@@ -494,12 +494,18 @@ namespace avis::visualizer
     result<command_line_options> parse_command_line(const std::span<const std::wstring> arguments)
     {
         constexpr std::wstring_view configuration_option = L"--configuration";
+        constexpr std::wstring_view demo_scene_option = L"--demo-scene";
 
         command_line_options options;
         for (std::size_t index = 0; index < arguments.size(); ++index)
         {
             const std::wstring_view argument = arguments[index];
             std::wstring_view value;
+            if (argument == demo_scene_option)
+            {
+                options.demo_scene = true;
+                continue;
+            }
             if (argument == configuration_option)
             {
                 if (index + 1 == arguments.size())

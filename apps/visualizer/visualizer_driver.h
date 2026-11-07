@@ -1,12 +1,13 @@
 #ifndef VISUALIZER_VISUALIZER_DRIVER_H
 #define VISUALIZER_VISUALIZER_DRIVER_H
 
+#include "simulation/simulation_thread.h"
+#include "ui/simulation_bridge.h"
 #include "visualizer_configuration.h"
 
 #include "avis/error.h"
 #include "avis/scene/assets/asset_cache.h"
 #include "avis/scene/assets/gltf.h"
-#include "avis/scene/scene.h"
 #include "avis/scene/snapshot.h"
 
 #include <QObject>
@@ -37,9 +38,9 @@ namespace avis::visualizer::ui
 
 // The application controller (12 §2). main() creates the one instance on the GUI thread, before the QML engine, and
 // QML reaches it as the VisualizerDriver singleton. It owns, in this order: the configuration, the asset cache, the
-// scene, the snapshot buffer, then (from 12.6 and 12.7) the simulation thread and the frame loop. The graphics objects
-// (rendering::render_system, the RHI's only holder), the shared frame rings and the completion notifier follow once
-// Qt's adapter is known (12 §3.2).
+// snapshot buffer, the simulation thread (which owns the scene, 12.6), then (from 12.7) the frame loop. The graphics
+// objects (rendering::render_system, the RHI's only holder), the shared frame rings and the completion notifier follow
+// once Qt's adapter is known (12 §3.2).
 class visualizer_driver : public QObject
 {
     Q_OBJECT
@@ -53,9 +54,12 @@ class visualizer_driver : public QObject
     Q_PROPERTY(QString logFile READ log_file CONSTANT)
 
 public:
-    // `configuration_path` is where the configuration is written back (12.16)
+    // `configuration_path` is where the configuration is written back (12.16). With `demo_scene` (--demo-scene), the
+    // demo scene stands in for the Driver (12.6).
     visualizer_driver(
-        avis::visualizer::visualizer_configuration configuration, std::filesystem::path configuration_path);
+        avis::visualizer::visualizer_configuration configuration,
+        std::filesystem::path configuration_path,
+        bool demo_scene);
     ~visualizer_driver() override; // the shutdown order of 12 §3.4
 
     visualizer_driver(const visualizer_driver&) = delete;
@@ -76,6 +80,16 @@ public:
     // engine created the window, before the event loop shows it.
     void watch_window(QQuickWindow& window);
 
+    // Any thread: a command for the simulation thread (12 §4.1); dropped when the thread couldn't start
+    void post(avis::visualizer::simulation::simulation_command command);
+
+    // What the simulation thread sends the GUI: the scene tree's changes, the selected entity, statistics, the follow
+    // target
+    avis::visualizer::ui::simulation_bridge& simulation_updates() noexcept
+    {
+        return simulation_updates_;
+    }
+
 Q_SIGNALS:
     void startup_error_changed();
 
@@ -91,23 +105,28 @@ private:
     // Runs the RHI's housekeeping when its completion event fires (12 §3.4, D-93)
     void poll_completions();
 
-    // The tick sequence of 08 §9.6 into snapshots_: update the transforms, make the snapshot, publish, end the tick
-    void publish_snapshot();
+    // Starts the simulation thread on the runtime's thread pool; a failure is the startup error
+    void start_simulation(bool demo_scene);
 
     // visualizer.yaml, as loaded (12.1), and where it's written back
     avis::visualizer::visualizer_configuration configuration_;
     std::filesystem::path configuration_path_;
 
-    // Declared before the scene, which releases its assets on destruction. glTF loads read through the runtime's IO
-    // context: main() creates the runtime before this controller, and destroys it after.
+    // Declared before the simulation thread, whose scene releases its assets on destruction. glTF loads read through
+    // the runtime's IO context: main() creates the runtime before this controller, and destroys it after.
     avis::scene::asset_cache assets_;
-    avis::scene::scene current_scene_{ assets_ };
 
     // One reference to each asset of the proxy model, when it was loaded
     std::optional<avis::scene::gltf_asset_set> vehicle_proxy_;
 
     // The scene's snapshots. Declared before the renderer, which reads one only while it renders.
     avis::scene::snapshot_buffer snapshots_;
+
+    // Where the simulation thread's updates arrive on the GUI thread; outlives the thread
+    avis::visualizer::ui::simulation_bridge simulation_updates_;
+
+    // Owns the scene (12.6). Stopped first at shutdown (12 §3.4). Null when it couldn't start.
+    std::unique_ptr<avis::visualizer::simulation::simulation_thread> simulation_;
 
     QString startup_error_;
     bool graphics_requested_ = false; // the window's first sceneGraphInitialized arrived
