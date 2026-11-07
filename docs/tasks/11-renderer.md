@@ -892,14 +892,29 @@ flowchart LR
 - [x] A failing write (read-only directory) reports an error and leaves no partial file. *See above for the folders used.*
 
 ## 11.22 Visualizer wiring
-- [ ] `visualizer_driver` creates the renderer once the RHI exists: it loads the shaders with `load_renderer_shaders`, then calls `scene_renderer::create`, and shows a startup error on failure (12a §5).
-- [ ] Until 12's frame chain exists, `on_render` keeps doing what task 9.12 left: build and compile only. It now goes through `scene_renderer::render` with a single view, a placeholder camera and no output, so the graph culls everything after `tonemap`. A `// TODO(12)` marks where the frame chain takes over.
-- [ ] `render_settings` defaults are used until 12 reads `visualizer.yaml`.
-- [ ] `rendering/` has no Qt includes. `grep -rn "#include <Q" apps/visualizer/rendering` returns nothing.
+*Status: implemented; the Visualizer starts and exits cleanly in Debug and Release.* As implemented:
+- **Startup** (`visualizer_driver.cpp`), when QML first reads the singleton:
+  1. `create_graphics`: the RHI, the frame scheduler, the transient pool and the graph, as before.
+  2. `create_renderer`: the upload queue, the root signature registry and the pipeline cache.
+  3. The shaders from `resolve_shader_directory`, through `load_renderer_shaders`, waited on the GUI thread like the vehicle proxy.
+  4. `scene_renderer::create`, with no GPU profiler and `local_memory_budget()` as the screenshot memory budget.
+- **Startup errors.** The first failure of these steps is the startup error, the RHI's and the scheduler's included (12 §7's capability failure). Its message is prefixed with the step that failed and logged in full. `VisualizerDriver.startupError` hands it to `main.qml`:
+  - `main.qml` shows a modal `MessageDialog` (`QtQuick.Dialogs`, deployed by windeployqt) with the message and the log file.
+  - Closing the dialog calls `Qt.exit(1)`.
+  - The heartbeat timer doesn't run.
+- **The log file.** The Visualizer had no log file, so the dialog had no path to name. `main()` now logs to `visualizer.log` next to the executable (`log_location.h`) until 12 reads `visualizer.yaml`'s `logging` section.
+- **Snapshots.** Each fixed update (and once at startup) runs 08 §9.6's tick sequence into a `snapshot_buffer`.
+- **`on_render`** takes a frame with `try_begin_frame`, calls `retire` with its completed index, and renders a 1280 × 720 view `main` with a default camera and no output. It doesn't start the sender and ends the frame with no submissions. The renderer's new `build_failure()` lets the driver log a frame that couldn't be built, once until one builds again. The `TODO(12)` says what the frame chain takes over.
+- **Teardown.** The destructor waits for the GPU (the renderer's upload flushes), then destroys the renderer before its services, the shaders, the graph and the RHI.
+
+- [x] `visualizer_driver` creates the renderer once the RHI exists: it loads the shaders with `load_renderer_shaders`, then calls `scene_renderer::create`, and shows a startup error on failure (12a §5).
+- [x] Until 12's frame chain exists, `on_render` keeps doing what task 9.12 left: build and compile only. It now goes through `scene_renderer::render` with a single view, a placeholder camera and no output, so the graph culls everything after `tonemap`. A `// TODO(12)` marks where the frame chain takes over.
+- [x] `render_settings` defaults are used until 12 reads `visualizer.yaml`.
+- [x] `rendering/` has no Qt includes. `grep -rn "#include <Q" apps/visualizer/rendering` returns nothing.
 
 **Tests:**
-- [ ] The Visualizer builds in Debug and Release, starts with its shaders loaded, and exits cleanly.
-- [ ] Starting with the shader directory removed shows the startup error and exits (manual check, recorded here).
+- [x] The Visualizer builds in Debug and Release, starts with its shaders loaded, and exits cleanly. *Both log the shader directory and the pipeline sets, no frame build failure and no validation message, and exit with code 0 when the window is closed.*
+- [x] Starting with the shader directory removed shows the startup error and exits (manual check, recorded here). *2026-11-07, Debug, `bin/data/shaders/visualizer` renamed: the log has "the renderer's shaders could not be loaded: manifest.yaml not found in <directory>; was the Visualizer built and deployed with its shaders?", the dialog "The Visualizer could not start" is shown, and closing it exits with code 1.*
 
 ## 11.23 Performance, cleanup, docs
 - [ ] Run the `[renderer][!benchmark]` tests and an end-to-end benchmark scene matching 11 §15's frame budget: 20M progressive points, 500 instanced meshes, a sun and 64 point lights. Run them on the reference GPU class and record the numbers in **As implemented**. A miss is recorded with its cause rather than blocking the task.

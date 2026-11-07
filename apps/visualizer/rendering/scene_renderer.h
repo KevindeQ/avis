@@ -280,6 +280,13 @@ namespace avis::visualizer::rendering
         // Also collects the cluster statistics whose frames are complete
         renderer_debug_information debug_information() const;
 
+        // Why the last render's frame couldn't be built, which its sender also completes with; none when it was built.
+        // For a caller that builds without executing (the Visualizer until 12's frame chain).
+        const std::optional<error>& build_failure() const noexcept
+        {
+            return build_failure_;
+        }
+
         const render_settings& settings() const noexcept
         {
             return settings_;

@@ -1,4 +1,6 @@
-﻿#include "avis/runtime.h"
+﻿#include "log_location.h"
+
+#include "avis/runtime.h"
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -6,16 +8,19 @@
 #include <QSGRendererInterface>
 
 #include <cstdio>
+#include <filesystem>
 #include <format>
 #include <optional>
+#include <system_error>
 
 namespace
 {
     // Hard-coded until the Visualizer loads visualizer.yaml (with runtime_configuration::parse)
-    avis::runtime_configuration make_runtime_configuration()
+    avis::runtime_configuration make_runtime_configuration(const std::filesystem::path& log_file)
     {
         avis::runtime_configuration configuration;
         configuration.application_threads = 1; // simulation; the renderer is a sender chain
+        configuration.logging.file = log_file;
         return configuration;
     }
 } // namespace
@@ -23,10 +28,15 @@ namespace
 int main(int argc, char* argv[])
 {
     // Logging, thread pool, IO and the parallel pool, for the whole of main
+    // The log goes next to the executable; argv[0] is resolved before anything changes the working directory
+    std::error_code path_error;
+    const std::filesystem::path executable = std::filesystem::absolute(std::filesystem::path{ argv[0] }, path_error);
+    visualizer_log::file_path() = executable.parent_path() / visualizer_log::file_name;
+
     std::optional<avis::runtime> runtime;
     try
     {
-        runtime.emplace(make_runtime_configuration());
+        runtime.emplace(make_runtime_configuration(visualizer_log::file_path()));
     }
     catch (const avis::runtime_error& error)
     {

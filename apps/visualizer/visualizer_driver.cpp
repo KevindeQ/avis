@@ -1,8 +1,14 @@
 #include "visualizer_driver.h"
 
+#include "log_location.h"
+#include "rendering/renderer_shaders.h"
+#include "rendering/scene_renderer.h"
+#include "rendering/view.h"
+
 #include "avis/log.h"
 #include "avis/rhi/command_list.h"
 #include "avis/rhi/memory.h"
+#include "avis/rhi/pipeline.h"
 #include "avis/rhi/queue.h"
 #include "avis/rhi/resources.h"
 #include "avis/rhi/synchronization.h"
@@ -14,13 +20,24 @@
 
 #include <filesystem>
 #include <format>
+#include <string>
 #include <system_error>
 #include <utility>
 
 namespace
 {
+    namespace rendering = avis::visualizer::rendering;
+
     // The proxy model of 08 §5.1, relative to the data directory
     const std::filesystem::path vehicle_proxy_path = std::filesystem::path{ "data" } / "assets" / "vehicle_proxy.glb";
+
+    // The view's size until 12's viewport gives it one
+    constexpr avis::graphics::texture_extent placeholder_view_size{ 1280, 720 };
+
+    std::filesystem::path executable_directory()
+    {
+        return std::filesystem::path{ QCoreApplication::applicationDirPath().toStdWString() };
+    }
 
     // The first existing data file: under the working directory (a run from the source tree), then next to the
     // executable. Empty when neither exists.
@@ -28,7 +45,7 @@ namespace
     {
         const std::filesystem::path candidates[] = {
             relative,
-            std::filesystem::path{ QCoreApplication::applicationDirPath().toStdWString() } / relative,
+            executable_directory() / relative,
         };
         for (const std::filesystem::path& candidate : candidates)
         {
@@ -40,20 +57,57 @@ namespace
         }
         return {};
     }
+
+    // Prefixes the step that failed to the error's message, keeping its domain and code
+    avis::error startup_failure(avis::error error, const std::string_view step)
+    {
+        error.message = std::format("{}: {}", step, error.message);
+        return error;
+    }
 } // namespace
 
 visualizer_driver::visualizer_driver(QObject* parent) : QObject(parent), assets_{ avis::runtime::io_context() }
 {
     load_vehicle_proxy();
+    publish_snapshot();
 
+    avis::result<void> started = create_graphics().and_then([this] { return create_renderer(); });
+    if (!started)
+    {
+        // A startup error (12 §7, 12a §5): main.qml shows it and exits. Without a renderer, on_render does nothing.
+        avis::log::get("ui")->error("the Visualizer could not start: {}", std::format("{}", started.error()));
+        startup_error_ = QString::fromStdString(started.error().message);
+    }
+}
+
+visualizer_driver::~visualizer_driver()
+{
+    // The renderer's upload flushes may still run on the copy queue; the members after rhi_ go in reverse order
+    if (rhi_ != nullptr)
+    {
+        rhi_->wait_idle();
+    }
+    renderer_.reset();
+    if (vehicle_proxy_)
+    {
+        assets_.release_all(*vehicle_proxy_);
+    }
+}
+
+QString visualizer_driver::log_file() const
+{
+    return QString::fromStdWString(visualizer_log::file_path().wstring());
+}
+
+avis::result<void> visualizer_driver::create_graphics()
+{
     avis::rhi::render_hardware_interface_configuration configuration;
     configuration.debug.debug_layer = true;
 
     auto created = avis::rhi::render_hardware_interface::create(configuration);
     if (!created)
     {
-        avis::log::get("ui")->error("the RHI could not be created: {}", std::format("{}", created.error()));
-        return;
+        return std::unexpected(startup_failure(std::move(created.error()), "the graphics device could not be created"));
     }
     rhi_ = std::move(*created);
 
@@ -61,8 +115,7 @@ visualizer_driver::visualizer_driver(QObject* parent) : QObject(parent), assets_
         avis::rhi::synchronization{ *rhi_ }, avis::rhi::transient_objects{ *rhi_ }, {});
     if (!frames)
     {
-        avis::log::get("ui")->error("the frame scheduler could not be created: {}", std::format("{}", frames.error()));
-        return;
+        return std::unexpected(startup_failure(std::move(frames.error()), "the frame scheduler could not be created"));
     }
     frames_ = std::move(*frames);
     transient_pool_ = std::make_unique<avis::graphics::transient_resource_pool>(
@@ -75,14 +128,60 @@ visualizer_driver::visualizer_driver(QObject* parent) : QObject(parent), assets_
         avis::rhi::queue<avis::rhi::queue_type::copy>{ *rhi_ },
         *transient_pool_,
         *frames_);
+    return {};
 }
 
-visualizer_driver::~visualizer_driver()
+avis::result<void> visualizer_driver::create_renderer()
 {
-    if (vehicle_proxy_)
+    auto uploads = avis::graphics::upload_queue::create(
+        avis::rhi::resources{ *rhi_ },
+        avis::rhi::command_lists{ *rhi_ },
+        avis::rhi::queue<avis::rhi::queue_type::copy>{ *rhi_ },
+        avis::rhi::synchronization{ *rhi_ },
+        {});
+    if (!uploads)
     {
-        assets_.release_all(*vehicle_proxy_);
+        return std::unexpected(startup_failure(std::move(uploads.error()), "the upload queue could not be created"));
     }
+    uploads_ = std::move(*uploads);
+    root_signatures_ = std::make_unique<avis::graphics::root_signature_registry>(avis::rhi::pipelines{ *rhi_ });
+    pipeline_cache_ =
+        std::make_unique<avis::graphics::pipeline_cache>(avis::rhi::pipelines{ *rhi_ }, *root_signatures_);
+
+    // At startup, on the GUI thread, where waiting is allowed (12a §5)
+    const std::filesystem::path shader_directory =
+        rendering::resolve_shader_directory(render_settings_, executable_directory());
+    auto library = avis::threading::sync_wait_result(rendering::load_renderer_shaders(shader_directory));
+    if (!library)
+    {
+        return std::unexpected(
+            startup_failure(std::move(library.error()), "the renderer's shaders could not be loaded"));
+    }
+    shaders_ = std::make_unique<avis::graphics::shader_library>(std::move(*library));
+    avis::log::get("render")->info("loaded the renderer's shaders from {}", shader_directory.string());
+
+    auto renderer = rendering::scene_renderer::create(
+        rendering::renderer_dependencies{
+            .resources = avis::rhi::resources{ *rhi_ },
+            .pipelines = avis::rhi::pipelines{ *rhi_ },
+            .synchronization = avis::rhi::synchronization{ *rhi_ },
+            .graph = *graph_,
+            .pool = *transient_pool_,
+            .frames = *frames_,
+            .profiler = nullptr, // GPU timings come with 12's frame chain
+            .pipeline_cache = *pipeline_cache_,
+            .root_signatures = *root_signatures_,
+            .uploads = *uploads_,
+            .memory_budget = [this] { return rhi_->local_memory_budget(); },
+        },
+        render_settings_,
+        *shaders_);
+    if (!renderer)
+    {
+        return std::unexpected(startup_failure(std::move(renderer.error()), "the renderer could not be created"));
+    }
+    renderer_ = std::move(*renderer);
+    return {};
 }
 
 void visualizer_driver::load_vehicle_proxy()
@@ -110,6 +209,15 @@ void visualizer_driver::load_vehicle_proxy()
         loaded->materials.size(),
         loaded->textures.size());
     vehicle_proxy_ = std::move(*loaded);
+}
+
+void visualizer_driver::publish_snapshot()
+{
+    current_scene_.update_world_transforms();
+    avis::scene::snapshot& target = snapshots_.begin_write();
+    current_scene_.make_snapshot(target);
+    snapshots_.publish();
+    current_scene_.end_tick();
 }
 
 void visualizer_driver::tick()
@@ -141,14 +249,47 @@ void visualizer_driver::tick()
 void visualizer_driver::on_update(const std::chrono::milliseconds delta_time)
 {
     clock_state_.advance(delta_time);
+    publish_snapshot();
 }
 
 void visualizer_driver::on_render()
 {
-    if (graph_ == nullptr)
+    if (renderer_ == nullptr)
     {
         return;
     }
-    // TODO(11.22): build and compile the frame through scene_renderer::render, once the Visualizer loads the
-    // renderer's shaders and creates it. Executing needs the frame chain and a completion driver (12).
+
+    // TODO(12): the frame chain takes over here. It begins the frame on its stage, renders the viewport's views into
+    // the shared frame ring, executes the sender, ends the frame with its submissions and drives the completions.
+    // Until then this builds and compiles only: one view with a placeholder camera and no output, so the graph culls
+    // everything after tonemap. Nothing is submitted, so the token ends the frame with no submissions, which frees its
+    // context at once.
+    std::optional<avis::graphics::frame_token> frame = frames_->try_begin_frame();
+    if (!frame)
+    {
+        return;
+    }
+    renderer_->retire(frame->completed_index());
+
+    const rendering::view_description views[] = {
+        { .name = "main", .camera = {}, .size = placeholder_view_size },
+    };
+    {
+        const avis::scene::snapshot_reference snapshot = snapshots_.acquire();
+        if (snapshot)
+        {
+            // The sender isn't started: render builds and compiles the graph before returning it
+            [[maybe_unused]] auto unexecuted =
+                renderer_->render(*frame, *snapshot, views, std::chrono::steady_clock::now());
+
+            // Logged when frames start failing, not on every one
+            const std::optional<avis::error>& failure = renderer_->build_failure();
+            if (failure && !build_failing_)
+            {
+                avis::log::get("render")->error("the frame could not be built: {}", std::format("{}", *failure));
+            }
+            build_failing_ = failure.has_value();
+        }
+    }
+    frames_->end_frame(std::move(*frame), {});
 }

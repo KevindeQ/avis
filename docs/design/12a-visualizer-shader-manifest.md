@@ -124,6 +124,12 @@ auto load_shaders(const std::filesystem::path& directory)            // render.s
 | Duplicate id or hash collision | From the parser (with lines) or `shader_library::create` (`duplicate_shader_id`) |
 | Missing shader for a pipeline | `shader_not_found` from `graphics::pipeline_cache` ([18 §11](18-graphics-shaders-and-pipelines.md#11-graphicspipeline_cacheh)), naming the pipeline's debug name |
 
+*As implemented* (task 11.22), until 12's `frame_loop` exists:
+- `visualizer_driver` runs these steps at startup with `rendering::load_renderer_shaders` (`renderer_shaders.h`), waited on the GUI thread, then `scene_renderer::create`. The RHI's and the frame scheduler's failures are startup errors too.
+- The message is prefixed with the step that failed, for example *"the renderer's shaders could not be loaded: manifest.yaml not found in …"*.
+- `main.qml` shows it in a `QtQuick.Dialogs` `MessageDialog`, then exits with code 1.
+- The log is `visualizer.log` next to the executable until `visualizer.yaml`'s `logging` section is read.
+
 ## 6. Testing
 
 The parser is compiled into `AVIS_TESTS` as well as the Visualizer (`target_sources(AVIS_TESTS PRIVATE ${CMAKE_SOURCE_DIR}/apps/visualizer/rendering/shader_manifest_parser.cpp)`), because it only depends on `AVIS_LIB` and yaml-cpp. Tests in `tests/visualizer/test_shader_manifest_parser.cpp`, tagged `[visualizer]`:
