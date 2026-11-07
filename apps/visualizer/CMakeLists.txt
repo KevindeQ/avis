@@ -20,8 +20,8 @@ qt_add_qml_module(AVIS_VISUALIZER
 	QML_FILES
         qml/main.qml
 	SOURCES
-		viewport.cpp
-		viewport.h
+		ui/viewport_item.cpp
+		ui/viewport_item.h
 )
 
 # The Qt-side blit shaders are Visualizer data (11 §13); their resource paths stay :/avis/visualizer/shaders/<file>.qsb
@@ -66,6 +66,9 @@ target_include_directories(AVIS_VISUALIZER
 	PRIVATE
 		AVIS_LIB
 
+		# The QML type registration includes each QML_ELEMENT header by its bare name (<viewport_item.h>)
+		"${CMAKE_CURRENT_SOURCE_DIR}/ui"
+
 		EnTT::EnTT
 )
 
@@ -81,7 +84,7 @@ target_link_libraries(AVIS_VISUALIZER
 		Qt6::GuiPrivate
 		Qt6::Quick
 
-		# ui/viewport_renderer.cpp: the debug layer before Qt's device, and later the shared frame ring's handles
+		# ui/viewport_renderer.cpp: the debug layer before Qt's device, and the shared frame ring's handles
 		d3d12
 )
 

@@ -13,7 +13,8 @@ int main(int argc, char* argv[])
     QGuiApplication application{ argc, argv };
 
     int status = 0;
-    for (const auto make_test : { &avis::visualizer_ui_tests::make_qt_interop_test })
+    for (const auto make_test :
+         { &avis::visualizer_ui_tests::make_qt_interop_test, &avis::visualizer_ui_tests::make_viewport_renderer_test })
     {
         const std::unique_ptr<QObject> test = make_test();
         status |= QTest::qExec(test.get(), argc, argv);

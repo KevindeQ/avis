@@ -3,9 +3,13 @@
 #include "log_location.h"
 #include "rendering/render_system.h"
 #include "rendering/renderer_shaders.h"
+#include "rendering/shared_frame_ring.h"
+#include "ui/viewport_item.h"
 #include "ui/viewport_renderer.h"
 
 #include "avis/log.h"
+#include "avis/rhi/resources.h"
+#include "avis/rhi/shared.h"
 #include "avis/runtime.h"
 #include "avis/threading/parallel_helpers.h"
 
@@ -80,9 +84,10 @@ visualizer_driver::visualizer_driver(
 visualizer_driver::~visualizer_driver()
 {
     // The shutdown order of 12 §3.4. The simulation thread (12.6) stops first and the frame loop's scope (12.7)
-    // drains next; then the notifier goes, and the render system destroys the graphics objects in reverse and the
-    // RHI last, waiting for the GPU.
+    // drains next; then the notifier goes, the shared frame rings (Qt left them with the window), and the render
+    // system destroys the graphics objects in reverse and the RHI last, waiting for the GPU.
     completion_notifier_.reset();
+    frame_rings_.reset();
     graphics_.reset();
     if (vehicle_proxy_)
     {
@@ -106,6 +111,13 @@ QString visualizer_driver::log_file() const
 
 void visualizer_driver::watch_window(QQuickWindow& window)
 {
+    // Items declared in a QML Window are QObject children of the window, and visual children of its content item
+    viewport_ = window.findChild<avis::visualizer::ui::viewport_item*>();
+    if (viewport_ == nullptr)
+    {
+        avis::log::get("ui")->warn("the window has no Viewport: the renderer's frames won't be shown");
+    }
+
     // Emitted on the render thread, where Qt's QRhi may be read; the result goes to the GUI thread. A later
     // re-initialisation (after sceneGraphInvalidated) is ignored by start_graphics.
     QObject::connect(
@@ -161,6 +173,14 @@ void visualizer_driver::start_graphics(const std::optional<avis::visualizer::ui:
         return;
     }
     graphics_ = std::move(*created);
+
+    // Empty until the viewport reports its pixel size and the frame loop (12.7) creates the first ring
+    frame_rings_ = std::make_unique<rendering::shared_frame_rings>(
+        avis::rhi::sharing{ graphics_->hardware_interface() }, avis::rhi::resources{ graphics_->hardware_interface() });
+    if (viewport_ != nullptr)
+    {
+        viewport_->set_frame_rings(frame_rings_.get());
+    }
 
     // GPU waits complete from the GUI event loop (12 §3.4, D-93): the frame loop's begin_frame, the ring's
     // when_reached senders, uploads and readbacks. Continuations doing real work move to the parallel scheduler.

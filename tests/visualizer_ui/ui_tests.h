@@ -11,6 +11,9 @@ namespace avis::visualizer_ui_tests
 {
     // 12.2: afterFrameEnd's timing and createFrom on a shared texture, on Qt's D3D12 device
     std::unique_ptr<QObject> make_qt_interop_test();
+
+    // 12.5: ui::viewport_item and its renderer, fed by the shared frame ring
+    std::unique_ptr<QObject> make_viewport_renderer_test();
 } // namespace avis::visualizer_ui_tests
 
 #endif

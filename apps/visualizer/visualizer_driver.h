@@ -10,6 +10,7 @@
 #include "avis/scene/snapshot.h"
 
 #include <QObject>
+#include <QPointer>
 #include <qqmlintegration.h>
 #include <QString>
 
@@ -25,18 +26,20 @@ class QWinEventNotifier;
 namespace avis::visualizer::rendering
 {
     class render_system;
-}
+    class shared_frame_rings;
+} // namespace avis::visualizer::rendering
 
 namespace avis::visualizer::ui
 {
     struct qt_adapter;
-}
+    class viewport_item;
+} // namespace avis::visualizer::ui
 
 // The application controller (12 §2). main() creates the one instance on the GUI thread, before the QML engine, and
 // QML reaches it as the VisualizerDriver singleton. It owns, in this order: the configuration, the asset cache, the
 // scene, the snapshot buffer, then (from 12.6 and 12.7) the simulation thread and the frame loop. The graphics objects
-// (rendering::render_system, the RHI's only holder) and the completion notifier follow once Qt's adapter is known
-// (12 §3.2).
+// (rendering::render_system, the RHI's only holder), the shared frame rings and the completion notifier follow once
+// Qt's adapter is known (12 §3.2).
 class visualizer_driver : public QObject
 {
     Q_OBJECT
@@ -68,8 +71,9 @@ public:
 
     QString log_file() const;
 
-    // Starts graphics on Qt's adapter once the window's scene graph is initialised (12 §3.2 steps 2 and 3). Call once,
-    // on the GUI thread, right after the QML engine created the window, before the event loop shows it.
+    // Starts graphics on Qt's adapter once the window's scene graph is initialised (12 §3.2 steps 2 and 3), and gives
+    // the window's Viewport the shared frame rings then (step 4). Call once, on the GUI thread, right after the QML
+    // engine created the window, before the event loop shows it.
     void watch_window(QQuickWindow& window);
 
 Q_SIGNALS:
@@ -80,7 +84,7 @@ private:
     void load_vehicle_proxy();
 
     // On the GUI thread, with what read_qt_adapter found on the render thread: creates the render system on Qt's
-    // adapter, then the completion notifier. A failure is the startup error (12 §7).
+    // adapter, the shared frame rings, then the completion notifier. A failure is the startup error (12 §7).
     void start_graphics(const std::optional<avis::visualizer::ui::qt_adapter>& adapter);
     void set_startup_error(const QString& message);
 
@@ -110,6 +114,14 @@ private:
 
     // Null until Qt's adapter is known, and when graphics couldn't start (startup_error_ says why)
     std::unique_ptr<avis::visualizer::rendering::render_system> graphics_;
+
+    // The rings that carry frames to the viewport (12 §3.3), with graphics_; the frame loop (12.7) writes them. The
+    // window, and with it the viewport's renderer on Qt's render thread, is gone before they're destroyed: main()'s QML
+    // engine is destroyed before this controller.
+    std::unique_ptr<avis::visualizer::rendering::shared_frame_rings> frame_rings_;
+
+    // The window's Viewport, found by watch_window; null when the QML has none
+    QPointer<avis::visualizer::ui::viewport_item> viewport_;
 
     // In the GUI event loop, on the RHI's completion event; destroyed before graphics_
     std::unique_ptr<QWinEventNotifier> completion_notifier_;

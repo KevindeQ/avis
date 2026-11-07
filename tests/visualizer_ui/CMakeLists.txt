@@ -4,6 +4,12 @@ qt_add_executable(AVIS_VISUALIZER_UI_TESTS
 	main.cpp
 	ui_tests.h
 	test_qt_interop.cpp
+	test_viewport_renderer.cpp
+
+	# The Visualizer's viewport, tested as it is: these two sources are Qt-side and live in the executable, so they're
+	# compiled here too (the item's QML registration stays with the application)
+	${AVIS_SRC_DIR}/apps/visualizer/ui/viewport_item.cpp
+	${AVIS_SRC_DIR}/apps/visualizer/ui/viewport_renderer.cpp
 )
 
 # The Visualizer's Qt-side blit shaders, under the same resource paths as in the application
@@ -40,6 +46,7 @@ set_target_properties(AVIS_VISUALIZER_UI_TESTS
 target_link_libraries(AVIS_VISUALIZER_UI_TESTS
 	PRIVATE
 		AVIS_LIB
+		AVIS_VISUALIZER_RENDERING # the shared frame ring; its include root gives "ui/..." too
 
 		Qt6::Gui
 		Qt6::GuiPrivate # rhi/qrhi.h

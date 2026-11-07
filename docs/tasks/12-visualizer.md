@@ -210,21 +210,40 @@ flowchart LR
 ## 12.5 Viewport item and Qt-side blit
 12 §3.2 step 5, §3.3 rules 3–7.
 
-- [ ] `ui/viewport_item.h/.cpp`: a `QQuickRhiItem` subclass, `QML_NAMED_ELEMENT(Viewport)`, replacing `viewport.h/.cpp`. It reports its pixel size (× device pixel ratio) and forwards input to the camera controller (12.12). `update()` is called from the frame loop's queued wake (rule 5).
-- [ ] `ui/viewport_renderer.h/.cpp`, a `QQuickRhiItemRenderer`:
+- [x] `ui/viewport_item.h/.cpp`: a `QQuickRhiItem` subclass, `QML_NAMED_ELEMENT(Viewport)`, replacing `viewport.h/.cpp`. It reports its pixel size (× device pixel ratio) and forwards input to the camera controller (12.12). `update()` is called from the frame loop's queued wake (rule 5).
+
+  *As implemented:* `avis::visualizer::ui::viewport_item`. The controller finds it in the window (`watch_window`) and calls `set_frame_rings` once graphics have started; the item then reports its colour buffer's size (`effectiveColorBufferSize`, which is the item size × device pixel ratio) to `shared_frame_rings::request_resize`: the first size at once, later ones once they've held for 100 ms. `make_wake()` gives the frame chain a function that may be called from any thread and posts `update()` to the GUI thread; it does nothing once the item is gone. Input forwarding comes with the camera controller (12.12). The executable puts `ui/` on its include path, because the QML type registration includes the header by its bare name.
+- [x] `ui/viewport_renderer.h/.cpp`, a `QQuickRhiItemRenderer`:
   - On a new `generation`, it opens the ring's textures and fences on Qt's device (`OpenSharedHandle`) and wraps the textures with `QRhiTexture::createFrom(…, D3D12_RESOURCE_STATE_COMMON)`.
   - It takes the ring from `shared_frame_rings::qt_current()` and calls `qt_attach()` before importing it; on `false` the ring was already replaced, so it takes the current one again. When the generation changes, it calls `qt_detach()` on the old ring and signals that use on the old `consumed` after the render (12.4).
   - In `render()`, it calls `ring_protocol::qt_pick()`, which clears `update_pending` and sets `picked` and `showing`, issues the GPU `Wait(produced, frame)` through `QRhiD3D12NativeHandles::commandQueue`, and draws the fullscreen triangle with the `qt/` shaders. After the pass it transitions the texture back to `COMMON` and calls `setNativeLayout(COMMON)` (12 §3.3 rule 4, from 12.2).
   - It signals `consumed` with the pick's **use** in `afterFrameEnd` (12.2 confirmed this direct path on Qt 6.11.1).
   - With no completed frame yet, it draws the clear colour.
-- [ ] The Qt blit shaders move to `data/shaders/visualizer/qt/` (done in task 11.1). `qt6_add_shaders` keeps them under the `/avis/visualizer` prefix.
+
+  *As implemented:* the class is private to `viewport_renderer.cpp`, behind `make_viewport_renderer()`, so that only that file sees D3D12. On top of the steps above:
+  - **No flash on resize.** A new ring is attached and opened as soon as `qt_current()` returns it, but the previous ring stays on screen until the new one has a published frame. Only then does Qt detach from the old ring. A ring replaced before it had a frame is detached at once.
+  - **Opened objects outlive their last use.** A detached ring keeps the D3D12 objects Qt opened, until its `consumed` fence reaches the detach's use. `createFrom` doesn't take ownership of the resource, so releasing it earlier could free a texture that a frame still in flight samples.
+  - **Destruction detaches.** The renderer is destroyed with the scene graph. It then signals its pending uses and detaches from every ring it holds. It waits up to 5 s for Qt's queue to finish with them before releasing what it opened, so a ring retired later is released without Qt rendering again.
+  - **A ring that fails to open isn't retried.** The error is logged on the `ui` logger and Qt detaches at once, so Avis can still release the ring.
+  - One pipeline per opened ring serves its three slots, whose bindings share a layout. The pipeline is recreated when the render target's pass descriptor changes.
+  - The clear colour is `viewport_clear_colour`, a dark grey.
+- [x] The Qt blit shaders move to `data/shaders/visualizer/qt/` (done in task 11.1). `qt6_add_shaders` keeps them under the `/avis/visualizer` prefix.
+
+  *As implemented:* `fullscreen_triangle.vert` drew frames upside down. It mapped texture row 0 to the bottom of the target, but on D3D12 clip-space y points up while texture v = 0 is the top row. Until now, only solid colours had gone through it. It now maps v = 0 to the top, and a test checks that the top and bottom halves land in place.
 
 **Tests:**
-- [ ] Manual checklist:
+- [x] `AVIS_VISUALIZER_UI_TESTS`, `tests/visualizer_ui/test_viewport_renderer.cpp` (not in the original list): the real `viewport_item` and its renderer, on Qt's D3D12 device with the threaded render loop and Qt's debug layer. A stand-in for the 12.7 frame loop runs the Avis side on Qt's adapter. Each frame it calls `shared_frame_rings::update`, takes a slot from the gate, copies an upload into the slot, signals `produced`, publishes, and calls the item's wake. Four tests:
+  - Qt shows the newest frame upright (the window grab has the top half on top), and 60 frames in a row get slots from the gate.
+  - Three quick resizes make one new ring (generation 2) at the item's new pixel size. Qt moves to it, and the old ring is released and destroyed.
+  - With the window hidden, Avis produces 30 frames on the two slots Qt doesn't show, and the newest is shown once the window is back.
+  - Closing the window detaches the renderer: a ring retired afterwards is released, and the item's wake does nothing.
+
+  Every test also checks that neither the RHI's log nor the `ui` log has errors. The RHI's info queue covers Qt's objects too, since both share the device (12 §3.1). Two mutation checks: with the old vertex shader, the frame grabs failed on the halves, and with the `consumed` signal removed, every test failed waiting for Qt to show its first frame.
+- [ ] Manual checklist: these need the frame loop's output and pacing, so they move to 12.7. Until then the Visualizer creates the rings, and its viewport shows the clear colour.
   - the viewport shows the frame loop's output, with no tearing
   - resizing and maximising work without a `wait_idle`
   - minimising drops Avis to 5 fps (12.7), and restoring brings the rate back
-  - a debugger break on the Qt render thread doesn't stall the Avis frame loop (frames continue on two slots)
+  - a debugger break on the Qt render thread doesn't stall the Avis frame loop (frames continue on two slots). The hidden-window test already checks the same rule.
 
 ## 12.6 Simulation thread (presentation path) and the demo scene
 12 §4, §4.1, 03 §4.4, D-42.
@@ -280,6 +299,7 @@ flowchart LR
 - [ ] A fake Qt side that stops picking doesn't stall the loop.
 - [ ] An injected `transient_memory_exhausted` (a tiny frame budget) skips frames and recovers.
 - [ ] Stopping drains the scope with no leaked tokens.
+- [ ] 12.5's manual checklist, now that the viewport shows the frame loop's output.
 
 ## 12.8 Representation: system, shared meshes, display shapes, helpers
 12 §9, 08 §4.3, §9.2, §9.6 step 4.

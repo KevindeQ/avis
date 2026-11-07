@@ -154,6 +154,13 @@ sequenceDiagram
 > - **Resize (rule 8).** `shared_frame_rings` keeps the current ring and the retired ones. Qt calls `qt_attach()` before importing a ring and `qt_detach()` when it moves to a newer generation; the detach returns one more use, which Qt signals on the old `consumed` after that render. A retired ring is released once `produced` has reached its last frame and either Qt never attached (a compare-exchange makes that final) or `consumed` reached the detach. Without the detach's signal, the release would wait on a fence nothing signals any more.
 > - The gate and the release are one sender pattern (`detail::ring_wait_sender`): try, otherwise `rhi::sharing::when_reached` on the value the protocol names, then try again. A stop request ends the wait with `set_stopped`, and a slot taken by the gate but not signalled goes back to the ring when its `ring_slot` is dropped.
 
+> **As implemented** (task 12.5, `ui/viewport_item.h`, `ui/viewport_renderer.cpp`), on the Qt side:
+> - **The item reports its colour buffer's size** (`effectiveColorBufferSize`, item size × device pixel ratio) to `shared_frame_rings::request_resize`. The first size goes out at once; later ones after holding for 100 ms (rule 8's debounce).
+> - **Rule 5's wake** is `viewport_item::make_wake()`: a function that may be called from any thread and posts `update()` to the GUI thread, with the application object as the context, so a call after the item is gone does nothing.
+> - **Resize without a flash.** The renderer attaches to a new generation and opens it at once, but keeps drawing the previous ring until the new one has a published frame; then it detaches from the old one.
+> - **Opened objects outlive their last use.** What Qt opened for a ring is kept until that ring's `consumed` reaches the detach's use: `createFrom` doesn't own the resource. When the scene graph destroys the renderer, it detaches from its rings, signals, and waits for Qt's queue before releasing them.
+> - **The blit is upright.** `qt/fullscreen_triangle.vert` maps texture row 0 to the top of the target. On D3D12, clip-space y points up while texture v = 0 is the top row; the earlier shader drew frames upside down.
+
 ### 3.4 Frame pacing
 The Avis renderer has **no dedicated render thread**. Frames are produced by a sender chain ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)) owned by `frame_loop`, inside an `async_scope`:
 
