@@ -13,181 +13,13 @@ namespace avis::visualizer::rendering
 {
     namespace
     {
-        using yaml_reading::child_path;
         using yaml_reading::is_given;
+        using yaml_reading::scalar;
+        using yaml_reading::section;
 
         constexpr std::string_view section_path = "render";
         constexpr std::uint32_t maximum_cascades = 4;
         constexpr std::uint32_t maximum_depth_bands = 1u << 24;
-
-        // Reads the keys of one mapping into the settings, leaving a target unchanged when its key isn't given. The
-        // first error is kept, and later reads do nothing.
-        class section
-        {
-        public:
-            section(const yaml_reading::reader& reader, YAML::Node node, std::string path) :
-                reader_{ &reader },
-                node_{ std::move(node) },
-                path_{ std::move(path) }
-            {}
-
-            // A nested section; null or missing reads as empty
-            section child(const std::string_view key)
-            {
-                const YAML::Node node = given(key);
-                std::string path = child_path(path_, key);
-                if (is_given(node) && !failure_)
-                {
-                    if (auto checked = reader_->expect_map(node, path); !checked)
-                    {
-                        failure_ = std::move(checked).error();
-                    }
-                }
-                section nested{ *reader_, is_given(node) && node.IsMap() ? node : YAML::Node{}, std::move(path) };
-                nested.failure_ = failure_;
-                return nested;
-            }
-
-            void read(const std::string_view key, bool& target)
-            {
-                assign(
-                    key,
-                    target,
-                    [&](const YAML::Node& node, const std::string& path) { return reader_->flag(node, path); });
-            }
-
-            void read(const std::string_view key, std::uint32_t& target)
-            {
-                assign(
-                    key,
-                    target,
-                    [&](const YAML::Node& node, const std::string& path)
-                    { return reader_->unsigned_integer_32(node, path); });
-            }
-
-            void read(const std::string_view key, std::uint64_t& target)
-            {
-                assign(
-                    key,
-                    target,
-                    [&](const YAML::Node& node, const std::string& path)
-                    { return reader_->unsigned_integer(node, path); });
-            }
-
-            void read(const std::string_view key, float& target)
-            {
-                assign(
-                    key,
-                    target,
-                    [&](const YAML::Node& node, const std::string& path) -> result<float>
-                    {
-                        auto value = reader_->number(node, path);
-                        if (!value)
-                        {
-                            return std::unexpected{ std::move(value).error() };
-                        }
-                        return static_cast<float>(*value);
-                    });
-            }
-
-            void read(const std::string_view key, std::filesystem::path& target)
-            {
-                assign(
-                    key,
-                    target,
-                    [&](const YAML::Node& node, const std::string& path) -> result<std::filesystem::path>
-                    {
-                        auto value = reader_->text(node, path);
-                        if (!value)
-                        {
-                            return std::unexpected{ std::move(value).error() };
-                        }
-                        // UTF-8, so non-ASCII paths survive on Windows
-                        return std::filesystem::path{ std::u8string_view{
-                            reinterpret_cast<const char8_t*>(value->data()), value->size() } };
-                    });
-            }
-
-            // One of the names in `choices`
-            template<class Enum, std::size_t Count>
-            void read_choice(
-                const std::string_view key,
-                Enum& target,
-                const std::array<std::pair<std::string_view, Enum>, Count>& choices)
-            {
-                assign(
-                    key,
-                    target,
-                    [&](const YAML::Node& node, const std::string& path) -> result<Enum>
-                    {
-                        auto value = reader_->text(node, path);
-                        if (!value)
-                        {
-                            return std::unexpected{ std::move(value).error() };
-                        }
-                        std::string expected;
-                        for (const auto& [name, choice] : choices)
-                        {
-                            if (*value == name)
-                            {
-                                return choice;
-                            }
-                            expected += expected.empty() ? std::string{ name } : std::format(" or {}", name);
-                        }
-                        return std::unexpected{
-                            reader_->error_at(node, path, std::format("expected {}, got '{}'", expected, *value)),
-                        };
-                    });
-            }
-
-            // Fails at `key` with `message` unless `valid`; only checked when the key was given (defaults are valid)
-            void check(const std::string_view key, const bool valid, const std::string_view message)
-            {
-                if (failure_ || valid)
-                {
-                    return;
-                }
-                const YAML::Node node = given(key);
-                failure_ = reader_->error_at(is_given(node) ? node : node_, child_path(path_, key), message);
-            }
-
-            std::optional<error> take_failure()
-            {
-                return std::move(failure_);
-            }
-
-        private:
-            YAML::Node given(const std::string_view key) const
-            {
-                return node_.IsMap() ? node_[std::string{ key }] : YAML::Node{};
-            }
-
-            template<class Target, class Read>
-            void assign(const std::string_view key, Target& target, Read&& read_value)
-            {
-                if (failure_)
-                {
-                    return;
-                }
-                const YAML::Node node = given(key);
-                if (!is_given(node))
-                {
-                    return;
-                }
-                auto value = read_value(node, child_path(path_, key));
-                if (!value)
-                {
-                    failure_ = std::move(value).error();
-                    return;
-                }
-                target = std::move(*value);
-            }
-
-            const yaml_reading::reader* reader_;
-            YAML::Node node_;
-            std::string path_;
-            std::optional<error> failure_;
-        };
 
         constexpr std::array exposure_modes{
             std::pair{ std::string_view{ "auto" }, exposure_mode::automatic },
@@ -310,6 +142,58 @@ namespace avis::visualizer::rendering
         }
 
         return settings;
+    }
+
+    YAML::Node to_yaml(const render_settings& settings)
+    {
+        YAML::Node render{ YAML::NodeType::Map };
+        render["frames_in_flight"] = scalar(settings.frames_in_flight);
+        render["async_compute"] = scalar(settings.async_compute);
+        render["graph_aliasing"] = scalar(settings.graph_aliasing);
+        render["debug_layer"] = scalar(settings.debug_layer);
+        render["gpu_validation"] = scalar(settings.gpu_validation);
+        render["maximum_fps"] = scalar(settings.maximum_fps);
+        render["shader_directory"] = yaml_reading::path_scalar(settings.shader_directory);
+
+        YAML::Node shadows = yaml_reading::flow_map();
+        shadows["cascades"] = scalar(settings.shadows.cascades);
+        shadows["resolution"] = scalar(settings.shadows.resolution);
+        shadows["distance"] = scalar(settings.shadows.distance);
+        render["shadows"] = shadows;
+
+        YAML::Node ao = yaml_reading::flow_map();
+        ao["half_resolution"] = scalar(settings.ao.half_resolution);
+        ao["radius"] = scalar(settings.ao.radius);
+        ao["falloff"] = scalar(settings.ao.falloff);
+        ao["slices"] = scalar(settings.ao.slices);
+        ao["steps"] = scalar(settings.ao.steps);
+        ao["intensity"] = scalar(settings.ao.intensity);
+        render["ao"] = ao;
+
+        YAML::Node taa = yaml_reading::flow_map();
+        taa["enabled"] = scalar(settings.taa.enabled);
+        render["taa"] = taa;
+
+        YAML::Node exposure = yaml_reading::flow_map();
+        exposure["mode"] = scalar(to_string(settings.exposure.mode));
+        exposure["ev100"] = scalar(settings.exposure.ev100);
+        render["exposure"] = exposure;
+
+        render["tonemapper"] = scalar(to_string(settings.tonemapper));
+
+        YAML::Node progressive = yaml_reading::flow_map();
+        progressive["vertex_budget"] = scalar(settings.progressive.vertex_budget);
+        progressive["shadow_lod_scale"] = scalar(settings.progressive.shadow_lod_scale);
+        render["progressive"] = progressive;
+
+        YAML::Node geometry = yaml_reading::flow_map();
+        geometry["arena_mib"] = scalar(settings.geometry.arena_mib);
+        render["geometry"] = geometry;
+
+        YAML::Node draw_sorting = yaml_reading::flow_map();
+        draw_sorting["opaque_depth_bands"] = scalar(settings.draw_sorting.opaque_depth_bands);
+        render["draw_sorting"] = draw_sorting;
+        return render;
     }
 
     std::string_view to_string(const exposure_mode mode) noexcept

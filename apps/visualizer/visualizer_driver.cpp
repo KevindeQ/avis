@@ -3,7 +3,6 @@
 #include "log_location.h"
 #include "rendering/renderer_shaders.h"
 #include "rendering/scene_renderer.h"
-#include "rendering/view.h"
 
 #include "avis/log.h"
 #include "avis/rhi/command_list.h"
@@ -17,6 +16,8 @@
 #include "avis/threading/parallel_helpers.h"
 
 #include <QCoreApplication>
+#include <QJSEngine>
+#include <QQmlEngine>
 
 #include <filesystem>
 #include <format>
@@ -31,8 +32,8 @@ namespace
     // The proxy model of 08 §5.1, relative to the data directory
     const std::filesystem::path vehicle_proxy_path = std::filesystem::path{ "data" } / "assets" / "vehicle_proxy.glb";
 
-    // The view's size until 12's viewport gives it one
-    constexpr avis::graphics::texture_extent placeholder_view_size{ 1280, 720 };
+    // The one controller, set while it's alive (main() creates it)
+    visualizer_driver* instance = nullptr;
 
     std::filesystem::path executable_directory()
     {
@@ -66,15 +67,22 @@ namespace
     }
 } // namespace
 
-visualizer_driver::visualizer_driver(QObject* parent) : QObject(parent), assets_{ avis::runtime::io_context() }
+visualizer_driver::visualizer_driver(
+    avis::visualizer::visualizer_configuration configuration, std::filesystem::path configuration_path) :
+    configuration_{ std::move(configuration) },
+    configuration_path_{ std::move(configuration_path) },
+    assets_{ avis::runtime::io_context() }
 {
+    Q_ASSERT(instance == nullptr);
+    instance = this;
+
     load_vehicle_proxy();
     publish_snapshot();
 
     avis::result<void> started = create_graphics().and_then([this] { return create_renderer(); });
     if (!started)
     {
-        // A startup error (12 §7, 12a §5): main.qml shows it and exits. Without a renderer, on_render does nothing.
+        // A startup error (12 §7, 12a §5): main.qml shows it and exits
         avis::log::get("ui")->error("the Visualizer could not start: {}", std::format("{}", started.error()));
         startup_error_ = QString::fromStdString(started.error().message);
     }
@@ -92,6 +100,15 @@ visualizer_driver::~visualizer_driver()
     {
         assets_.release_all(*vehicle_proxy_);
     }
+    instance = nullptr;
+}
+
+visualizer_driver* visualizer_driver::create(QQmlEngine* engine, QJSEngine* /*script_engine*/)
+{
+    Q_ASSERT(instance != nullptr);
+    Q_ASSERT(engine->thread() == instance->thread());
+    QJSEngine::setObjectOwnership(instance, QJSEngine::CppOwnership);
+    return instance;
 }
 
 QString visualizer_driver::log_file() const
@@ -150,7 +167,7 @@ avis::result<void> visualizer_driver::create_renderer()
 
     // At startup, on the GUI thread, where waiting is allowed (12a §5)
     const std::filesystem::path shader_directory =
-        rendering::resolve_shader_directory(render_settings_, executable_directory());
+        rendering::resolve_shader_directory(configuration_.render, executable_directory());
     auto library = avis::threading::sync_wait_result(rendering::load_renderer_shaders(shader_directory));
     if (!library)
     {
@@ -174,7 +191,7 @@ avis::result<void> visualizer_driver::create_renderer()
             .uploads = *uploads_,
             .memory_budget = [this] { return rhi_->local_memory_budget(); },
         },
-        render_settings_,
+        configuration_.render,
         *shaders_);
     if (!renderer)
     {
@@ -218,78 +235,4 @@ void visualizer_driver::publish_snapshot()
     current_scene_.make_snapshot(target);
     snapshots_.publish();
     current_scene_.end_tick();
-}
-
-void visualizer_driver::tick()
-{
-    // Update the simulation using a fixed timestep
-
-    const auto new_time = std::chrono::steady_clock::now();
-    auto delta_time = std::chrono::duration_cast<std::chrono::milliseconds>(new_time - current_time_);
-
-    // Clamp the delta_time to don't do too many simulation steps when the time was frozen due to debugging
-    if (delta_time > max_frame_time)
-    {
-        delta_time = max_frame_time;
-    }
-
-    accumulator_ += delta_time;
-    while (accumulator_ >= frame_time_)
-    {
-        on_update(frame_time_);
-
-        accumulator_ -= frame_time_;
-    }
-
-    on_render();
-
-    current_time_ = new_time;
-}
-
-void visualizer_driver::on_update(const std::chrono::milliseconds delta_time)
-{
-    clock_state_.advance(delta_time);
-    publish_snapshot();
-}
-
-void visualizer_driver::on_render()
-{
-    if (renderer_ == nullptr)
-    {
-        return;
-    }
-
-    // TODO(12): the frame chain takes over here. It begins the frame on its stage, renders the viewport's views into
-    // the shared frame ring, executes the sender, ends the frame with its submissions and drives the completions.
-    // Until then this builds and compiles only: one view with a placeholder camera and no output, so the graph culls
-    // everything after tonemap. Nothing is submitted, so the token ends the frame with no submissions, which frees its
-    // context at once.
-    std::optional<avis::graphics::frame_token> frame = frames_->try_begin_frame();
-    if (!frame)
-    {
-        return;
-    }
-    renderer_->retire(frame->completed_index());
-
-    const rendering::view_description views[] = {
-        { .name = "main", .camera = {}, .size = placeholder_view_size },
-    };
-    {
-        const avis::scene::snapshot_reference snapshot = snapshots_.acquire();
-        if (snapshot)
-        {
-            // The sender isn't started: render builds and compiles the graph before returning it
-            [[maybe_unused]] auto unexecuted =
-                renderer_->render(*frame, *snapshot, views, std::chrono::steady_clock::now());
-
-            // Logged when frames start failing, not on every one
-            const std::optional<avis::error>& failure = renderer_->build_failure();
-            if (failure && !build_failing_)
-            {
-                avis::log::get("render")->error("the frame could not be built: {}", std::format("{}", *failure));
-            }
-            build_failing_ = failure.has_value();
-        }
-    }
-    frames_->end_frame(std::move(*frame), {});
 }

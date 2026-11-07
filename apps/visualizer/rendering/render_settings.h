@@ -110,6 +110,9 @@ namespace avis::visualizer::rendering
     // position and the key path ("12:16: render.shadows.cascades: expected 1 to 4, got 6"). Pure: safe on any thread.
     result<render_settings> parse_render_settings(const YAML::Node& section);
 
+    // The `render` section with every key, for writing visualizer.yaml; parse_render_settings reads it back unchanged
+    YAML::Node to_yaml(const render_settings& settings);
+
     std::string_view to_string(exposure_mode mode) noexcept;
     std::string_view to_string(tonemap_operator value) noexcept;
 } // namespace avis::visualizer::rendering

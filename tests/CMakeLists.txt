@@ -8,10 +8,14 @@ FetchContent_MakeAvailable(Catch2)
 
 add_executable(AVIS_TESTS)
 
-# The Visualizer's rendering library is tested here (docs/tasks/11-renderer.md §11.1); it's defined with the apps
-if(NOT TARGET AVIS_VISUALIZER_RENDERING)
-	message(FATAL_ERROR "The tests need the Visualizer's rendering library: configure with AVIS_INCLUDE_APPS=ON")
-endif()
+# The Visualizer's Qt-free libraries are tested here (docs/tasks/11-renderer.md §11.1, docs/tasks/12-visualizer.md
+# §12.1); they're defined with the apps
+foreach(visualizer_library IN ITEMS
+		AVIS_VISUALIZER_RENDERING AVIS_VISUALIZER_REPRESENTATION AVIS_VISUALIZER_SIMULATION)
+	if(NOT TARGET ${visualizer_library})
+		message(FATAL_ERROR "The tests need the Visualizer's libraries (${visualizer_library}): configure with AVIS_INCLUDE_APPS=ON")
+	endif()
+endforeach()
 
 target_compile_features(AVIS_TESTS
 	PUBLIC cxx_std_${AVIS_REQUIRED_CXX_STANDARD})
@@ -31,6 +35,8 @@ target_link_libraries(AVIS_TESTS
 	PRIVATE
 		AVIS_LIB
 		AVIS_VISUALIZER_RENDERING
+		AVIS_VISUALIZER_REPRESENTATION
+		AVIS_VISUALIZER_SIMULATION
 
 		# Private dependencies of AVIS_LIB, linked directly: D3D12MemoryAllocator for the RHI white-box tests (they
 		# include lib/avis/rhi/d3d12/ headers), the others for test_external_dependencies.cpp
@@ -155,7 +161,8 @@ target_sources(AVIS_TESTS
 		visualizer/rendering/test_residency_cache.cpp
 		visualizer/rendering/test_shader_manifest_parser.cpp
 		visualizer/rendering/test_sort_key.cpp
-		visualizer/rendering/test_view.cpp)
+		visualizer/rendering/test_view.cpp
+		visualizer/test_visualizer_configuration.cpp)
 
 # RHI test shaders (docs/tasks/06-rhi.md §6.8): compiled at build time into headers with the bytecode as byte arrays,
 # so the tests need no shader library. Generated, never checked in, rebuilt when the HLSL changes.

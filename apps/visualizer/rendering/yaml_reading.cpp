@@ -209,4 +209,165 @@ namespace avis::visualizer::rendering::yaml_reading
     {
         return std::format("{}[{}]", parent, index);
     }
+
+    section::section(const reader& reader, const YAML::Node& node, std::string path) :
+        reader_{ &reader },
+        // Chosen here, not assigned later: yaml-cpp throws on assigning to the node of a missing key
+        node_{ is_given(node) && node.IsMap() ? node : YAML::Node{} },
+        path_{ std::move(path) }
+    {
+        if (is_given(node) && !node.IsMap())
+        {
+            if (auto checked = reader_->expect_map(node, path_); !checked)
+            {
+                failure_ = std::move(checked).error();
+            }
+        }
+    }
+
+    section section::child(const std::string_view key)
+    {
+        section nested{ *reader_, given(key), path_of(key) };
+        if (failure_)
+        {
+            nested.failure_ = failure_;
+        }
+        else if (nested.failure_)
+        {
+            failure_ = nested.failure_;
+        }
+        return nested;
+    }
+
+    void section::read(const std::string_view key, bool& target)
+    {
+        assign(key, target, [&](const YAML::Node& node, const std::string& path) { return reader_->flag(node, path); });
+    }
+
+    void section::read(const std::string_view key, std::uint32_t& target)
+    {
+        assign(
+            key,
+            target,
+            [&](const YAML::Node& node, const std::string& path) { return reader_->unsigned_integer_32(node, path); });
+    }
+
+    void section::read(const std::string_view key, std::uint64_t& target)
+    {
+        assign(
+            key,
+            target,
+            [&](const YAML::Node& node, const std::string& path) { return reader_->unsigned_integer(node, path); });
+    }
+
+    void section::read(const std::string_view key, float& target)
+    {
+        assign(
+            key,
+            target,
+            [&](const YAML::Node& node, const std::string& path) -> result<float>
+            {
+                auto value = reader_->number(node, path);
+                if (!value)
+                {
+                    return std::unexpected{ std::move(value).error() };
+                }
+                return static_cast<float>(*value);
+            });
+    }
+
+    void section::read(const std::string_view key, std::string& target)
+    {
+        assign(key, target, [&](const YAML::Node& node, const std::string& path) { return reader_->text(node, path); });
+    }
+
+    void section::read(const std::string_view key, std::filesystem::path& target)
+    {
+        assign(
+            key,
+            target,
+            [&](const YAML::Node& node, const std::string& path) -> result<std::filesystem::path>
+            {
+                auto value = reader_->text(node, path);
+                if (!value)
+                {
+                    return std::unexpected{ std::move(value).error() };
+                }
+                return std::filesystem::path{ std::u8string_view{ reinterpret_cast<const char8_t*>(value->data()),
+                                                                  value->size() } };
+            });
+    }
+
+    void section::check(const std::string_view key, const bool valid, const std::string_view message)
+    {
+        if (failure_ || valid)
+        {
+            return;
+        }
+        const YAML::Node node = given(key);
+        failure_ = reader_->error_at(is_given(node) ? node : node_, path_of(key), message);
+    }
+
+    YAML::Node section::given(const std::string_view key) const
+    {
+        return node_.IsMap() ? node_[std::string{ key }] : YAML::Node{};
+    }
+
+    std::string section::path_of(const std::string_view key) const
+    {
+        return child_path(path_, key);
+    }
+
+    void section::fail(error failure)
+    {
+        if (!failure_)
+        {
+            failure_ = std::move(failure);
+        }
+    }
+
+    YAML::Node scalar(const bool value)
+    {
+        return YAML::Node{ value ? "true" : "false" };
+    }
+
+    YAML::Node scalar(const std::uint64_t value)
+    {
+        return YAML::Node{ std::format("{}", value) };
+    }
+
+    YAML::Node scalar(const std::uint32_t value)
+    {
+        return YAML::Node{ std::format("{}", value) };
+    }
+
+    YAML::Node scalar(const float value)
+    {
+        // std::format writes the shortest text that round-trips the float; written with a decimal point when it's
+        // whole ("2.0"), so the file reads as the number it is
+        std::string text = std::format("{}", value);
+        if (text.find_first_of(".eEni") == std::string::npos)
+        {
+            text += ".0";
+        }
+        return YAML::Node{ std::move(text) };
+    }
+
+    YAML::Node scalar(const std::string_view value)
+    {
+        return YAML::Node{ std::string{ value } };
+    }
+
+    YAML::Node path_scalar(const std::filesystem::path& value)
+    {
+        const std::u8string text = value.generic_u8string();
+        return YAML::Node{ std::string{ reinterpret_cast<const char*>(text.data()), text.size() } };
+    }
+
+    YAML::Node flow_map()
+    {
+        YAML::Node node{ YAML::NodeType::Map };
+        node.SetStyle(YAML::EmitterStyle::Flow);
+        return node;
+    }
 } // namespace avis::visualizer::rendering::yaml_reading

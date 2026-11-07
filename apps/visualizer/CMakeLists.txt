@@ -1,17 +1,23 @@
-﻿# The scene renderer: a Qt-free static library, so the tests can link it (docs/tasks/11-renderer.md §11.1)
+﻿# The Qt-free parts are static libraries, so the tests can link them (docs/tasks/11-renderer.md §11.1,
+# docs/tasks/12-visualizer.md §12.1): the scene renderer, the scene representation, and the simulation side with the
+# configuration. Rendering comes first: it defines the include root and the no-Qt check the others use.
 add_subdirectory(rendering)
+add_subdirectory(representation)
+add_subdirectory(simulation)
 
 qt_add_executable(AVIS_VISUALIZER
 	main.cpp
 	visualizer_driver.cpp
 )
 
+# qml/main.qml is served as main.qml at the module's root, next to its qmldir, so it sees the module's types
+set_source_files_properties(qml/main.qml PROPERTIES QT_RESOURCE_ALIAS main.qml)
 
 qt_add_qml_module(AVIS_VISUALIZER
-    URI visualizer
+    URI Avis.Visualizer
     RESOURCE_PREFIX /avis/imports
 	QML_FILES
-        main.qml
+        qml/main.qml
 	SOURCES
 		viewport.cpp
 		viewport.h
@@ -66,6 +72,8 @@ target_link_libraries(AVIS_VISUALIZER
 	PRIVATE
 		AVIS_LIB
 		AVIS_VISUALIZER_RENDERING
+		AVIS_VISUALIZER_REPRESENTATION
+		AVIS_VISUALIZER_SIMULATION
 
 		EnTT::EnTT
 		Qt6::Gui

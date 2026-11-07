@@ -67,11 +67,13 @@ flowchart LR
 ## 12.1 Application skeleton and configuration
 12 §2, §8, 01 §7.
 
-- [ ] Set up the source layout of 12 §2:
+- [x] Set up the source layout of 12 §2:
   - Move `main.qml` to `qml/` and rename the QML module to `Avis.Visualizer` (`qt_add_qml_module(URI Avis.Visualizer)`).
   - Create the `AVIS_VISUALIZER_REPRESENTATION` and `AVIS_VISUALIZER_SIMULATION` static libraries. Their only dependencies are `AVIS_LIB`, yaml-cpp and task 11's rendering library.
   - Remove `simulator_clock.h` and the fixed-step loop from `visualizer_driver`.
-- [ ] `visualizer_configuration.h/.cpp` holds `visualizer_configuration`, with these sections:
+
+  *As implemented:* `qml/main.qml` is served under the alias `main.qml` at the module's root (`qrc:/avis/imports/Avis/Visualizer/main.qml`), next to its `qmldir`, so it sees the module's types without an import. Each library has its own `CMakeLists.txt` and the same no-Qt check as the rendering library (`_avis_check_no_qt_dependency`). The representation library holds `representation_settings.h/.cpp` for now; the simulation library holds `visualizer_configuration.cpp`, which reads every part's settings and must link into the Catch2 tests. With the fixed-step loop gone, nothing renders frames until the frame loop (12.7): the controller creates the renderer at startup, so startup errors still show, and publishes one snapshot.
+- [x] `visualizer_configuration.h/.cpp` holds `visualizer_configuration`, with these sections:
   - `runtime` (task 4's `runtime_configuration::parse`)
   - `render` (task 11's `parse_render_settings`)
   - `representation` (12 §9; parsed here)
@@ -80,14 +82,30 @@ flowchart LR
   - `ui` (last Driver, recent files)
 
   `load_visualizer_configuration(path)` returns `result<…>`. A missing file gives the defaults and is written out once. Errors carry the key path.
-- [ ] Add a `--configuration <path>` command-line option (default `%APPDATA%/Avis/visualizer.yaml`). `main.cpp` loads the configuration before creating the runtime. A configuration error is reported on stderr and in a message box, then the application exits.
-- [ ] `visualizer_driver` (the controller, 12 §2) owns, in this order: configuration, asset cache, `scene`, `snapshot_buffer`, simulation thread, frame loop. It's a QML singleton, as now.
-- [ ] Window geometry and panel layout are saved with `QSettings` (12 §8).
+
+  *As implemented:*
+  - `runtime` covers the `runtime` and `logging` sections, as `runtime_configuration::parse` reads both. `logging.file` is relative to the executable's directory, and defaults to `visualizer.log` next to it (`resolve_log_file`).
+  - The `representation` section is parsed by `representation::parse_representation_settings` in the representation library, beside the settings it fills, as the renderer does with `parse_render_settings`. `labels.templates` and `trails` are keyed by entity category (any but `helper`) and merge with the defaults per category; `stale.categories` replaces the list.
+  - Errors read `<file>:<line>:<column>: <key path>: <message>`. Unknown keys inside a section are ignored, as in `runtime_configuration::parse` and `parse_render_settings`; unknown category names are errors.
+  - `to_yaml_text` writes every known key, then the unknown sections in file order; `save_visualizer_configuration` writes through a temporary file renamed over the old one. Comments aren't kept. `parse_render_settings` gained its writer, `rendering::to_yaml`.
+  - `load_visualizer_configuration` returns a `loaded_configuration`: the configuration, whether the file was created, and why the defaults couldn't be written, if so. That failure is logged as a warning, not fatal.
+  - The renderer's private settings reader moved into `rendering/yaml_reading.h` as `yaml_reading::section`, shared by the three settings parsers.
+- [x] Add a `--configuration <path>` command-line option (default `%APPDATA%/Avis/visualizer.yaml`). `main.cpp` loads the configuration before creating the runtime. A configuration error is reported on stderr and in a message box, then the application exits.
+
+  *As implemented:* `parse_command_line` reads the UTF-16 command line (`CommandLineToArgvW`), so non-ASCII paths work, and accepts `--configuration=<path>` too. Other arguments are left to Qt. The message box is Win32's `MessageBoxW`, since Qt doesn't exist yet at that point.
+- [x] `visualizer_driver` (the controller, 12 §2) owns, in this order: configuration, asset cache, `scene`, `snapshot_buffer`, simulation thread, frame loop. It's a QML singleton, as now.
+
+  *As implemented:* `main()` creates the controller with the loaded configuration, after `QGuiApplication` and before the QML engine, and the singleton's `create()` returns that instance (C++ ownership). The simulation thread and frame loop join in 12.6 and 12.7; until then it also holds task 11's graphics objects, after the snapshot buffer. The RHI still turns the debug layer on unconditionally; 12.3 takes `render.debug_layer` and `render.gpu_validation`.
+- [x] Window geometry and panel layout are saved with `QSettings` (12 §8).
+
+  *As implemented:* the window's normal geometry and maximised state, through QML's `Settings` (`QtCore`) in category `window`, under `HKCU\Software\Avis\Visualizer`. A maximised window keeps the normal geometry it had before. The panel layout joins it with the panels (12.13).
 
 **Tests** (`test_visualizer_configuration.cpp`, `[visualizer][unit]`):
-- [ ] The defaults equal the YAML blocks of 12 §6.3 and §9, and 11 §14.
-- [ ] Every section rejects a bad value with its key path. Unknown sections are kept on save (round-trip).
-- [ ] A missing file writes the defaults, and loading them again gives the same configuration.
+- [x] The defaults equal the YAML blocks of 12 §6.3 and §9, and 11 §14.
+- [x] Every section rejects a bad value with its key path. Unknown sections are kept on save (round-trip).
+- [x] A missing file writes the defaults, and loading them again gives the same configuration.
+
+*As implemented:* the tests also cover a round trip with a changed value in every section, the per-category merge, a configuration that can't be written, the log file's location, and the command line. Manual check: the Visualizer started with `--configuration` on a path with a space wrote the defaults there, loaded its shaders, and saved the window geometry on exit.
 
 ## 12.2 Interop spike: `afterFrameEnd` timing
 12 §3.3 rule 4.
