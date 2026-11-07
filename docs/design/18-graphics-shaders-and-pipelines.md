@@ -8,7 +8,7 @@
 
 - **RHI:** `create_pipeline(graphics_pipeline_description)` takes the shader bytecode as spans plus a `graphics_pipeline_state`; every call creates a PSO. No shader ids, no library, no cache.
 - **`graphics::shader_library`:** an immutable map from `shader_id` (FNV-1a of `"lighting.main.cs"`) to stage and bytecode, built from `shader_blob`s.
-- **`graphics::load_shader_library(manifest, directory)`:** reads the blobs a `shader_manifest` lists, checks their hashes, builds the library. The application decides where the manifest comes from (the Visualizer: [12a](12a-visualizer-shader-manifest.md)).
+- **`graphics::load_shader_library(manifest, directory)`:** reads the blobs a `shader_manifest` lists, checks their hashes, builds the library. The application decides where the manifest comes from (the Visualizer: [12 §10](12-visualizer.md#10-shader-loading)).
 - **`graphics::pipeline_cache`:** resolves shader ids through a library, checks stages, picks or checks the root signature through a `root_signature_registry` (§10), and returns the existing handle for an equal description or creates the PSO through the RHI.
 
 **Root signatures**
@@ -125,7 +125,7 @@ namespace avis::graphics
 }
 ```
 
-The library offers no parser for the build's YAML format (D-73). The Visualizer parses `manifest.yaml` with its own parser ([12a](12a-visualizer-shader-manifest.md)).
+The library offers no parser for the build's YAML format (D-73). The Visualizer parses `manifest.yaml` with its own parser ([12 §10](12-visualizer.md#10-shader-loading)).
 
 ## 4. `graphics/shader_loading.h`
 
@@ -199,7 +199,7 @@ namespace avis::graphics
 
 | | Source | Produced | Needs at runtime | Strengths | Weaknesses |
 |---|---|---|---|---|---|
-| **A** | DXC reflection, extracted by the build into the manifest | build | nothing new | no runtime dependency; errors (a texture bound by register) at build time; manifest stays the single description of a shader | a small host tool in the build; manifest format change (12a parser, round-trip test) |
+| **A** | DXC reflection, extracted by the build into the manifest | build | nothing new | no runtime dependency; errors (a texture bound by register) at build time; manifest stays the single description of a shader | a small host tool in the build; manifest format change (the Visualizer's parser, round-trip test) |
 | **B** | DXC reflection of the loaded bytecode (`IDxcUtils::CreateReflection`) | load | `dxcompiler.dll`; reflection kept in the `.cso` | works for any bytecode, including tools and tests with shaders in memory; can't drift from the bytecode | ships the compiler DLL (tens of MB); `.cso` files larger; the graphics layer depends on `dxcapi.h` |
 | **C** | Declared by hand (a sidecar file per shader, or keys in the HLSL parsed by the build) | authoring | nothing new | no tooling | can drift from the shader; only a test catches it |
 | **D** | Embedded root signature (`[RootSignature(...)]` in HLSL, the `RTS0` part of the bytecode) | build | nothing new (`D3D12CreateVersionedRootSignatureDeserializer` is in `d3d12.dll`) | standard D3D12; no reflection at all | the shader author picks the layout, not the renderer; every shader repeats it; matching becomes equality |
@@ -234,8 +234,8 @@ namespace avis::graphics
       samplers:
       - {register: 1, space: 0}
   ```
-- 12a's parser maps the key to `shader_manifest_entry::bindings`; the round-trip test keeps writer and parser in step.
-- **Status:** the command and its tests exist (`tools/data-trace/src/data_trace/shaders/`, `tools/data-trace/tests/shaders/`, including probe shaders compiled with `tools/dxc`), and `avis_add_shaders` (`cmake/AvisShaders.cmake`, [13 §3](13-build-and-quality.md#3-shader-build-pipeline)) runs it; the tests build their shaders with it and load the manifest (task 8.7). The 12a parser changes are left for the Visualizer task (§13).
+- The Visualizer's parser (12 §10) maps the key to `shader_manifest_entry::bindings`; the round-trip test keeps writer and parser in step.
+- **Status:** the command and its tests exist (`tools/data-trace/src/data_trace/shaders/`, `tools/data-trace/tests/shaders/`, including probe shaders compiled with `tools/dxc`), and `avis_add_shaders` (`cmake/AvisShaders.cmake`, [13 §3](13-build-and-quality.md#3-shader-build-pipeline)) runs it; the tests build their shaders with it and load the manifest (task 8.7). The parser changes were left for the Visualizer task (§13), and task 11.1 made them ([12 §10.1](12-visualizer.md#101-the-manifest-format)).
 - **As implemented:** reflection reports a constant buffer's size padded to whole 16-byte registers, so an 8-byte struct has `size: 16`. Matching (§10.1) compares against that size.
 
 **How B would work.** `graphics::reflect_shader(std::span<const std::byte> bytecode) -> result<shader_bindings>`, called by `load_shader_library` when an entry has no bindings, loading `dxcompiler.dll` on first use. The build must not pass `-Qstrip_reflect`. A tool that compiles shaders at runtime already ships DXC, so B costs it nothing extra.
@@ -464,7 +464,7 @@ The RHI's root signature tests are in [09 §22.5](09-rhi.md#225-testing).
 
 - `root_signature_registry` (no GPU needed for the matching itself, with a fake RHI or WARP): first compatible in order; a constant buffer too large for root constants but fine for a root CBV; a missing sampler register; a pixel shader's binding provided only by a vertex-only parameter fails; a compute shader's binding provided only by a stage-limited parameter fails; a mismatch message naming stage, register, space and candidate; `check_compatible` on an explicit signature.
 - `pipeline_cache`: matching runs once per key; a shader without bindings and no explicit signature fails with `shader_bindings_missing`.
-- The manifest round-trip test (12a §6) includes bindings, so the build tool and the parser can't drift apart.
+- The manifest round-trip test (12 §10.4) includes bindings, so the build tool and the parser can't drift apart.
 
 ## 13. Changes to other documents
 
@@ -479,7 +479,7 @@ Applied with this draft:
 - **99:** D-106 for root signatures as handles. (D-34 says the graphics layer publishes the binding layout; Q3 and Q4 are D-82 and D-83.)
 
 Left to apply:
-- **12a:** manifest format 2 with `bindings` (Q3 decided A): the version check accepts 2, and the parser reads `bindings` into `shader_manifest_entry::bindings`. Left for the Visualizer task, which brings 12a's parser and moves the Visualizer's shaders to `avis_add_shaders`; task 8 tests the format with a minimal reader in `tests/test_graphics_shader_build.cpp`.
+- **12a:** manifest format 2 with `bindings` (Q3 decided A): the version check accepts 2, and the parser reads `bindings` into `shader_manifest_entry::bindings`. *Done in task 11.1*: the parser accepts formats 1 and 2, the Visualizer's shaders are built by `avis_add_shaders`, and `test_graphics_shader_build.cpp` uses the parser instead of task 8's minimal reader. 12a is folded into [12 §10](12-visualizer.md#10-shader-loading).
 
 ## 14. Open questions
 

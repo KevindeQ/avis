@@ -6,10 +6,12 @@ The scene renderer lives in the Visualizer (`apps/visualizer/rendering/`). It's 
 
 | Feature | Namespace | CMake target | Location |
 |---|---|---|---|
-| Scene renderer (pass setup, extraction, draw lists, sorting) | `avis::visualizer::rendering` | `AVIS_VISUALIZER` | `apps/visualizer/rendering/` |
+| Scene renderer (pass setup, extraction, draw lists, sorting, the shader manifest parser) | `avis::visualizer::rendering` | `AVIS_VISUALIZER_RENDERING`, a static library without Qt, linked by `AVIS_VISUALIZER` and `AVIS_TESTS` | `apps/visualizer/rendering/` (passes in `rendering/passes/`) |
 | Scene representation (turns scene semantics into meshes and materials; **not** part of the renderer) | `avis::visualizer::representation` | `AVIS_VISUALIZER` | `apps/visualizer/representation/` ([12 §9](12-visualizer.md#9-scene-representation)) |
-| Renderer shader sources (`*.hlsl`, `*.hlsli`) | — (HLSL) | `AVIS_VISUALIZER` (`avis_add_shaders`) | `data/shaders/visualizer/scene/`, `data/shaders/visualizer/include/` |
-| Compiled shaders + `manifest.yaml` (runtime data) | — | build output of `AVIS_VISUALIZER` | `<bin>/data/shaders/visualizer/` |
+| Renderer shader sources (`*.hlsl`, `*.hlsli`) | — (HLSL) | `AVIS_VISUALIZER_RENDERING` (`avis_add_shaders`) | `data/shaders/visualizer/scene/`, `data/shaders/visualizer/include/` |
+| Compiled shaders + `manifest.yaml` (runtime data) | — | build output of `AVIS_VISUALIZER_RENDERING` | `<bin>/data/shaders/visualizer/` |
+
+The renderer is a library so that the tests can link it: an executable can't be linked ([tasks/11](../tasks/11-renderer.md) 11.1). Its include directories are `apps/visualizer` and `data/shaders/visualizer/include`, and a CMake check keeps `Qt6::` out of its link interface. Nothing in `rendering/` includes a Qt header, `avis/scene/components/` or reads the ECS registry (§2.1).
 
 ## 1. Requirements
 
@@ -107,7 +109,7 @@ flowchart TB
 |---|---|---|---|---|
 | 0 | `upload_frame_data` | copy / copy | Extraction results and sorted draw lists (§4), in frame memory | `instances`, `instance_indices`, `lights` buffers (imported, persistent, ring-indexed). Residency uploads (new mesh versions, material slots, textures) aren't recorded here: the upload queue's flush carries them, and the graph only waits on their `ready_after` points (§3.6) |
 | 1 | `depth_prepass` | graphics | draw-list range `scene/camera/world/opaque` (§4.6) | `depth` D32F (reverse-Z) |
-| 2 | `linearize_depth` | compute / graphics | depth | `linear_depth` R32F + 5-mip chain (`depth_mips`, view-space Z) |
+| 2 | `linearize_depth` | compute / graphics | depth | `linear_depth` R32F + `depth_mips`: RG32F, 5 mips from full resolution, view-space Z min in R and max in G, +∞ where nothing is drawn |
 | 3 | `cluster_build` + `light_cull` | compute / **async** | lights, view, depth_mips (min/max per tile) | `cluster_grid`, `light_index_list` |
 | 4 | `gbuffer` | graphics | depth (EQUAL, no write), draw-list range `scene/camera/world/opaque` | `gbuffer_albedo`, `gbuffer_normal`, `gbuffer_material`, `gbuffer_emissive`, `velocity` |
 | 5 | `gtao` | compute / **async** | depth_mips, gbuffer_normal | `ao_raw` (half-res R8 + packed edges) |
@@ -123,12 +125,106 @@ flowchart TB
 | 15 | `debug_blit` (optional) | graphics | selected resource, draw-list range `fullscreen_effects/camera` | ldr_color (full or picture-in-picture) |
 | 16 | `present_to_shared` | graphics | ldr_color | imported shared texture (slot *i*), state `common` |
 
-The **linearize depth** pass (idea.md) produces both the full-resolution linear depth and the mip chain that GTAO and cluster building use.
+The **linearize depth** pass (idea.md) produces both the full-resolution linear depth and the mip chain that GTAO and cluster building use. The chain is one RG32F texture rather than two R32F chains, so a tile's min and max are one fetch. Its mip 0 is full resolution, and each later texel covers 2 × 2 texels of the mip above (3 on the last row or column of an odd size). The chain is written by `linearize_depth` and the `depth_mips_<mip>` passes.
 
 **Declaration order is the overlap plan.** The render graph keeps declaration order on each queue ([10 §6.2](10-render-graph.md#62-scheduling-and-queue-assignment)), so async work only overlaps graphics passes that are declared *after* its producer and don't depend on its output. The table is ordered for that:
 - `cluster_build` + `light_cull` need only `depth_mips`, so they run on async compute while the graphics queue draws the `gbuffer`.
 - `gtao` + `gtao_denoise` need `gbuffer_normal`, so they start after the G-buffer and run while the graphics queue draws `shadow_cascades`, which reads neither.
 - `deferred_lighting` waits for clusters, AO and shadows.
+
+*As implemented* (task 11): the frame has more passes than the table lists: `exposure_reset` on a view's first frame, the `depth_mips_<mip>` chain after `linearize_depth`, `selection_mask`, `selection_mask_on_top` and `selection_outline` before the overlays (§10.5), the picking passes after them (§5.1), and `screenshot_capture`, `screenshot_accumulate` and `screenshot_resolve` for screenshots (§12.1). `tonemap` reads `taa_output`, and `exposure` is two passes, `exposure_histogram` and `exposure_adapt` (§10.3). A long draw range is several graph passes, one per recording part (§4.8).
+
+### 2.4 Renderer interface
+The renderer has no frame chain of its own. 12's `frame_loop` owns the frame token, starts the sender and drives the completions; the renderer is called once per frame from its prepare stage.
+
+```cpp
+namespace avis::visualizer::rendering
+{
+    struct renderer_dependencies
+    {
+        rhi::resources resources;
+        rhi::pipelines pipelines;
+        rhi::synchronization synchronization;        // residency: whether a version's copies are complete
+        graphics::render_graph& graph;
+        graphics::transient_resource_pool& pool;
+        graphics::frame_scheduler& frames;
+        graphics::gpu_profiler* profiler;            // may be null: no GPU timings
+        graphics::pipeline_cache& pipeline_cache;
+        graphics::root_signature_registry& root_signatures;
+        graphics::upload_queue& uploads;             // per frame, flushed by the prepare stage (§3.6)
+        std::function<rhi::memory_budget()> memory_budget; // for custom screenshots (§12.1); empty: no check
+    };
+
+    class scene_renderer
+    {
+    public:
+        static result<std::unique_ptr<scene_renderer>> create(const renderer_dependencies&, const render_settings&,
+                                                               graphics::shader_library&);
+        // Builds and compiles the frame's graph on the calling thread, then returns the sender that executes it
+        auto render(graphics::frame_token& frame, const scene::snapshot& snapshot,
+                    std::span<const view_description> views, std::chrono::steady_clock::time_point wall_now);
+        void retire(std::uint64_t completed_frame_index);   // when begin_frame recycles a context (§3.6)
+        std::vector<pick_result> take_pick_results();       // §5.1
+        std::vector<inspector_result> take_inspector_results(); // §11
+        void request_screenshot(screenshot_request request); // §12.1
+        std::vector<screenshot_result> take_screenshot_results();
+        renderer_debug_information debug_information() const;
+        const std::optional<error>& build_failure() const noexcept; // why the last render couldn't build its frame
+        // For the debug UI (12 §6), from the next frame on
+        void set_ao_parameters(const ambient_occlusion_settings&);
+        void set_exposure_parameters(const exposure_settings&);
+        void set_tonemapper(tonemap_operator);
+        void set_selection_color(scene::color);
+    };
+}
+```
+
+- `create` registers the standard root signature (18 §9), creates the 960 base pipeline sets in a startup `bulk` (§4.4) and the persistent resources (the geometry arena, the material table, the default textures, the BRDF LUT, the blue noise).
+- `render` is the prepare stage: residency and its upload flush (§3.6), extraction (§3.5), the draw lists and their runs (§4.5, §4.8), then the graph. It returns a sender of `graphics::submitted_frame` for `end_frame`. A frame that can't be built (an invalid view, a failed flush) completes with that error, submits nothing, and is reported by `build_failure()`. A caller that builds without executing, as the Visualizer does until 12, reads it there.
+- Results (picks, inspector reads, screenshots) are **polled**, not sent: the frame chain takes them each frame and posts them to the GUI with the rest of its per-frame state.
+
+Views are described by the caller (§2.1):
+
+```cpp
+struct camera
+{
+    Eigen::Affine3f world_from_view;           // the view looks down −Z, +Y up
+    float vertical_field_of_view = 60°;        // radians
+    float near_plane = 0.1f;                   // metres
+    std::optional<float> far_plane;            // none: infinite reverse-Z
+};
+
+struct output_target
+{
+    rhi::texture_handle texture;               // RGBA8_UNORM of the view's size, allowing copy_destination
+    rhi::access_state initial, final;          // both common by default (§12)
+    std::optional<rhi::synchronization_point> ready_after; // when its previous reader is done with it
+};
+
+struct view_options
+{
+    bool taa = true;                           // and render.taa.enabled
+    bool reset_history = false;                // a camera cut or a scene reload (§10.2)
+    std::vector<debug_selection> debug_blits;  // §11
+    std::optional<inspector_request> inspect;  // §11
+    std::optional<pick_request> pick;          // §5.1
+    std::optional<std::uint64_t> progressive_vertex_budget; // replaces render.progressive.vertex_budget (§9.3)
+    std::vector<resource_capture> captures;    // copies of the view's textures by name, for tests and tools
+    std::vector<buffer_capture> buffer_captures;
+};
+
+struct view_description
+{
+    std::string name;                          // the graph's view scope and the view_history key: unique, no '/'
+    rendering::camera camera;
+    graphics::texture_extent size;
+    float device_pixel_ratio = 1.0f;
+    std::optional<output_target> output;       // none: nothing writes an import, so the graph culls the view
+    view_options options;
+};
+```
+
+A view without an output (and without captures or a screenshot) is built and compiled, but its passes are culled. Per-view state (TAA and depth history, exposure, cluster bounds, the previous view-projection, the jitter sequence) lives in a `view_history_store` keyed by name ([10 §8](10-render-graph.md#8-multi-view)) and is released after 60 frames without the view.
 
 ## 3. Renderer input
 
@@ -148,18 +244,20 @@ namespace avis::scene
         Eigen::Matrix4f world_current;           // at t_k
         draw_layer layer = draw_layer::world;    // §3.4
         std::uint8_t layer_priority = 0;         // ordering within overlay layers
-        enum_flags<instance_flags> flags;        // visible, casts_shadows, selected, pickable, screen_aligned, history_invalid
+        avis::flags<instance_flags> flags;       // visible, casts_shadows, selected, pickable, screen_aligned, history_invalid
         float maximum_view_distance = 0.0f;      // metres from the camera; 0 = unlimited
     };
 
-    struct light_instance { /* kind, colour, intensity, range, cone angles, world transform, casts_shadows */ };
-    struct environment { /* sun direction and illuminance, sky model parameters */ };
+    struct light_instance { /* id, kind, colour, intensity (lux or candela), range, cone angles, world (−Z is the direction), casts_shadows */ };
+    struct environment_settings { /* sun_direction, sun_illuminance (lux), sky_turbidity, ambient_intensity */ };
 }
 ```
 
+`avis::flags<E>` (`avis/enum_flags.h`) is the library's typed bit set over an enum marked with `ALLOW_FLAGS_FOR_ENUM`. The enums the snapshot shares with the components (`instance_flags`, `draw_layer`, `light_kind`) are in `avis/scene/flags.h`, so the renderer uses them without including the components.
+
 - `screen_aligned` and `maximum_view_distance` are generic instance options (used by labels, [08 §8.1](08-scene-management.md#81-labels), but not specific to them): a `screen_aligned` mesh is in pixels and faces the camera (§10.5), and an instance farther than `maximum_view_distance` from the camera is culled (§4.5).
 - `object_id` is an opaque 64-bit key. The renderer uses it only to look up previous-frame matrices (motion vectors) and to report picking results; it never interprets it.
-- `history_invalid` marks an instance whose entity was created this tick ([08 §6.3](08-scene-management.md#63-building-the-snapshot)): its `world_previous` is a copy of `world_current`, so it pops in without motion, and the renderer drops any history it keeps for that `object_id` (previous-frame matrix, TAA).
+- `history_invalid` marks an instance whose entity was created this tick ([08 §6.3](08-scene-management.md#63-building-the-snapshot)): its `world_previous` is a copy of `world_current`, so it pops in without motion, and the renderer drops any history it keeps for that `object_id` (previous-frame matrix, progressive LOD rate limit). Task 10 decided on both markers: `make_snapshot` sets the flag *and* copies the matrix. Extraction ([tasks/11](../tasks/11-renderer.md) 11.5) also treats an instance whose `world_previous` equals `world_current` as new, so a snapshot built by hand without the flag still pops in. TAA has no per-instance history: the moved pixels' disocclusion test rejects theirs (§10.2).
 - `mesh_handle` and `material_handle` refer to entries in the asset cache ([08 §5](08-scene-management.md#5-assets-gltf)), which owns only the **CPU** data. The snapshot's `meshes`, `materials` and `textures` tables carry the current version of each referenced asset, each once; a material's texture handles resolve against `textures`. The **renderer owns every GPU copy** through its residency cache (§3.6).
 
 ### 3.2 Geometry
@@ -248,6 +346,8 @@ namespace avis::visualizer::rendering
 }
 ```
 
+*As implemented* (task 11.3): the cache has a fourth call, `after_flush()`, made by the prepare stage after the upload queue's flush. It resolves the new versions' tickets into `ready_after`, makes them current, and marks the version each mesh draws this frame as used. `find` therefore returns a version made resident this frame, and that frame draws it. Textures (`texture_residency`) and materials (`material_table`) follow the same calls. A material rewrite always goes to a new slot, never the slot frames in flight read.
+
 **Upload.** For each entry in the snapshot's `meshes` table whose `(handle, version)` isn't resident:
 1. Allocate a new range in the geometry arena.
 2. Copy the CPU data into the staging ring with the non-blocking `upload_queue::upload_buffer` of the renderer's per-frame upload queue ([17 §7](17-graphics-frames-and-transfers.md#7-graphicsupload_queueh)), which returns a ticket. The bytes are in the ring when it returns.
@@ -266,6 +366,8 @@ If the staging ring is full (`graphics::error_kind::upload_queue_full`) or the a
 A range is therefore never freed while a recorded or in-flight frame can still read it, however many snapshots were skipped. The renderer drops its `shared_ptr` to a version's CPU data as soon as `upload_buffer` has returned, because the bytes are in the staging ring by then.
 
 **Budget.** The arena size is `render.geometry.arena_mib` (§14). It must exceed the scene representation's geometry budget ([12 §9](12-visualizer.md#9-scene-representation)) by enough to hold superseded versions during their *F* frames of retirement, which is why it defaults to 1.5 × that budget. Memory pressure is managed **upstream**, by the scene representation, because only it knows which geometry matters (12 §9.1). The renderer only falls back to "keep the previous version" and logs a warning when the arena is full.
+
+**Arena split.** The arena is two persistent `gpu_only` buffers: **80% of `arena_mib` for vertices, 20% for indices** (u32). Each is sub-allocated by an offset allocator: best fit through a free list indexed by size, coalescing on free, 16-byte alignment for vertices and 4 for indices. A range's vertex streams are laid out as a structure of arrays (position `f32x3`, then each present attribute, each stream on a 16-byte boundary), with their offsets in the `geometry_range`. Each buffer must stay below 4 GiB, because the ranges and the shaders use 32-bit offsets. When either buffer is full, the warning names it, its use and its largest free block. One raw buffer holding both would have avoided the fixed split; two buffers keep a typed index buffer view.
 
 ## 4. Draw lists and draw-call sorting
 
@@ -359,13 +461,13 @@ Depth is quantised logarithmically over [0.1 m, 2 km] (the cluster depth range, 
 struct draw_record                     // one per visible instance per frame
 {
     std::uint32_t instance;            // index into instance_data[] (§3.5)
-    std::uint32_t mesh;                // geometry arena entry
+    std::uint32_t mesh;                // the frame's mesh table (resident versions this frame draws)
     std::uint32_t submesh;
-    enum_flags<instance_flags> flags;  // casts_shadows, selected, pickable
+    avis::flags<instance_flags> flags; // casts_shadows, selected, pickable, …
 };
 ```
 
-- Records are laid out **mesh-major**: extraction counts visible instances per `(mesh, submesh)`, takes a prefix sum and scatters the records. Because the sort breaks key ties by value, draws with an equal key and the same mesh end up **next to each other**, which is what instancing needs, even though the mesh isn't in the key.
+- Records are laid out **mesh-major**, and by `object_id` within a mesh, so the list doesn't depend on the snapshot's order: the build counts visible instances per `(mesh, submesh)`, takes a prefix sum and scatters the records. Because the sort breaks key ties by value, draws with an equal key and the same mesh end up **next to each other**, which is what instancing needs, even though the mesh isn't in the key.
 - An instance drawn in several viewports (camera plus shadow cascades) has one record and several items.
 
 ### 4.5 Building and sorting
@@ -407,6 +509,7 @@ Commands are created by the renderer, never by the snapshot.
 | *callback* | `void (*)(command_context& context, const void* arguments)` | Arguments at the item's value |
 
 - Debug validation checks that a command touches only attachments its pass declared.
+- *As implemented* (task 11.9): **no stencil.** The depth formats have no stencil (the selection mask is an R8 target, §10.5), so the RHI didn't gain `set_stencil_reference` or a stencil clear. The opcode table keeps `set_stencil_reference` and `clear_depth_stencil`'s stencil argument so the key layout doesn't change when a stencil user arrives. Until then `set_stencil_reference` fails a debug check and is skipped, and `clear_depth_stencil` with the stencil flag fails one too and clears only depth.
 - Iteration 1 needs few commands. The mechanism is there for state changes between layers that the pass's own setup doesn't cover, such as clearing an attachment between two layers drawn by the same pass.
 - Debug markers aren't commands: the range walker (§4.8) opens a PIX marker per group automatically.
 
@@ -453,6 +556,21 @@ That's 20 bytes per pixel plus 4 for depth. On frames where the user clicked the
   - `picking_id` isn't an extra target of the G-buffer, forward and overlay passes (the table above, §4.6 and §5). A click frame adds a picking pass after the overlays instead. It draws the camera's `world` and `overlay` groups, then `overlay_on_top`, again into `picking_id`, with the overlay's depth test (none on top) and no blending. Key order is draw order, so the rule is the same: what the user sees on top wins. The colour passes are unchanged, so a click frame's image is a normal frame's.
   - The pixel shader discards instances that aren't `pickable` and pixels covered less than 0.1 (a blend material's alpha times a line's edge coverage).
   - A compute pass copies the 9 × 9 window into a small buffer, with zeros outside the view, and a copy pass copies that into one of up to 8 readback buffers. `scene_renderer::take_pick_results()` returns the results of completed frames in request order.
+  - **Results are polled** rather than sent per request. The frame chain calls `take_pick_results()` each frame and posts the results to the GUI with its other per-frame state:
+
+    ```cpp
+    struct pick_request { std::uint32_t x, y; };                    // view_options::pick, in view pixels
+    struct pick_hit { scene::object_id object_id; std::uint32_t x, y; }; // the texel that won
+    struct pick_result
+    {
+        std::string view;
+        pick_request request;
+        std::uint64_t frame_index;                                  // the frame that drew it
+        std::optional<pick_hit> hit;                                // none: nothing pickable in the window
+    };
+    ```
+
+    Each result is returned once, when its frame is complete on the GPU. A request whose frame failed gets no result. So does one made while all 8 readback slots (shared with the pixel inspector, §11) are in use, which logs a warning. `select_pick` picks the non-zero texel closest to the click, the first in row order at equal distances.
 
 ## 6. Lighting
 
@@ -497,7 +615,7 @@ Based on Jimenez et al. 2016, "Practical Real-Time Strategies for Accurate Indir
 
 | Stage | Details |
 |---|---|
-| Input | `depth_mips` (view-space linear depth, 5 mips, from `linearize_depth`) and `gbuffer_normal` (converted to view space) |
+| Input | `depth_mips` (view-space linear depth, 5 mips, from `linearize_depth`; GTAO reads the middle of each texel's min and max) and `gbuffer_normal` (converted to view space) |
 | Resolution | Half resolution by default (`render.ao.half_resolution`), full resolution optional |
 | Horizon search | Per pixel, `slice_count` slices (default 2 at half res, 3 at full), `steps_per_side` 4 with quadratic step distribution. Effective radius 1.5 m (configurable), falloff over the last 40% of the radius. Samples go to depth mip levels by step distance, for cache efficiency. |
 | Integration | Analytic cosine-weighted visibility integral over the two horizon angles per slice, projected-normal weighting |
@@ -576,7 +694,7 @@ Generic geometry features. The renderer doesn't know what the points or lines re
 - Walks the `overlay` and then the `overlay_on_top` groups of the draw list into `ldr_color`, after tonemapping, so overlays stay crisp and unaffected by TAA.
 - `overlay` instances are depth-tested against the scene depth with a small bias. The scene depth is jittered, but the sub-pixel error is acceptable for overlays. `overlay_on_top` ignores depth.
 - **Screen-aligned instances** use a vertex shader variant: it projects the origin of the instance's interpolated world matrix to clip space, then adds each vertex's position as an offset in pixels (scaled by the output's device pixel ratio and converted to clip units). The mesh keeps a constant size on screen and faces the camera, whatever the instance's rotation. The depth of an `overlay` instance is the anchor's depth. The variant is a pipeline variant of the overlay pipeline set, selected by the flag (§4.4).
-- Draws the outline for `selected` instances (a screen-space edge detect on a stencil-like mask written by the selected instances).
+- Draws the outline for `selected` instances: a screen-space edge detect on an **R8 mask** (`selection_mask`), not a stencil bit, so the depth format stays D32_FLOAT without stencil. On frames with a selected instance, the runs that hold one are drawn again into the mask, before the outline (see *As implemented*).
 - What appears in the overlays (box edges, trajectories, grid, frusta, …) is decided entirely by the scene representation ([12 §9](12-visualizer.md#9-scene-representation)).
 - *As implemented* (task 11.17):
   - Overlay colours are sRGB-encoded in the shader, because `ldr_color` holds sRGB values. Every overlay PSO blends premultiplied, so the edges of opaque lines fade with their coverage.
@@ -633,11 +751,12 @@ Shaders are **Visualizer data**. Their sources live in the repository's runtime-
 | What | Where |
 |---|---|
 | Scene renderer shader sources | `data/shaders/visualizer/scene/*.hlsl` (one file per pass or pass family: `depth_prepass.hlsl`, `gbuffer.hlsl`, `deferred_lighting.hlsl`, `gtao.hlsl`, `taa.hlsl`, `tonemap.hlsl`, `overlay.hlsl`, `debug_blit.hlsl`, …) |
-| Shared shader headers | `data/shaders/visualizer/include/*.hlsli`: `bindless.hlsli` (root signature contract, [18 §9](18-graphics-shaders-and-pipelines.md#9-graphicsbinding_layouth)), `brdf.hlsli`, `packing.hlsli`, `vertex_pulling.hlsli`, `shared_types.hlsli` (C++/HLSL shared structs, also included by `apps/visualizer/rendering/`, which adds `data/shaders/visualizer/include` to `AVIS_VISUALIZER`'s include directories) |
+| Shared shader headers | `data/shaders/visualizer/include/*.hlsli`: `bindless.hlsli` (root signature contract, [18 §9](18-graphics-shaders-and-pipelines.md#9-graphicsbinding_layouth)), `brdf.hlsli`, `packing.hlsli`, `vertex_pulling.hlsli`, `shared_types.hlsli` (C++/HLSL shared structs, also included by `apps/visualizer/rendering/`, which adds `data/shaders/visualizer/include` to `AVIS_VISUALIZER_RENDERING`'s public include directories) |
 | Qt-side blit shaders (GLSL → `.qsb`) | `data/shaders/visualizer/qt/` |
-| Compiled output (runtime data) | `<bin>/data/shaders/visualizer/*.cso` + `manifest.yaml`, written by `avis_add_shaders(TARGET AVIS_VISUALIZER …)` ([13 §3](13-build-and-quality.md#3-shader-build-pipeline)) and deployed next to the executable like other runtime data |
+| Compiled output (runtime data) | `<bin>/data/shaders/visualizer/*.cso` + `manifest.yaml`, written by `avis_add_shaders(TARGET AVIS_VISUALIZER_RENDERING …)` ([13 §3](13-build-and-quality.md#3-shader-build-pipeline)) and deployed next to the executable like other runtime data |
 
-- At startup the renderer resolves the shader directory (`<executable directory>/data/shaders/visualizer`, overridable with `render.shader_directory`), reads and parses its `manifest.yaml` with the Visualizer's parser, and passes the resulting `graphics::shader_manifest` and the directory to `graphics::load_shader_library` ([12 §10](12-visualizer.md#10-shader-loading), [12a](12a-visualizer-shader-manifest.md)). The renderer's pipelines are created through `graphics::pipeline_cache` from that library [18](18-graphics-shaders-and-pipelines.md); the RHI only receives bytecode in pipeline descriptions ([09 §12](09-rhi.md#12-pipelines-rhipipelineh)) and has no built-in shader paths, manifest format or shader library.
+- At startup the renderer resolves the shader directory (`<executable directory>/data/shaders/visualizer`, overridable with `render.shader_directory`), reads and parses its `manifest.yaml` with the Visualizer's parser, and passes the resulting `graphics::shader_manifest` and the directory to `graphics::load_shader_library` ([12 §10.3](12-visualizer.md#103-startup)). `renderer_shaders.h` does it: `resolve_shader_directory(settings, executable_directory)`, then the sender `load_renderer_shaders(directory)`, which reads the file on the IO context, parses it on a parallel worker and loads the library. A failure is a startup error. The same header holds the `constexpr` ids of the renderer's compute and fullscreen shaders; the scene passes' ids come from the pipeline variant registry (§4.4).
+- **The manifest** is format 2 (`avis_shader_manifest: 2`): each entry's id, file, stage, entry, defines, `xxh3` and its reflected `bindings` ([18 §6](18-graphics-shaders-and-pipelines.md#6-reflection-data-sources)). The parser (`shader_manifest_parser.h`, [12 §10.1–10.2](12-visualizer.md#101-the-manifest-format)) reads formats 1 and 2. It is strict: an unknown key is an error, `xxh3` is required, and so are a format 2 entry's `bindings`. Errors carry `file:line:column` and the key path. A test parses the manifest the build wrote, so the build's writer and the parser can't drift apart. The renderer's pipelines are created through `graphics::pipeline_cache` from that library [18](18-graphics-shaders-and-pipelines.md); the RHI only receives bytecode in pipeline descriptions ([09 §12](09-rhi.md#12-pipelines-rhipipelineh)) and has no built-in shader paths, manifest format or shader library.
 - `bindless.hlsli` mirrors the standard root signature of the graphics layer, published as C++ constants in `graphics::binding_layout` ([18 §9](18-graphics-shaders-and-pipelines.md#9-graphicsbinding_layouth)), and a Visualizer test compiles a probe shader to check that the two match. The renderer registers that signature first in its `root_signature_registry`; the pipeline cache matches each pipeline to a registered signature ([18 §10](18-graphics-shaders-and-pipelines.md#10-graphicsroot_signature_registryh)).
 
 ## 14. Configuration (`visualizer.yaml` → `render`)
@@ -671,3 +790,20 @@ Settings for streamed content (such as lidar point colouring) belong to the scen
 | Render-graph compile | ≤ 0.2 ms CPU |
 | Extraction + draw-list build (cull, sort, batch) | ≤ 1.5 ms CPU for 10k instances, single-threaded (§4.5) |
 | PSO changes per frame | ≤ distinct pipeline sets × opaque depth bands per pass range (each set once per band in the common case) |
+
+*As measured* (task 11.23, 2026-11-07). These are Release builds on the development machine's AMD RX 7800 XT, with the debug layer on and GPU-based validation off. That GPU is faster than the RTX 3060 class, so the reference would miss the GPU targets by more. The scene is `test_renderer_benchmark.cpp` (`[renderer][!benchmark]`): 20 progressive point clouds of 1M points, 500 instances of two meshes and two materials, a ground plane, a sun and 64 point lights, at 1920 × 1080 with TAA and automatic exposure. The numbers are medians over 32 frames.
+
+| Item | Target | Measured | |
+|---|---|---|---|
+| Frame time | ≤ 12 ms GPU | 12.9 ms (sum of the passes; 12.7 ms on the graphics queue) | **missed** |
+| GTAO half res | ≤ 0.8 ms | 0.13 ms in the frame; the GTAO benchmark (11.13) passes too | met |
+| CSM | ≤ 2.0 ms | 2.9 ms | **missed** |
+| Render-graph compile | ≤ 0.2 ms CPU | 0.14 ms for all of `render`: residency, extraction (reused: the scene is paused), draw lists, graph build and compile | met |
+| Draw-list build, 10k instances | ≤ 1.5 ms CPU | 1.32 ms for about 15k items (`test_draw_lists.cpp`); the radix sort takes 0.20 ms of it | met |
+| PSO changes | sets × bands per range | 45 `set_pipeline` calls for 210 draws | met |
+
+**Why the frame and CSM miss: the points.** `gbuffer` (5.6 ms), `depth_prepass` (3.8 ms) and `shadow_cascades` (2.9 ms) take 12.3 of the 12.9 ms; every other pass is under 0.2 ms. The 20M vertex budget is shared by the camera (11.3M points) and the cascades (8.7M), and every point is a quad of 6 vertex shader invocations. The camera's points are drawn twice, once by the prepass and once by the G-buffer, whose pixel shader writes five targets and discards outside the circle. These options are not implemented:
+- a lower default budget: the GPU cost is about linear in it;
+- shadow points from a budget of their own, or a single cascade;
+- points without the depth prepass, which the G-buffer would draw with a depth test and depth writes;
+- the compute point rasteriser of §9.3.

@@ -917,9 +917,40 @@ flowchart LR
 - [x] Starting with the shader directory removed shows the startup error and exits (manual check, recorded here). *2026-11-07, Debug, `bin/data/shaders/visualizer` renamed: the log has "the renderer's shaders could not be loaded: manifest.yaml not found in <directory>; was the Visualizer built and deployed with its shaders?", the dialog "The Visualizer could not start" is shown, and closing it exits with code 1.*
 
 ## 11.23 Performance, cleanup, docs
-- [ ] Run the `[renderer][!benchmark]` tests and an end-to-end benchmark scene matching 11 §15's frame budget: 20M progressive points, 500 instanced meshes, a sun and 64 point lights. Run them on the reference GPU class and record the numbers in **As implemented**. A miss is recorded with its cause rather than blocking the task.
-- [ ] Run `grep -rn "avis/scene/components\|registry()" apps/visualizer/rendering`. It must return nothing (scene-agnostic, 11 §2.1).
-- [ ] Update [11](../design/11-renderer.md) wherever the implementation differs. In particular:
+*Status: done. Two 11 §15 targets are missed (the frame time and the CSM), with the cause recorded below and in 11 §15.* As implemented:
+- **Benchmarks** (Release, the development machine's AMD RX 7800 XT, not the RTX 3060 reference class; see Open points). The debug layer was on and GPU-based validation off.
+  - `[renderer][!benchmark]` now has three tests. The draw-list build of 10,000 instances takes 1.32 ms for 14,866 items, and its radix sort 0.20 ms against 0.70 ms for `std::ranges::sort`. GTAO at half resolution passes its 0.8 ms check.
+  - **The end-to-end scene** is the new `test_renderer_benchmark.cpp`: 20 progressive point clouds of 1M points (30 m × 30 m × 3 m slabs, 4 cm lit points), 500 instances of a box and a ball with two materials, a 400 m ground plane, a sun and 64 point lights. It renders at 1920 × 1080 with 11 §14's defaults (a 768 MiB arena, a 20M vertex budget, TAA, automatic exposure). Every mesh is resident within 8 warm-up frames, and the test reports the medians of the next 32 frames.
+  - **Measured:**
+    - GPU frame 12.9 ms, the sum of the passes (12.7 ms on the graphics queue); the target is 12 ms. **Missed.**
+    - `shadow_cascades` 2.9 ms; the target is 2.0 ms. **Missed.**
+    - GTAO 0.13 ms, and the whole `render` call (prepare stage, graph build and compile) 0.14 ms of CPU time. The scene is paused, so extraction is reused.
+    - 210 draws with 45 pipeline changes. The progressive LOD drew 11.3M camera and 8.7M shadow points, with k = 3.4 vertices per pixel.
+  - **Cause of the misses: the points.** `gbuffer` takes 5.6 ms, `depth_prepass` 3.8 ms and `shadow_cascades` 2.9 ms, which is 12.3 ms of the 12.9. No other pass reaches 0.2 ms.
+    - The budget is shared by the camera and the cascades.
+    - Every point is a quad of 6 vertex shader invocations.
+    - The camera's points are drawn twice: by the prepass, then by the G-buffer, whose pixel shader writes five targets and discards outside the circle.
+
+    11 §15 lists the options (a lower budget, a shadow budget of their own, points without the prepass, the compute point rasteriser). None is implemented: each changes the design, and 12's real scenes will show which matters.
+  - `render_graph_fixture_options::timestamps_per_frame` (default 64) lets the benchmark time all of a frame's passes.
+- **Scene-agnostic check.** The grep as written matches `~pipeline_variant_registry()`, twice, because `registry()` is a substring of the destructor. With a word boundary (`grep -rn "avis/scene/components\|\<registry()" apps/visualizer/rendering`) it returns nothing. `rendering/` includes only `avis/scene/assets/`, `bounds.h`, `flags.h`, `snapshot.h` and `types.h`.
+- **11.** Besides the listed points:
+  - §2.3: the passes the table doesn't list.
+  - §2.4 (new): the renderer interface, `renderer_dependencies`, `view_description` and its parts, and polled results.
+  - §3.1: `environment_settings`, and `history_invalid` as task 10 decided it (flag and copied matrix).
+  - §3.6: `after_flush()`, and the arena split as built.
+  - §4.4: `draw_record` and object-id order within a mesh.
+  - §4.7: no stencil.
+  - §5.1: `pick_result` and the poll.
+  - §13: format 2, the parser's rules, `renderer_shaders.h` and the `AVIS_VISUALIZER_RENDERING` target.
+  - §15: the measured numbers.
+- **12a** now holds only its status and a table of where each section went. Its content is 12 §10, rewritten as built: the format (§10.1), the parser (§10.2), startup and its errors (§10.3) and the tests (§10.4). 09, 13, 18 and 99 link there instead of to 12a. 12's code placement names `AVIS_VISUALIZER_RENDERING`.
+- **99 and the README.** 99's note says the renderer no longer diverges. The README resolves task 11's open points and adds the missed targets as a new one.
+- **Random-order runs:** `"[renderer]~[.]"` (180 test cases; the hidden benchmarks excluded) with `--order rand`, seeds 2301–2320, passed 20 times in Debug and 20 times in ASan. The ASan runs (and Debug seed 2320) ran 4 processes at a time.
+
+- [x] Run the `[renderer][!benchmark]` tests and an end-to-end benchmark scene matching 11 §15's frame budget: 20M progressive points, 500 instanced meshes, a sun and 64 point lights. Run them on the reference GPU class and record the numbers in **As implemented**. A miss is recorded with its cause rather than blocking the task. *On the RX 7800 XT, not the reference class (none is available). The frame and CSM targets are missed; see above.*
+- [x] Run `grep -rn "avis/scene/components\|registry()" apps/visualizer/rendering`. It must return nothing (scene-agnostic, 11 §2.1). *It returns only the registry class's destructor; with a word boundary it returns nothing.*
+- [x] Update [11](../design/11-renderer.md) wherever the implementation differs. In particular:
   - `enum_flags` → `avis::flags` in §3.1 and §4.4
   - the `history_invalid` flag (task 10)
   - the `AVIS_VISUALIZER_RENDERING` target in the code placement table
@@ -929,10 +960,20 @@ flowchart LR
   - the arena split
   - the pick result interface
   - the stencil additions to the RHI
-- [ ] Fold 12a into 12 and 11 §13 (12a's status line): the parser exists, with format 2.
-- [ ] Update 99's "existing code diverges" note and the [README](README.md).
-- [ ] Add an **As implemented** section here.
-- [ ] Run the `[renderer]` tests 20 times in random order, in Debug and ASan.
+- [x] Fold 12a into 12 and 11 §13 (12a's status line): the parser exists, with format 2.
+- [x] Update 99's "existing code diverges" note and the [README](README.md).
+- [x] Add an **As implemented** section here.
+- [x] Run the `[renderer]` tests 20 times in random order, in Debug and ASan.
+
+## As implemented
+Each step's differences from the plan are recorded in its own section, under *As implemented*. 11 was updated to match in 11.23, so those notes are the history, and 11 is the reference. Across the steps:
+- **Separate passes instead of extra targets.** The selection mask (11.17) and picking (11.19) each draw the instances they need again, in a pass of their own, rather than adding targets and PSO variants to the G-buffer, forward and overlay passes. The debug blit (11.20) is one pass drawing in list order, not `fullscreen_effects` draw items.
+- **Polled results.** Picks, inspector reads and screenshots are taken by `take_*_results()`, not sent per request.
+- **The prepare stage runs inside `render`**, which builds and compiles eagerly and returns the executing sender. `build_failure()` reports a frame that couldn't be built to a caller that doesn't execute it.
+- **Radix sort.** The draw lists use an LSD radix sort from 512 items up. 11 planned it for when sorting showed up in profiles, and the 1.5 ms benchmark needed it.
+- **Preetham sky** instead of Hosek–Wilkie (11.11), and blue noise generated at startup (11.16).
+- **Not reviewed.** The checklists of 11.10 and 11.11 are still unticked. Their status lines ask for a review against the implementation first, since some items differ from it (11.11's light units and sky model). Their tests pass.
+- **Open:** the two missed 11 §15 targets (11.23), and the Hosek–Wilkie tables.
 
 ## Acceptance criteria
 - The renderer reads only the snapshot and the views. It has no semantic code and no Qt dependency, and it builds as a library that the tests link.
@@ -948,14 +989,14 @@ flowchart LR
 - **The library target.** The code-placement table puts the renderer in `AVIS_VISUALIZER`, an executable the tests can't link. 12a already says its parser is "also compiled into `AVIS_TESTS`". Proposed: a static library `AVIS_VISUALIZER_RENDERING` for everything in `rendering/` that doesn't use Qt. The representation could later use the same pattern. *Done in 11.1.*
 - **12a and manifest format 2.** The parser was planned for the Visualizer task (task 8, 18 §15), but the renderer can't load its shaders without it, so this task takes it. Before 11.1, decide 12a's Q1 (unknown keys: error or warning; recommended: error, since the build writes the file) and Q2 (`xxh3` required; recommended: yes, for format 2). *Decided for 11.1: unknown keys are errors, and `xxh3` (plus `bindings` in format 2) is required.*
 - **The interface without a frame chain.** `render(frame_token&, snapshot, views)` returning a `submitted_frame` sender, plus `retire`, is this task's proposal. 12's `frame_loop` calls it. If 12 needs the prepare and record stages split (for example, to flush uploads at a different point), the interface splits into `prepare` and `record`. *11.2 implements the proposal; the build already runs eagerly inside `render`, which is the prepare stage.*
-- **Image tests.** Measured properties first, small WARP-rendered references only for TAA and GTAO. Decide whether references are also accepted from hardware runs (tolerances differ), or whether `[renderer]` image tests are WARP-only in CI. Recommended: WARP-only references, and hardware runs check only the measured properties.
-- **Invalid `world_previous`.** Extraction needs task 10's decision on how a pop-in or jump is marked (`history_invalid` flag or `world_previous == world_current`). Both work here; the flag also lets TAA reset that instance's pixels through the reactive mask.
-- **Interpolating matrices.** The snapshot carries `Matrix4f`s, so interpolation decomposes them into TRS each frame (slerp for rotation). That's about 10k decompositions per frame, which is cheap. The alternative is carrying TRS in the snapshot, which would change 08 §6.1.
-- **`depth_mips` layout.** 11 says "min/max per tile" for clusters but "view-space Z, 5 mips" for GTAO. Proposed: an RG32F chain with min in R and max in G. GTAO reads R. Alternative: two R32F chains.
+- **Image tests.** Measured properties first, small WARP-rendered references only for TAA and GTAO. Decide whether references are also accepted from hardware runs (tolerances differ), or whether `[renderer]` image tests are WARP-only in CI. Recommended: WARP-only references, and hardware runs check only the measured properties. *No reference image was needed: TAA is checked by convergence and ghosting measurements (11.15), and GTAO against its estimator run on the CPU (11.13). Every image test runs on any adapter.*
+- **Invalid `world_previous`.** Extraction needs task 10's decision on how a pop-in or jump is marked (`history_invalid` flag or `world_previous == world_current`). Both work here; the flag also lets TAA reset that instance's pixels through the reactive mask. *Task 10 does both. Extraction restarts an instance's previous transform on either, and the progressive LOD's rate limit on the flag. TAA doesn't read the flag: its disocclusion test rejects the history of pixels that moved (11 §3.1).*
+- **Interpolating matrices.** The snapshot carries `Matrix4f`s, so interpolation decomposes them into TRS each frame (slerp for rotation). That's about 10k decompositions per frame, which is cheap. The alternative is carrying TRS in the snapshot, which would change 08 §6.1. *11.5 decomposes, with `scene::transform::from_affine`.*
+- **`depth_mips` layout.** 11 says "min/max per tile" for clusters but "view-space Z, 5 mips" for GTAO. Proposed: an RG32F chain with min in R and max in G. GTAO reads R. Alternative: two R32F chains. *11.10 builds the RG32F chain. GTAO reads the middle of min and max (11.13), which is exact at a texel's centre for a plane.*
 - **Arena split.** `geometry.arena_mib` is one number, but there are two buffers. Proposed: 80% vertices, 20% indices, with a log line when either fills first. Alternative: one buffer holding both as raw ranges, which avoids the split; the index buffer view can point anywhere in a raw buffer. *Done in 11.3: 80% / 20%. The residency warning names the buffer that filled, its use and its largest free block.*
 - **Selection mask.** 11 §10.5 describes "a stencil-like mask written by the selected instances". A stencil bit would need stencil in the depth format (D32_S8) and the new `set_stencil_reference`. An R8 extra target in the passes that draw selected instances needs no RHI change. Recommended: the R8 target, written only on frames with a selection, the same way as picking. In that case `set_stencil_reference` and `clear_depth_stencil` stay unused and can be left out of 11.9. *11.9 follows the recommendation: the RHI is unchanged, and both stencil uses fail a debug check in the walker. 11.17 writes the R8 mask in its own pass, which draws only the selected instances again, rather than as an extra target.*
 - **Pick and inspector results.** How results reach 12: a `take_pick_results()` poll on the frame chain, or a sender completed per request. Recommended: the poll. The frame chain posts results to the GUI with the rest of its per-frame state. *11.19 follows the recommendation for picks, and 11.20 for the inspector (`take_inspector_results()`).*
 - **Hosek–Wilkie data.** The model's published coefficient tables (from the authors' reference implementation, under a BSD-style licence) need to be vendored, either as a header under `apps/visualizer/rendering/third_party/` or in `external/`. Check the licence first. Alternative: Preetham, which is simpler, analytic and lower quality. *11.11 uses Preetham for now; vendoring Hosek–Wilkie only replaces `sky_model.cpp` and `sky.hlsli`.*
 - **Blue-noise texture.** The dithering and possibly GTAO want a 64² blue-noise texture. Either generate one offline (void-and-cluster, a `dt` command) or vendor a CC0 one. *Done in 11.16: generated at startup by void-and-cluster (`blue_noise.h`), so nothing is checked in.*
 - **Point and spot shadows.** These are out of iteration 1 (11 §6.2). Nothing to do; it's listed so 11.11 doesn't grow them.
-- **Reference GPU.** 11 §15's targets are for an RTX 3060-class GPU. Record which machine the numbers come from; CI runs on WARP and doesn't check them.
+- **Reference GPU.** 11 §15's targets are for an RTX 3060-class GPU. Record which machine the numbers come from; CI runs on WARP and doesn't check them. *11.23 ran on the development machine's AMD RX 7800 XT, which is faster than the reference class. No RTX 3060-class GPU was available.*

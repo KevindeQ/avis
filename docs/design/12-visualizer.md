@@ -6,9 +6,9 @@
 |---|---|---|---|
 | Visualizer application (controller, simulation, UI models) | `avis::visualizer` | `AVIS_VISUALIZER` | `apps/visualizer/` |
 | Scene representation (semantics → meshes + materials, §9) | `avis::visualizer::representation` | `AVIS_VISUALIZER` | `apps/visualizer/representation/` |
-| Scene renderer (scene-agnostic, [11](11-renderer.md)) | `avis::visualizer::rendering` | `AVIS_VISUALIZER` | `apps/visualizer/rendering/` |
-| Scene renderer shaders (HLSL data) | — | `AVIS_VISUALIZER` (`avis_add_shaders`) | `data/shaders/visualizer/scene/`, `include/` → `<bin>/data/shaders/visualizer/` |
-| Shader manifest parser (`manifest.yaml` → `graphics::shader_manifest`, §10) | `avis::visualizer::rendering` | `AVIS_VISUALIZER` | `apps/visualizer/rendering/shader_manifest_parser.{h,cpp}` |
+| Scene renderer (scene-agnostic, [11](11-renderer.md)) | `avis::visualizer::rendering` | `AVIS_VISUALIZER_RENDERING`, a static library without Qt, linked by `AVIS_VISUALIZER` and `AVIS_TESTS` | `apps/visualizer/rendering/` |
+| Scene renderer shaders (HLSL data) | — | `AVIS_VISUALIZER_RENDERING` (`avis_add_shaders`) | `data/shaders/visualizer/scene/`, `include/` → `<bin>/data/shaders/visualizer/` |
+| Shader manifest parser (`manifest.yaml` → `graphics::shader_manifest`, §10) | `avis::visualizer::rendering` | `AVIS_VISUALIZER_RENDERING` | `apps/visualizer/rendering/shader_manifest_parser.{h,cpp}` |
 | QML UI | QML module `Avis.Visualizer` | `AVIS_VISUALIZER` (`qt_add_qml_module`) | `apps/visualizer/qml/` |
 | Qt-side blit shaders | — (GLSL → `.qsb`) | `AVIS_VISUALIZER` (`qt_add_shaders`) | `data/shaders/visualizer/qt/` |
 
@@ -52,7 +52,7 @@ apps/visualizer/
     scene_renderer.{h,cpp}         # pass setup
     draw_lists.{h,cpp}             # culling, (key, value) items, 64-bit sort keys, sorting, run building (11 §4)
     pipeline_variant_registry.{h,cpp}
-    shader_manifest_parser.{h,cpp}   # manifest.yaml → graphics::shader_manifest (§10, 12a)
+    shader_manifest_parser.{h,cpp}   # manifest.yaml → graphics::shader_manifest (§10)
     shared_frame_ring.{h,cpp}      # interop ring (§3)
   ui/
     viewport_item.{h,cpp}          # QQuickRhiItem subclass (replaces viewport.{h,cpp})
@@ -72,7 +72,7 @@ Shader sources aren't part of the application source tree. They're Visualizer **
 
 ```
 data/shaders/visualizer/
-  scene/                           # scene renderer HLSL (avis_add_shaders TARGET AVIS_VISUALIZER)
+  scene/                           # scene renderer HLSL (avis_add_shaders TARGET AVIS_VISUALIZER_RENDERING)
   include/                         # bindless.hlsli, brdf.hlsli, packing.hlsli, shared_types.hlsli, …
   qt/                              # fullscreen_triangle.vert, fullscreen_texture.frag (qt_add_shaders)
 ```
@@ -268,7 +268,7 @@ Available in every clock state, from *File → Screenshot* and a toolbar button 
 
 ## 7. Error presentation
 - Startup capability failure ([09 §4.4](09-rhi.md#44-capability-gate)): a modal dialog naming the missing feature (for example *"Shader Model 6.6 is required; your GPU/driver reports 6.5"*), then exit.
-- Startup shader failure (§10): a missing or malformed `manifest.yaml`, a missing blob, a hash mismatch or a missing shader. A modal dialog with the message (file, line and key path for manifest errors) and the log path, then exit ([12a §5](12a-visualizer-shader-manifest.md#5-shader-loading-at-visualizer-startup)).
+- Startup shader failure (§10): a missing or malformed `manifest.yaml`, a missing blob, a hash mismatch or a missing shader. A modal dialog with the message (file, line and key path for manifest errors) and the log path, then exit (§10.3).
 - Lockstep failures ([02 §7](02-communication.md#7-failure-handling)), meaning silence for `communication_timeout` or a fault, not slowness: the simulation pauses, a non-modal banner over the viewport offers *Retry step*, *Reload plug-ins* or *Stop*, and the detail goes to the log. *Reload plug-ins* re-sends `load`, which rescans first. A pinned plug-in (abandoned after an SEH fault) reloads from the same build, and the banner says a Driver restart is needed to pick up a rebuild. With a Driver in debug mode, timeouts and liveliness loss don't pause ([02 §7.1](02-communication.md#71-with-a-driver-in-debug-mode)).
 - Unrecoverable render error (device lost): a modal dialog with the log path, then a controlled exit. The scenario is autosaved first if dirty.
 
@@ -328,12 +328,101 @@ The representation creates all dynamic geometry, so it is the place that knows w
 
 ## 10. Shader loading
 
-The Visualizer owns where its shaders come from. The graphics layer loads a `graphics::shader_library` from a `graphics::shader_manifest` and creates pipelines from it through its pipeline cache [18](18-graphics-shaders-and-pipelines.md); the RHI only sees bytecode. Neither knows the build's `manifest.yaml`. The Visualizer reads and parses that file itself, with its own parser ([12a](12a-visualizer-shader-manifest.md)):
+The Visualizer owns where its shaders come from. The graphics layer loads a `graphics::shader_library` from a `graphics::shader_manifest` and creates pipelines from it through its pipeline cache [18](18-graphics-shaders-and-pipelines.md); the RHI only sees bytecode. Neither knows the build's `manifest.yaml` (D-73). The Visualizer reads and parses that file itself, with its own parser. This section was designed as 12a and folded in here once task 11 had built it.
 
-1. Resolve the shader directory: `render.shader_directory`, or `<executable directory>/data/shaders/visualizer` ([11 §13](11-renderer.md#13-shaders-location-and-build)).
-2. Read `manifest.yaml` with `io::read_file`.
-3. On a parallel worker, `rendering::parse_shader_manifest(text, path)` → `graphics::shader_manifest`. Errors carry `file:line:column` and a key path (`shaders[3].stage`).
-4. `graphics::load_shader_library(manifest, directory)`: reads the blobs, checks their xxh3 hashes, creates the `graphics::shader_library`.
-5. Create the renderer's pipelines with `graphics::pipeline_cache` from the library ([18 §11](18-graphics-shaders-and-pipelines.md#11-graphicspipeline_cacheh)).
+| Feature | Namespace | CMake target | Location |
+|---|---|---|---|
+| Manifest parser | `avis::visualizer::rendering` | `AVIS_VISUALIZER_RENDERING` (linked by `AVIS_VISUALIZER` and `AVIS_TESTS`) | `apps/visualizer/rendering/shader_manifest_parser.{h,cpp}` |
+| Shader ids, directory and startup load | `avis::visualizer::rendering` | `AVIS_VISUALIZER_RENDERING` | `apps/visualizer/rendering/renderer_shaders.{h,cpp}` |
 
-This runs during renderer startup, after the RHI is created (§3.2 step 3) and before the first frame. Any failure is a startup error (§7). The parser is a pure function, tested in `AVIS_TESTS` against hand-written cases and against the manifest the build actually wrote (12a §6).
+The parser depends only on `AVIS_LIB` (`avis::error`, `graphics::shader_manifest`, [18](18-graphics-shaders-and-pipelines.md)) and yaml-cpp. It stays in the Visualizer, the only application with shaders. If a second application (a tool, an offline renderer) loads the build's shaders, the parser moves to a small shared application library. The library stays free of the format either way.
+
+### 10.1 The manifest format
+`avis_add_shaders` writes `manifest.yaml` next to the blobs, through `dt shader-manifest` from `tools/data-trace` ([13 §3](13-build-and-quality.md#3-shader-build-pipeline)). The build writes **format 2**, which adds `bindings` per entry ([18 §6](18-graphics-shaders-and-pipelines.md#6-reflection-data-sources)). The parser also reads format 1.
+
+```yaml
+avis_shader_manifest: 2
+shaders:
+  - id: lighting.main.cs
+    file: lighting.main.cs.cso
+    stage: cs
+    entry: main
+    defines: []
+    xxh3: 8e4016d2ad80d9e1
+    bindings:
+      constant_buffers:
+      - {register: 0, space: 0, size: 64}
+      buffers: []
+      samplers:
+      - {register: 1, space: 0}
+```
+
+| Key | Required | Type and rule | Maps to `graphics::shader_manifest_entry` |
+|---|---|---|---|
+| `avis_shader_manifest` (top level) | yes | integer, `1` or `2` | — (checked) |
+| `shaders` (top level) | yes | sequence, may be empty | `shader_manifest::entries`, in file order |
+| `id` | yes | non-empty string, unique in the file | `id` |
+| `file` | yes | relative path: no root, no drive, no `..` component | `blob` |
+| `stage` | yes | `vs`, `ps` or `cs` (the DXC target prefixes of 13 §3) | `stage`: `vertex`, `pixel`, `compute` |
+| `entry` | no | string | `entry` (informational) |
+| `defines` | no | sequence of strings | `defines` (informational) |
+| `xxh3` | yes | string of exactly 16 hexadecimal digits, case-insensitive, no `0x` | `content_hash` |
+| `bindings` | format 2: yes; format 1: an error | `constant_buffers` (`register`, `space`, `size`), `buffers` (`kind`, `register`, `space`), `samplers` (`register`, `space`) | `bindings` |
+
+- **The parser is strict**, because the manifest is generated. An unknown key is an error at the top level, in an entry and in `bindings`, and so is a version other than 1 or 2. An unknown key means the writer and the parser drifted apart, so an additive change bumps the format.
+- **`xxh3` is required.** The loader's integrity check is the only protection against a stale or half-copied deployment. Tests that want no hashes build a `graphics::shader_manifest` directly instead of writing YAML.
+- **`file` is checked for path traversal**, because the loader joins it to the shader directory.
+- **Duplicate ids** are reported with both line numbers. `shader_library::create` would reject them too, but without positions.
+- The parser doesn't check that ids follow `<name>.<entry>[.<permutation>].<stage>`, or that the file name matches the id. The build guarantees both, and nothing at run time depends on them.
+
+### 10.2 The parser
+```cpp
+namespace avis::visualizer::rendering
+{
+    // Errors are error_domain::parse: "<source_name>:<line>:<column>: <key path>: <message>", for example
+    // "manifest.yaml:14:12: shaders[1].stage: expected vs, ps or cs, got 'gs'". Pure: no file access, no logging,
+    // no global state; safe on any thread.
+    result<graphics::shader_manifest> parse_shader_manifest(std::string_view yaml_text,
+                                                            std::string_view source_name = {});
+}
+```
+
+- **One function, no class**, and **the first error wins**. A malformed manifest means a broken build, and one precise message helps more than a list.
+- **Positions** follow `runtime_configuration::parse` ([14 §3](14-library-runtime.md#3-configuration)): yaml-cpp's 0-based marks become 1-based `line:column`, and `0:0` without a mark. Key paths are `shaders[<index>].<key>`.
+- yaml-cpp's exceptions become the error with their mark. Every value is read by small typed readers that return `result` and carry the key path. The hash is parsed with `std::from_chars` after a length check. Paths are UTF-8 (`std::filesystem::path(std::u8string_view)`), so non-ASCII file names survive on Windows.
+
+### 10.3 Startup
+The renderer starts after the RHI exists (§3.2 step 3) and before the first frame. Startup is the sender `rendering::load_renderer_shaders(directory)` (`renderer_shaders.h`), then `scene_renderer::create` ([11 §2.4](11-renderer.md#24-renderer-interface)):
+
+1. **Resolve the directory** with `resolve_shader_directory(settings, executable_directory)`: `render.shader_directory` when set (relative to the executable's directory), otherwise `<executable directory>/data/shaders/visualizer` ([11 §13](11-renderer.md#13-shaders-location-and-build)).
+2. **Read** `manifest.yaml` with `io::read_file`.
+3. **Parse** on a parallel worker with `parse_shader_manifest`, with the path as `source_name`.
+4. **Load** with `graphics::load_shader_library(manifest, directory)` ([18 §4](18-graphics-shaders-and-pipelines.md#4-graphicsshader_loadingh)): it reads every blob, checks each `xxh3` and creates the library.
+5. **Create the pipelines.** `scene_renderer::create` creates the base pipeline sets in a `bulk` through `graphics::pipeline_cache` ([18 §11](18-graphics-shaders-and-pipelines.md#11-graphicspipeline_cacheh)).
+
+`renderer_shaders.h` also holds the `constexpr` ids of the renderer's compute and fullscreen shaders (`shader_ids`). The pipeline variant registry builds the ids of the scene passes' vertex and pixel shaders from a pipeline set's key.
+
+**Errors.** Any failure is a startup error (§7): a modal dialog with the message and the log path, then exit.
+
+| Failure | Message shape |
+|---|---|
+| Manifest missing or unreadable | IO error with the directory: *"manifest.yaml not found in <directory>; was the Visualizer built and deployed with its shaders?"* |
+| Malformed manifest | Parse error: *"<path>:14:12: shaders[1].stage: expected vs, ps or cs, got 'gs'"* |
+| Blob missing or hash mismatch | From `load_shader_library`, naming the entry's id and file |
+| Duplicate id or hash collision | From the parser (with lines) or `shader_library::create` (`duplicate_shader_id`) |
+| Missing shader for a pipeline | `shader_not_found` from `graphics::pipeline_cache`, naming the pipeline's debug name |
+
+*As implemented* (task 11.22), until `frame_loop` exists:
+- `visualizer_driver` runs these steps when QML first reads its singleton, waiting for the load on the GUI thread. The RHI's and the frame scheduler's failures are startup errors too.
+- The message is prefixed with the step that failed, for example *"the renderer's shaders could not be loaded: manifest.yaml not found in …"*, and logged in full.
+- `main.qml` shows it in a `QtQuick.Dialogs` `MessageDialog`, then exits with code 1.
+- The log is `visualizer.log` next to the executable until `visualizer.yaml`'s `logging` section is read.
+
+### 10.4 Testing
+`tests/visualizer/rendering/test_shader_manifest_parser.cpp` (`[renderer][unit]`):
+- hand-written cases in formats 1 and 2 parse into the expected entries (stages, hashes, defines, bindings, order), and an empty `shaders` sequence gives an empty manifest;
+- each rule of §10.1 fails with the expected key path and position, unknown keys included, and a duplicate id names both lines;
+- malformed YAML reports yaml-cpp's position;
+- **build round trip:** the manifest the build wrote for the renderer's shaders parses, so the build's writer and this parser can't drift apart.
+
+`[renderer]` tests also load every id of `renderer_shaders.h` with `load_renderer_shaders` from the built directory, and check that a missing manifest is an IO error naming the directory ([tasks/11](../tasks/11-renderer.md) 11.1).

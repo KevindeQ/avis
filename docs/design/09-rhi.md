@@ -1692,7 +1692,7 @@ The flat class had about 50 members.
 
 ### D-73: A YAML parser for the build's shader manifest
 
-**No parser in the library.** The graphics layer only defines `shader_manifest` and the loader that takes one ([18 §3–4](18-graphics-shaders-and-pipelines.md#3-graphicsshader_manifesth)); it stays free of the build's file format. Each application that loads the build's shaders parses `manifest.yaml` itself. The Visualizer's parser is designed in [12a](12a-visualizer-shader-manifest.md). Rejected: an optional `graphics::parse_shader_manifest` helper, which would tie the library to one build format.
+**No parser in the library.** The graphics layer only defines `shader_manifest` and the loader that takes one ([18 §3–4](18-graphics-shaders-and-pipelines.md#3-graphicsshader_manifesth)); it stays free of the build's file format. Each application that loads the build's shaders parses `manifest.yaml` itself. The Visualizer's parser is designed in [12 §10](12-visualizer.md#10-shader-loading). Rejected: an optional `graphics::parse_shader_manifest` helper, which would tie the library to one build format.
 
 ### D-74: Shader visibility per root parameter
 

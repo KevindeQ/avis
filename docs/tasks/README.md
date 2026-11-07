@@ -11,7 +11,7 @@ These documents break the designs in [`docs/design`](../design) into ordered, re
 - [18 — Graphics layer: shaders and pipelines](../design/18-graphics-shaders-and-pipelines.md)
 - [10 — Render Graph](../design/10-render-graph.md)
 - [08 — Scene Management](../design/08-scene-management.md)
-- [11 — Scene Renderer](../design/11-renderer.md), with the shader manifest parser of [12a](../design/12a-visualizer-shader-manifest.md)
+- [11 — Scene Renderer](../design/11-renderer.md), with the shader manifest parser of [12 §10](../design/12-visualizer.md#10-shader-loading) (designed as 12a, folded into 12 and 11 by task 11.23)
 - [12 — Visualizer Application](../design/12-visualizer.md)
 - [02 — Communication & Lockstep](../design/02-communication.md) (§1–§5: the network layer and message catalogue)
 - [03 — Simulation Core](../design/03-simulation-core.md)
@@ -138,15 +138,16 @@ Each task document has an **Open points** section. They are collected here so th
 | 10 | The snapshot buffer's 5 s stress test runs with every `[scene]` run; move it behind a `[stress]` tag if the suite gets slow |
 | 11 | *(Resolved: `AVIS_VISUALIZER_RENDERING`, task 11.1)* A static library `AVIS_VISUALIZER_RENDERING` so the tests can link the renderer |
 | 11 | *(Resolved: unknown keys are errors; `xxh3` is required)* 12a Q1 (unknown keys) and Q2 (`xxh3` required) before the parser is written |
-| 11 | The renderer interface without a frame chain: `render(frame_token&, snapshot, views)` or split prepare/record stages |
-| 11 | Image tests: WARP-only reference images (recommended) or hardware references too |
-| 11 | Interpolating snapshot matrices by decomposition, or TRS in the snapshot |
-| 11 | `depth_mips` layout: one RG32F min/max chain (proposed) or two R32F chains |
-| 11 | Geometry arena: two buffers with an 80/20 split, or one raw buffer |
-| 11 | Selection outline: an R8 mask target (recommended) or a stencil bit with `set_stencil_reference` |
-| 11 | How pick and pixel-inspector results reach 12: a poll (recommended) or a sender per request |
-| 11 | Vendoring the Hosek–Wilkie coefficient tables (licence check) or using Preetham |
-| 11 | A blue-noise texture: generated offline or vendored (CC0) |
+| 11 | *(Resolved: `render(frame_token&, snapshot, views, wall_now)` returns the sender, and builds eagerly as the prepare stage; 11 §2.4)* The renderer interface without a frame chain: `render(frame_token&, snapshot, views)` or split prepare/record stages |
+| 11 | *(Resolved: no reference images. The tests measure properties on any adapter, and GTAO's reference is its estimator run on the CPU)* Image tests: WARP-only reference images (recommended) or hardware references too |
+| 11 | *(Resolved: decomposition, `scene::transform::from_affine`)* Interpolating snapshot matrices by decomposition, or TRS in the snapshot |
+| 11 | *(Resolved: one RG32F chain, min in R, max in G)* `depth_mips` layout: one RG32F min/max chain (proposed) or two R32F chains |
+| 11 | *(Resolved: two buffers, 80/20)* Geometry arena: two buffers with an 80/20 split, or one raw buffer |
+| 11 | *(Resolved: an R8 mask, drawn by a pass of its own; no stencil in the RHI)* Selection outline: an R8 mask target (recommended) or a stencil bit with `set_stencil_reference` |
+| 11 | *(Resolved: a poll, `take_pick_results()` and `take_inspector_results()`)* How pick and pixel-inspector results reach 12: a poll (recommended) or a sender per request |
+| 11 | Vendoring the Hosek–Wilkie coefficient tables (licence check) or using Preetham. *Preetham for now; Hosek–Wilkie would replace only `sky_model.cpp` and `sky.hlsli`* |
+| 11 | *(Resolved: generated at startup by void-and-cluster)* A blue-noise texture: generated offline or vendored (CC0) |
+| 11 | Meeting 11 §15's frame (12.9 ms measured) and CSM (2.9 ms) targets with 20M points: a lower budget, a separate shadow budget, points without the depth prepass, or the compute point rasteriser |
 | 12 | Non-Qt static libraries for `representation/` and `simulation/` so Catch2 tests link them |
 | 12 | UI testing: Qt Test for the models and manual checklists for QML (recommended), or Qt Quick Test |
 | 12 | The outcome of the `afterFrameEnd` interop spike (12.2), which picks rule 4 or its fallback |

@@ -37,6 +37,7 @@ namespace avis::tests
         std::uint32_t frames_in_flight = 2;
         std::uint32_t descriptors_per_frame = test_frame_descriptor_count; // per frame context
         bool profiler = false;
+        std::uint32_t timestamps_per_frame = 64; // the profiler's, per queue type (2 per pass)
         bool gpu_based_validation = false;
     };
 
@@ -47,8 +48,10 @@ namespace avis::tests
         explicit render_graph_fixture(const render_graph_fixture_options& options) :
             hardware_interface{ rhi_configuration(options) },
             frames{ make_frames(hardware_interface, options) },
-            profiler{ options.profiler ? make_test_gpu_profiler(hardware_interface, options.frames_in_flight) :
-                                         nullptr },
+            profiler{ options.profiler ?
+                          make_test_gpu_profiler(
+                              hardware_interface, options.frames_in_flight, options.timestamps_per_frame) :
+                          nullptr },
             pool{ rhi::memory{ *hardware_interface },
                   rhi::resources{ *hardware_interface },
                   frames->frames_in_flight() },
