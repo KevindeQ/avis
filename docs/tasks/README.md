@@ -150,7 +150,7 @@ Each task document has an **Open points** section. They are collected here so th
 | 11 | Meeting 11 §15's frame (12.9 ms measured) and CSM (2.9 ms) targets with 20M points: a lower budget, a separate shadow budget, points without the depth prepass, or the compute point rasteriser |
 | 12 | Non-Qt static libraries for `representation/` and `simulation/` so Catch2 tests link them |
 | 12 | UI testing: Qt Test for the models and manual checklists for QML (recommended), or Qt Quick Test |
-| 12 | The outcome of the `afterFrameEnd` interop spike (12.2), which picks rule 4 or its fallback |
+| 12 | *(Resolved: rule 4's direct path; on Qt 6.11.1, `afterFrameEnd` follows the submission, 12.2)* The outcome of the `afterFrameEnd` interop spike (12.2), which picks rule 4 or its fallback |
 | 12 | A built-in demo scene for Part A, not yet in design 12 |
 | 12 | The follow camera computed by the frame loop from the interpolated instance (proposed) |
 | 12 | The label font (08 §8.6) and the vehicle proxy (procedural first, recommended) |

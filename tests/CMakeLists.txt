@@ -297,3 +297,6 @@ target_include_directories(AVIS_TESTS
 
 include(CTest)
 add_test(NAME "Avis Tests" COMMAND AVIS_TESTS)
+
+# The Visualizer's Qt Test executable (docs/tasks/12-visualizer.md): UI models and the Qt interop checks
+add_subdirectory(visualizer_ui)

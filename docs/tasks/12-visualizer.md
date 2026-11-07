@@ -110,9 +110,19 @@ flowchart LR
 ## 12.2 Interop spike: `afterFrameEnd` timing
 12 §3.3 rule 4.
 
-- [ ] Write a throwaway program, or a test in `AVIS_VISUALIZER_UI_TESTS`. It renders a `QQuickRhiItem` with the threaded render loop on Windows and checks that `QQuickWindow::afterFrameEnd` is emitted on the render thread after `QRhi::endFrame` has submitted. To check, signal a fence from `afterFrameEnd` and confirm, through the D3D12 queue's completed value and the frame's command list, that Qt's submission came before it.
-- [ ] Record the result here and in 12 §3.3. Rule 4's direct path is used when it holds, and the fallback when it doesn't (signal `consumed` for the previous pick in the next `render()`).
-- [ ] Also confirm that `QRhiTexture::createFrom` accepts a texture opened with `OpenSharedHandle` in state `COMMON` on Qt 6.11.1.
+- [x] Write a throwaway program, or a test in `AVIS_VISUALIZER_UI_TESTS`. It renders a `QQuickRhiItem` with the threaded render loop on Windows and checks that `QQuickWindow::afterFrameEnd` is emitted on the render thread after `QRhi::endFrame` has submitted. To check, signal a fence from `afterFrameEnd` and confirm, through the D3D12 queue's completed value and the frame's command list, that Qt's submission came before it.
+
+  *As implemented:* a test that stays, so a Qt upgrade re-checks it: `tests/visualizer_ui/test_qt_interop.cpp` in the new Qt Test executable `AVIS_VISUALIZER_UI_TESTS` (`avis_visualizer_ui_tests.exe`, also a CTest test). Its `main.cpp` runs each Qt Test class in turn, ready for 12.13's models. The test needs a GPU and a desktop session. With its output piped or redirected, Qt Test printed nothing here; `-o <file>,txt` writes the log to a file.
+  - The item's renderer stands in for `ui/viewport_renderer`. It opens the Avis RHI's shared texture and fences on Qt's device, waits on `produced` with Qt's queue, and draws the fullscreen triangle with the `qt/` shaders.
+  - Each frame, `render()` writes the frame number into a readback buffer from Qt's command list (`WriteBufferImmediate`). The hook connected to `afterFrameEnd` then queues three things on Qt's queue: a signal of a fence, a wait on a gate fence that the CPU opens, and the signal of `consumed`. When the first fence completes, everything submitted before the hook has run, and anything submitted after it waits behind the gate. So the number is in the buffer exactly when Qt submitted before `afterFrameEnd`.
+  - A control runs the same check from `afterRendering`, which Qt documents as emitted before submission, and expects no frame submitted. That shows the check can fail.
+  - Qt's D3D12 debug layer is on (`QSG_RHI_DEBUG_LAYER`) and its info queue is checked for errors, as is the Avis RHI's log.
+- [x] Record the result here and in 12 §3.3. Rule 4's direct path is used when it holds, and the fallback when it doesn't (signal `consumed` for the previous pick in the next `render()`).
+
+  *As implemented:* it holds on Qt 6.11.1. In 100 of 100 frames, Qt's command list had run when the signal issued from `afterFrameEnd` completed, and in 0 of 100 from `afterRendering`. `afterFrameEnd` runs on the render thread. 12.5 uses rule 4's direct path. 12 §3.3 records the result and keeps the fallback in case a later Qt changes.
+- [x] Also confirm that `QRhiTexture::createFrom` accepts a texture opened with `OpenSharedHandle` in state `COMMON` on Qt 6.11.1.
+
+  *As implemented:* it does, and Qt samples exactly what the Avis RHI cleared the texture to. One addition: after sampling, Qt tracks the texture in `PIXEL_SHADER_RESOURCE` (0x80) and leaves it there. The renderer therefore records a native transition back to `COMMON` at the end of `render()` and tells Qt with `QRhiTexture::setNativeLayout(COMMON)`. Both debug layers stay free of errors. 12 §3.3 rule 4 now includes this, and so does 12.5.
 
 ## 12.3 Device setup, RHI ownership, completions
 12 §3.2, §3.4, §7, D-93, D-94, D-96.
@@ -175,8 +185,8 @@ flowchart LR
 - [ ] `ui/viewport_item.h/.cpp`: a `QQuickRhiItem` subclass, `QML_NAMED_ELEMENT(Viewport)`, replacing `viewport.h/.cpp`. It reports its pixel size (× device pixel ratio) and forwards input to the camera controller (12.12). `update()` is called from the frame loop's queued wake (rule 5).
 - [ ] `ui/viewport_renderer.h/.cpp`, a `QQuickRhiItemRenderer`:
   - On a new `generation`, it opens the ring's textures and fences on Qt's device (`OpenSharedHandle`) and wraps the textures with `QRhiTexture::createFrom(…, D3D12_RESOURCE_STATE_COMMON)`.
-  - In `render()`, it reads `latest_completed`, sets `picked` and `showing`, issues the GPU `Wait(produced, m)` through `QRhiD3D12NativeHandles::commandQueue`, and draws the fullscreen triangle with the `qt/` shaders.
-  - It signals `consumed` in `afterFrameEnd` (12.2's result decides between this and the fallback), and clears `update_pending`.
+  - In `render()`, it reads `latest_completed`, sets `picked` and `showing`, issues the GPU `Wait(produced, m)` through `QRhiD3D12NativeHandles::commandQueue`, and draws the fullscreen triangle with the `qt/` shaders. After the pass it transitions the texture back to `COMMON` and calls `setNativeLayout(COMMON)` (12 §3.3 rule 4, from 12.2).
+  - It signals `consumed` in `afterFrameEnd` (12.2 confirmed this direct path on Qt 6.11.1), and clears `update_pending`.
   - With no completed frame yet, it draws the clear colour.
 - [ ] The Qt blit shaders move to `data/shaders/visualizer/qt/` (done in task 11.1). `qt6_add_shaders` keeps them under the `/avis/visualizer` prefix.
 
@@ -562,7 +572,7 @@ Starts once [task 13](13-network.md) (network), [task 14](14-simulation-core.md)
 - **Prerequisite tasks.** Part B needs tasks 13 (network, including vendoring Zenoh), 14 (simulation core) and 15 (scenario). Part A doesn't need them.
 - **Library targets.** Like task 11's `AVIS_VISUALIZER_RENDERING`, the non-Qt parts (`representation/`, `simulation/`) build as static libraries so Catch2 tests can link them. The alternative is testing them only through the application.
 - **UI tests.** Qt Test with `QAbstractItemModelTester` covers the models. QML and interaction are covered by manual checklists. Qt Quick Test (`qmltestrunner`) or Squish could automate them later; recommended: not in iteration 1.
-- **Interop spike outcome.** If `afterFrameEnd` doesn't follow the submission (12.2), rule 4's fallback is used and the design says so. Also confirm that a `QRhiTexture::createFrom` wrapper of a shared texture works in Qt 6.11.1's D3D12 backend.
+- **Interop spike outcome.** Settled by 12.2: on Qt 6.11.1, `afterFrameEnd` follows the submission, so rule 4's direct path is used, and `createFrom` works on a shared texture in `COMMON`, with the hand-back to `COMMON` of rule 4. `test_qt_interop.cpp` re-checks both after a Qt upgrade.
 - **Demo scene.** It isn't in design 12. It's proposed because Part A must run without a Driver, and it stays useful for offline UI work and screenshots in docs. It needs a line in 12 §2.
 - **Follow camera pose.** 12 §5 says following uses "the interpolated vehicle pose at render rate". The camera is GUI state, but the interpolation happens in the renderer's extraction. Proposed: the frame loop computes the follow camera after extraction, from the target's interpolated instance, so the camera and the drawn vehicle never disagree. The GUI sends only the mode, target and orbit offset.
 - **Font.** The label font is still open (08 §8.6). It needs an OFL-style licence and the glyph set listed there.
