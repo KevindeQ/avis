@@ -161,6 +161,7 @@ target_sources(AVIS_TESTS
 		visualizer/rendering/test_renderer_shaders.cpp
 		visualizer/rendering/test_residency_cache.cpp
 		visualizer/rendering/test_shader_manifest_parser.cpp
+		visualizer/rendering/test_shared_frame_ring.cpp
 		visualizer/rendering/test_sort_key.cpp
 		visualizer/rendering/test_view.cpp
 		visualizer/test_visualizer_configuration.cpp)

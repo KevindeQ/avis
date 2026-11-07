@@ -54,7 +54,8 @@ apps/visualizer/
     pipeline_variant_registry.{h,cpp}
     shader_manifest_parser.{h,cpp}   # manifest.yaml → graphics::shader_manifest (§10)
     render_system.{h,cpp}          # the RHI and every graphics object, created and destroyed in order (§3.2, §3.4)
-    shared_frame_ring.{h,cpp}      # interop ring (§3)
+    shared_frame_ring.{h,cpp}      # interop ring (§3.3): textures, fences, the slot gate, resize
+    ring_protocol.{h,cpp}          # the ring's CPU protocol, testable without a GPU (§3.3)
   ui/
     viewport_item.{h,cpp}          # QQuickRhiItem subclass (replaces viewport.{h,cpp})
     viewport_renderer.{h,cpp}      # QQuickRhiItemRenderer: imports shared textures, blits
@@ -87,7 +88,7 @@ Qt Quick renders with its own QRhi D3D12 device on the Qt render thread. The Avi
 > - **The debug layer and GPU-based validation must be on before Qt creates its device.** Turning either on later removes every device in the process (`DXGI_ERROR_DEVICE_RESET`). `main.cpp` applies `render.debug_layer` and `render.gpu_validation` first, through `ui/viewport_renderer.cpp`, and the RHI's own calls then change nothing (§3.2 step 1).
 > - The RHI's info-queue callback and storage filter, and its live-object report at shutdown, cover Qt's objects too.
 > - A device removal affects both sides at once.
-> - A test that needs a really separate second device (12.4) uses a second adapter, for example WARP next to the GPU.
+> - A test standing in for Qt (12.4) uses a second device on the same adapter, which is the same device object with its own queue and fences, as Qt is. A device on another adapter can't stand in: a texture shared with `D3D12_HEAP_FLAG_SHARED` opens only on its own adapter.
 
 ### 3.2 Setup sequence
 1. `main.cpp` calls `QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D12)` **before** creating the window. It also turns on the D3D12 debug layer and GPU-based validation when the `render` settings ask for them, before Qt's device exists (§3.1).
@@ -108,7 +109,7 @@ Qt Quick renders with its own QRhi D3D12 device on the Qt render thread. The Avi
 | State | Written by | Meaning |
 |---|---|---|
 | `latest_completed` = `{frame n, slot i}` | Avis frame chain | The newest frame whose `produced` signal has **completed** on the GPU |
-| `picked[i]` | Qt render thread | The last frame number Qt picked from slot `i` (0 = never) |
+| `picked[i]` | Qt render thread | Qt's last **use** of slot `i`: a count of Qt's renders that sampled a slot (0 = never). `consumed` carries these uses (see *As implemented* below). |
 | `showing` | Qt render thread | The slot Qt's most recent `render()` sampled |
 
 **Protocol:**
@@ -144,6 +145,14 @@ sequenceDiagram
 > - `afterFrameEnd` is emitted on the render thread after `QRhi::endFrame` has submitted. Each frame, `render()` writes the frame number into a buffer from Qt's command list; `afterFrameEnd` then signals a fence and makes Qt's queue wait on a CPU-opened gate before signalling `consumed`. When that fence completes, the number is already written in 100 of 100 frames. The same check from `afterRendering`, which Qt documents as running before submission, sees it in none, so the check can tell the two apart.
 > - `QRhiTexture::createFrom({ resource, D3D12_RESOURCE_STATE_COMMON })` accepts a texture created by the Avis RHI and opened with `OpenSharedHandle`. Qt samples exactly what Avis cleared it to, after a GPU `Wait(produced, 1)` on its queue.
 > - With the hand-back to `COMMON` of rule 4, both debug layers stay free of errors.
+
+> **As implemented** (task 12.4, `rendering/ring_protocol.h`, `rendering/shared_frame_ring.h`). The protocol above, with these changes, which a model check of 100,000 random Avis and Qt operations covers:
+> - **`consumed` counts Qt's uses, not frame numbers.** Each `render()` that samples a slot gets a new use `u` from `ring_protocol::qt_pick()`; Qt stores it in `picked[i]` and signals `consumed` with `u`. With frame numbers, a frame Qt re-shows (rule 7) would already have `consumed` at its number from the first render, and the slot would look free while Qt still samples it. Qt's GPU `Wait(produced, m)` still uses the frame number.
+> - **Avis's own slots are busy too.** A slot is free when it isn't `showing`, isn't Avis's own (reserved by the gate, bound to a frame whose `produced` signal isn't complete, or holding `latest_completed`, which Qt may pick at any moment) and has `consumed ≥ picked[i]`. With two frames in flight this can be all three slots for a moment, so rule 6 holds only for Qt's two: the gate then waits on **`produced`** for Avis's oldest frame in flight, and before each decision publishes every bound frame that `produced` shows complete, which frees the slot it replaces. Otherwise it waits on `consumed` for the oldest use Qt still holds; that value is always one Qt has already submitted.
+> - **Qt's pick re-checks.** `qt_pick` writes `picked[i]` and `showing`, then re-reads `latest_completed`; if Avis published a newer frame meanwhile, it picks that one. Avis reads `showing` and `picked` after writing `latest_completed`, so one of the two sides always sees the other.
+> - **"Released longest ago"** is the slot holding the oldest frame: Qt always picks the newest, so it releases slots in frame order.
+> - **Resize (rule 8).** `shared_frame_rings` keeps the current ring and the retired ones. Qt calls `qt_attach()` before importing a ring and `qt_detach()` when it moves to a newer generation; the detach returns one more use, which Qt signals on the old `consumed` after that render. A retired ring is released once `produced` has reached its last frame and either Qt never attached (a compare-exchange makes that final) or `consumed` reached the detach. Without the detach's signal, the release would wait on a fence nothing signals any more.
+> - The gate and the release are one sender pattern (`detail::ring_wait_sender`): try, otherwise `rhi::sharing::when_reached` on the value the protocol names, then try again. A stop request ends the wait with `set_stopped`, and a slot taken by the gate but not signalled goes back to the ring when its `ring_slot` is dropped.
 
 ### 3.4 Frame pacing
 The Avis renderer has **no dedicated render thread**. Frames are produced by a sender chain ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh)) owned by `frame_loop`, inside an `async_scope`:

@@ -33,9 +33,11 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	render_settings.cpp
 	render_system.cpp
 	renderer_shaders.cpp
+	ring_protocol.cpp
 	residency_cache.cpp
 	scene_renderer.cpp
 	screenshot_capture.cpp
+	shared_frame_ring.cpp
 	texture_residency.cpp
 	shader_manifest_parser.cpp
 	sky_model.cpp

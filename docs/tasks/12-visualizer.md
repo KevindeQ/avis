@@ -169,31 +169,43 @@ flowchart LR
 ## 12.4 Shared frame ring
 12 §3.3, §3.4, 09 §13.
 
-- [ ] `rendering/shared_frame_ring.h/.cpp`:
+- [x] `rendering/shared_frame_ring.h/.cpp`:
   - three shared `RGBA8_UNORM` textures at the viewport's pixel size, plus the shared fences `produced` and `consumed`, all created by Avis with exported `rhi::shared_handle`s
   - a `generation` number
   - the shared CPU state of 12 §3.3 (`latest_completed`, `picked[3]`, `showing`, `update_pending`) as atomics, each written by one side only
-- [ ] Separate the protocol logic from the GPU objects in a `ring_protocol` class, so it can be tested on the CPU:
+
+  *As implemented:* `shared_frame_ring::create(sharing, resources, size, generation)`. The textures allow `shader_resource`, `copy_destination` (present_to_shared copies into them) and `shared`, and start in `COMMON`; `output(slot)` gives the renderer's `output_target`. What Qt uses is a `shared_ring_state` (size, generation, handles, protocol) behind a `shared_ptr`, so Qt's render thread can hold it without owning GPU objects. `signal_produced(queue, slot, n)` binds the slot to frame `n` and signals `produced`; `when_produced(n)` and `publish(n, slot)` are the per-frame publish, and `publish` returns whether to post the item's `update()`.
+- [x] Separate the protocol logic from the GPU objects in a `ring_protocol` class, so it can be tested on the CPU:
   - `try_acquire_slot()` picks a free slot (not `showing`, and `picked[i] == 0` or `consumed ≥ picked[i]`), preferring the one released longest ago
   - `publish(n, slot)` sets `latest_completed`
   - `qt_pick()` and `qt_consumed(m)` are the Qt side's calls
-- [ ] `shared_slot_free()` is a named sender. It completes inline with a slot when one is free, and otherwise through `rhi::sharing::when_reached(consumed, picked[i])` for the slot that will free first. It never waits on the GPU.
-- [ ] Resize:
+
+  *As implemented:* `rendering/ring_protocol.h/.cpp`, taking the fences' values as `ring_fence_values`. 12 §3.3's *As implemented* note lists what changed: `picked` and `consumed` count Qt's uses, not frame numbers; Avis's own slots (reserved, in flight, the latest) are busy too; the acquisition publishes frames `produced` shows complete; and a failed acquisition names the fence value to wait for. `try_acquire_slot` reserves the slot until `bind` or `release`. There's no `qt_consumed(m)`: `consumed` lives on the fence, which Qt signals with the use `qt_pick()` returned. The Qt side is `qt_attach`, `qt_pick` and `qt_detach`.
+- [x] `shared_slot_free()` is a named sender. It completes inline with a slot when one is free, and otherwise through `rhi::sharing::when_reached(consumed, picked[i])` for the slot that will free first. It never waits on the GPU.
+
+  *As implemented:* `shared_slot_sender`, completing with a move-only `ring_slot` that goes back to the ring if dropped before `signal_produced`. It waits on `consumed` or, when Avis's own frames hold the slots, on `produced`, and tries again after each wait. A stop request ends a wait with `set_stopped`.
+- [x] Resize:
   - `request_resize(size)`, debounced by 100 ms on the GUI side, sets a pending size
   - the frame loop creates a new ring at the start of its next frame with `generation + 1`
   - the old ring is kept until `consumed` has reached every `picked[i]` of it (the same check and sender), then destroyed
 
+  *As implemented:* `shared_frame_rings`. `request_resize` stores the size from any thread (the 100 ms debounce belongs to the viewport item, 12.5; a zero side is ignored). `update()`, called by the frame chain at the start of a frame, creates the ring of `generation + 1` for a new size, publishes its state to `qt_current()` and retires the old ring. The old ring is released as 12 §3.3's note describes: Qt's `qt_detach` and its signal, or Qt never having attached. `when_released()` is the sender, `destroy_released()` the destruction; 12.7's frame chain spawns the one and calls the other.
+
 **Tests** (`test_shared_frame_ring.cpp`):
-- [ ] `[visualizer][unit]`, protocol only:
+- [x] `[visualizer][unit]`, protocol only:
   - Avis never gets the slot Qt is `showing`.
   - With Qt holding two slots (showing plus in-flight), one is always free.
   - When Qt stops picking, Avis alternates between the other two.
   - The slot released longest ago is preferred.
   - A random interleaving of 100,000 Avis and Qt operations never gives a slot to Avis while Qt still samples it (model check with a reference model).
-- [ ] `[visualizer]`, on the RHI fixture with a second device standing in for Qt (`OpenSharedHandle` on a second WARP or hardware device). It must be on a **different adapter** from the first: in one process, a second device on the same adapter is the same device (12 §3.1).
+
+  *As implemented:* `tests/visualizer/rendering/test_shared_frame_ring.cpp`, with tests for the waits, the dropped reservation, `update_pending` and a re-shown frame, and the release rules too. The model check runs Avis with two frames in flight and dropped frames, both GPUs completing in order, and stretches where Qt doesn't render. It also checks that every wait names a value already submitted, and that Avis keeps getting slots while Qt doesn't render. With the "Avis's own slots" rule removed, it fails within 30 checks.
+- [x] `[visualizer]`, on the RHI fixture with a second device standing in for Qt (`OpenSharedHandle` on a second WARP or hardware device).
   - frames written by Avis read back correctly on the second device after waiting on `produced`
   - `shared_slot_free()` completes through `when_reached` once the second device signals `consumed`
   - a resize keeps the old ring alive until it's released
+
+  *As implemented:* the stand-in for Qt is native D3D12 in the test: `D3D12CreateDevice` on the RHI's adapter, which returns the same device object as for Qt (12 §3.1), with its own direct queue, command list and fence. 12.3's note asked for a different adapter; that can't work, because a texture shared without the cross-adapter flags opens only on its own adapter. Avis writes each frame by copying an upload into the slot, from `COMMON` back to `COMMON`; Qt waits on `produced`, copies the slot to a readback buffer and signals `consumed`. A stop request ending a waiting gate is checked too. The tests pass on the GPU and on WARP (`AVIS_TEST_ADAPTER=warp`) with the debug layer on and no errors.
 
 ## 12.5 Viewport item and Qt-side blit
 12 §3.2 step 5, §3.3 rules 3–7.
@@ -201,8 +213,9 @@ flowchart LR
 - [ ] `ui/viewport_item.h/.cpp`: a `QQuickRhiItem` subclass, `QML_NAMED_ELEMENT(Viewport)`, replacing `viewport.h/.cpp`. It reports its pixel size (× device pixel ratio) and forwards input to the camera controller (12.12). `update()` is called from the frame loop's queued wake (rule 5).
 - [ ] `ui/viewport_renderer.h/.cpp`, a `QQuickRhiItemRenderer`:
   - On a new `generation`, it opens the ring's textures and fences on Qt's device (`OpenSharedHandle`) and wraps the textures with `QRhiTexture::createFrom(…, D3D12_RESOURCE_STATE_COMMON)`.
-  - In `render()`, it reads `latest_completed`, sets `picked` and `showing`, issues the GPU `Wait(produced, m)` through `QRhiD3D12NativeHandles::commandQueue`, and draws the fullscreen triangle with the `qt/` shaders. After the pass it transitions the texture back to `COMMON` and calls `setNativeLayout(COMMON)` (12 §3.3 rule 4, from 12.2).
-  - It signals `consumed` in `afterFrameEnd` (12.2 confirmed this direct path on Qt 6.11.1), and clears `update_pending`.
+  - It takes the ring from `shared_frame_rings::qt_current()` and calls `qt_attach()` before importing it; on `false` the ring was already replaced, so it takes the current one again. When the generation changes, it calls `qt_detach()` on the old ring and signals that use on the old `consumed` after the render (12.4).
+  - In `render()`, it calls `ring_protocol::qt_pick()`, which clears `update_pending` and sets `picked` and `showing`, issues the GPU `Wait(produced, frame)` through `QRhiD3D12NativeHandles::commandQueue`, and draws the fullscreen triangle with the `qt/` shaders. After the pass it transitions the texture back to `COMMON` and calls `setNativeLayout(COMMON)` (12 §3.3 rule 4, from 12.2).
+  - It signals `consumed` with the pick's **use** in `afterFrameEnd` (12.2 confirmed this direct path on Qt 6.11.1).
   - With no completed frame yet, it draws the clear colour.
 - [ ] The Qt blit shaders move to `data/shaders/visualizer/qt/` (done in task 11.1). `qt6_add_shaders` keeps them under the `/avis/visualizer` prefix.
 
