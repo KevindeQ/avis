@@ -44,9 +44,6 @@ namespace avis::visualizer::representation
         }
 
     private:
-        // The `helpers` group: a root helper entity with that name; null when there's none (the helpers become roots)
-        scene::entity find_group(scene::scene& scene);
-
         void ensure(
             scene::scene& scene,
             scene::entity& slot,

@@ -5,12 +5,10 @@
 // components into meshes and materials. The simulation thread calls it on every tick and every presentation republish.
 // Task 12.8's representation_system implements it; tests use fakes.
 
-#include "avis/scene/types.h"
+#include "representation/geometry_budget.h"
 
-namespace avis::scene
-{
-    class scene;
-} // namespace avis::scene
+#include "avis/scene/scene.h"
+#include "avis/scene/types.h"
 
 namespace avis::visualizer::representation
 {
@@ -19,6 +17,14 @@ namespace avis::visualizer::representation
     // The root entity the Visualizer's own helpers (grid, axes gizmo, trails) live under (08 §4.2). The simulation
     // loop creates it; the representation finds it by this name.
     inline constexpr const char* helpers_group_name = "helpers";
+
+    // What the representation reports with the scene statistics (08 §8.5, 12 §9.1)
+    struct representation_statistics
+    {
+        geometry_reduction geometry; // the budget's reduction level
+
+        friend bool operator==(const representation_statistics&, const representation_statistics&) = default;
+    };
 
     class scene_representation
     {
@@ -35,6 +41,12 @@ namespace avis::visualizer::representation
         virtual void detach(scene::scene& scene) noexcept
         {
             static_cast<void>(scene);
+        }
+
+        // As of the last update()
+        virtual representation_statistics statistics() const noexcept
+        {
+            return {};
         }
 
     protected:

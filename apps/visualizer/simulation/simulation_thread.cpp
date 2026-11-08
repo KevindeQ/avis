@@ -58,6 +58,7 @@ namespace avis::visualizer::simulation
         presentation_{ representation::presentation_state::from_settings(
             settings.representation, settings.environment) }
     {
+        presentation_.lidar = settings.lidar;
         scene_.set_environment(presentation_.environment);
         anchor_ = { .t_base = avis::simulation::simulation_duration{ 0 }, .wall_base = now, .rate = 0.0 };
         if (settings.demo_scene)
@@ -146,6 +147,10 @@ namespace avis::visualizer::simulation
                 else if constexpr (std::is_same_v<Command, reset_scene>)
                 {
                     reset();
+                }
+                else if constexpr (std::is_same_v<Command, set_lidar_view>)
+                {
+                    presentation_.lidar = value.view;
                 }
                 // The simulation commands returned above
             },
@@ -321,7 +326,10 @@ namespace avis::visualizer::simulation
 
         if (now >= next_statistics_)
         {
-            sink_.statistics_changed(scene_.statistics());
+            sink_.statistics_changed(
+                scene_.statistics(),
+                representation_ != nullptr ? representation_->statistics() :
+                                             representation::representation_statistics{});
             next_statistics_ += statistics_interval;
             if (next_statistics_ <= now)
             {

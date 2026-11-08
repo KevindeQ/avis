@@ -3,6 +3,7 @@
 #include "representation/presentation_state.h"
 
 #include "avis/detail/check.h"
+#include "avis/log.h"
 #include "avis/scene/components/driver.h"
 
 #include <algorithm>
@@ -16,6 +17,25 @@ namespace avis::visualizer::representation
         using scene::entity;
 
         constexpr const char* logger_name = "visualizer";
+
+        // At most one "budget full" warning this often
+        constexpr std::chrono::seconds skip_warning_interval{ 5 };
+
+        template<typename Component, auto Handler, typename Owner>
+        void connect(entt::registry& registry, Owner& owner)
+        {
+            registry.on_construct<Component>().template connect<Handler>(owner);
+            registry.on_update<Component>().template connect<Handler>(owner);
+            registry.on_destroy<Component>().template connect<Handler>(owner);
+        }
+
+        template<typename Component, typename Owner>
+        void disconnect_from(entt::registry& registry, Owner& owner)
+        {
+            registry.on_construct<Component>().disconnect(&owner);
+            registry.on_update<Component>().disconnect(&owner);
+            registry.on_destroy<Component>().disconnect(&owner);
+        }
     } // namespace
 
     result<std::unique_ptr<representation_system>> representation_system::create(scene::asset_cache& assets)
@@ -32,6 +52,8 @@ namespace avis::visualizer::representation
         shared_{ std::move(shared) },
         materials_{ assets },
         shapes_{ *shared_, materials_ },
+        geometry_{ materials_ },
+        lidar_{ materials_ },
         helpers_{ *shared_ }
     {}
 
@@ -50,36 +72,44 @@ namespace avis::visualizer::representation
         {
             return;
         }
+        const representation_settings& settings = state.representation;
 
-        // New settings: new materials, and every entity again
-        if (boxes_ != state.representation.boxes)
+        // New box settings: new materials, and every shape again
+        if (boxes_ != settings.boxes)
         {
             if (boxes_)
             {
                 materials_.clear();
                 for (const entity owner : scene.registry().view<display_shape>())
                 {
-                    changed_.push_back(owner);
+                    shapes_changed_.push_back(owner);
                 }
             }
-            boxes_ = state.representation.boxes;
+            boxes_ = settings.boxes;
         }
 
         helpers_.update(scene, state);
 
-        // Building parts creates entities, which raises no display_shape signal, so the list is stable here
-        std::vector<entity> visiting = std::exchange(changed_, {});
-        std::ranges::sort(visiting);
-        const auto [first, last] = std::ranges::unique(visiting);
-        visiting.erase(first, last);
-        for (const entity owner : visiting)
+        // Building parts creates entities, which raises none of these signals, so the lists are stable here
+        for (const entity owner : take_unique(shapes_changed_))
         {
-            shapes_.update(scene, owner, state.representation);
+            shapes_.update(scene, owner, settings);
         }
-        if (changed_.empty())
+
+        bool replan = budget_ != settings.geometry;
+        budget_ = settings.geometry;
+        replan |= lidar_.restyle(scene, state.lidar, settings.lidar);
+        for (const entity owner : take_unique(geometry_changed_))
         {
-            visiting.clear();
-            changed_.swap(visiting); // keeps the capacity
+            replan |= geometry_.update(scene, owner);
+        }
+        for (const entity owner : take_unique(lidar_changed_))
+        {
+            replan |= lidar_.update(scene, owner);
+        }
+        if (replan)
+        {
+            plan_budget(scene, std::uint64_t{ settings.geometry.budget_mib } << 20);
         }
     }
 
@@ -91,9 +121,15 @@ namespace avis::visualizer::representation
         }
         disconnect();
         shapes_.clear();
+        geometry_.clear();
+        lidar_.clear();
         helpers_.clear();
-        changed_.clear();
+        shapes_changed_.clear();
+        geometry_changed_.clear();
+        lidar_changed_.clear();
         boxes_.reset();
+        budget_.reset();
+        reduction_ = {};
     }
 
     void representation_system::attach(scene::scene& scene)
@@ -101,14 +137,22 @@ namespace avis::visualizer::representation
         scene_ = &scene;
         owner_thread_ = std::this_thread::get_id();
         entt::registry& registry = scene.registry();
-        registry.on_construct<display_shape>().connect<&representation_system::on_shape_changed>(*this);
-        registry.on_update<display_shape>().connect<&representation_system::on_shape_changed>(*this);
-        registry.on_destroy<display_shape>().connect<&representation_system::on_shape_changed>(*this);
+        connect<display_shape, &representation_system::on_shape_changed>(registry, *this);
+        connect<belief_geometry, &representation_system::on_geometry_changed>(registry, *this);
+        connect<lidar_points, &representation_system::on_lidar_changed>(registry, *this);
 
         // What was there before
         for (const entity owner : registry.view<display_shape>())
         {
-            changed_.push_back(owner);
+            shapes_changed_.push_back(owner);
+        }
+        for (const entity owner : registry.view<belief_geometry>())
+        {
+            geometry_changed_.push_back(owner);
+        }
+        for (const entity owner : registry.view<lidar_points>())
+        {
+            lidar_changed_.push_back(owner);
         }
     }
 
@@ -119,15 +163,74 @@ namespace avis::visualizer::representation
             return;
         }
         entt::registry& registry = scene_->registry();
-        registry.on_construct<display_shape>().disconnect(this);
-        registry.on_update<display_shape>().disconnect(this);
-        registry.on_destroy<display_shape>().disconnect(this);
+        disconnect_from<display_shape>(registry, *this);
+        disconnect_from<belief_geometry>(registry, *this);
+        disconnect_from<lidar_points>(registry, *this);
         scene_ = nullptr;
     }
 
     void representation_system::on_shape_changed(entt::registry&, const entity entity)
     {
-        changed_.push_back(entity);
+        shapes_changed_.push_back(entity);
+    }
+
+    void representation_system::on_geometry_changed(entt::registry&, const entity entity)
+    {
+        geometry_changed_.push_back(entity);
+    }
+
+    void representation_system::on_lidar_changed(entt::registry&, const entity entity)
+    {
+        lidar_changed_.push_back(entity);
+    }
+
+    void representation_system::plan_budget(scene::scene& scene, const std::uint64_t budget_bytes)
+    {
+        items_.clear();
+        geometry_.collect(scene, items_);
+        const std::size_t chunks = items_.size();
+        lidar_.collect(scene, items_);
+
+        const geometry_plan plan = plan_geometry(items_, budget_bytes);
+        for (const std::uint32_t index : plan.order)
+        {
+            if (index < chunks)
+            {
+                geometry_.execute(scene, index, plan.decisions[index]);
+            }
+            else
+            {
+                lidar_.execute(scene, index - chunks, plan.decisions[index]);
+            }
+        }
+        geometry_.finish();
+        lidar_.finish();
+
+        reduction_ = plan.reduction;
+        reduction_.used_bytes = geometry_.used_bytes(scene) + lidar_.used_bytes(scene);
+
+        const auto now = std::chrono::steady_clock::now();
+        if (reduction_.skipped != 0 && now >= last_skip_warning_ + skip_warning_interval)
+        {
+            last_skip_warning_ = now;
+            log::get(logger_name)
+                ->warn(
+                    "representation: the geometry budget ({} MiB) is full: {} mesh(es) skipped after dropping {} "
+                    "sweep(s) and thinning points to {:.0f}%; raise representation.geometry.budget_mib",
+                    budget_bytes >> 20,
+                    reduction_.skipped,
+                    reduction_.sweeps_dropped,
+                    reduction_.prefix_fraction * 100.0f);
+        }
+    }
+
+    std::vector<entity> representation_system::take_unique(std::vector<entity>& changed)
+    {
+        std::vector<entity> visiting = std::exchange(changed, {});
+        std::ranges::sort(visiting);
+        const auto [first, last] = std::ranges::unique(visiting);
+        visiting.erase(first, last);
+        return visiting;
     }
 
     bool representation_system::check_thread() const noexcept

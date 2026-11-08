@@ -20,6 +20,26 @@ namespace avis::visualizer::representation
         axes_gizmo
     };
 
+    // How lidar points are coloured (the scenario's visualization.lidar.color_mode, 04 §2.2). A sweep without the
+    // channel a mode needs is drawn uniform.
+    enum class lidar_color_mode : std::uint8_t
+    {
+        intensity,
+        height, // world z
+        ring,
+        uniform
+    };
+
+    // The scenario's visualization.lidar section (04 §2.2): how sweeps look. A presentation setting: it changes in any
+    // clock state (set_lidar_view).
+    struct lidar_view
+    {
+        lidar_color_mode color_mode = lidar_color_mode::intensity;
+        float point_size = 0.05f; // metres (at least 1 px on screen)
+
+        friend bool operator==(const lidar_view&, const lidar_view&) = default;
+    };
+
     struct presentation_state
     {
         scene::object_id selected = 0; // 0 = nothing selected
@@ -42,6 +62,7 @@ namespace avis::visualizer::representation
         bool stale = false; // staleness (08 §8.4)
 
         scene::environment_settings environment; // the scenario's `visualization` section (D-42)
+        lidar_view lidar; // the scenario's visualization.lidar
 
         // The state at startup: labels where they're enabled and have a template, trails where they have a duration,
         // staleness as configured

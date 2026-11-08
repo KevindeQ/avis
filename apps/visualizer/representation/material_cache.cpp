@@ -42,6 +42,16 @@ namespace avis::visualizer::representation
             description.shading = scene::shading_model::unlit;
             description.debug_name = "lines";
             break;
+        case material_role::geometry:
+            description.base_color_factor.alpha = alpha;
+            description.roughness_factor = 0.8f;
+            description.shading = key.lit ? scene::shading_model::lit : scene::shading_model::unlit;
+            description.alpha = alpha < 1.0f ? scene::alpha_mode::blend : scene::alpha_mode::opaque;
+            description.double_sided = true; // surfaces from the Driver have no agreed winding
+            description.use_vertex_color = key.vertex_colors;
+            description.point_size = key.point_size;
+            description.debug_name = "geometry";
+            break;
         }
         return description;
     }
@@ -79,13 +89,18 @@ namespace avis::visualizer::representation
     material_cache::key_tuple material_cache::to_tuple(const material_key& key) noexcept
     {
         // Only what describe() reads: the line width doesn't separate face materials
-        const bool lines = key.role == material_role::box_edges || key.role == material_role::lines;
-        const bool blended = key.role == material_role::box_faces || key.role == material_role::ghost_vehicle;
+        const bool geometry = key.role == material_role::geometry;
+        const bool lines = key.role == material_role::box_edges || key.role == material_role::lines || geometry;
+        const bool blended =
+            key.role == material_role::box_faces || key.role == material_role::ghost_vehicle || geometry;
         return { static_cast<std::uint8_t>(key.role),
                  key.base_color.red,
                  key.base_color.green,
                  key.base_color.blue,
                  blended ? key.base_color.alpha * key.opacity : 1.0f,
-                 lines ? key.line_width : 0.0f };
+                 lines ? key.line_width : 0.0f,
+                 geometry ? key.point_size : 0.0f,
+                 geometry && key.lit,
+                 geometry && key.vertex_colors };
     }
 } // namespace avis::visualizer::representation

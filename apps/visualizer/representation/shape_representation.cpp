@@ -21,10 +21,6 @@ namespace avis::visualizer::representation
         // A frustum's line width, in pixels
         constexpr float frustum_line_width = 1.5f;
 
-        // Lines and translucent boxes don't cast shadows; nothing here is screen-aligned
-        constexpr avis::flags<scene::instance_flags> overlay_flags =
-            scene::instance_flags::visible | scene::instance_flags::pickable;
-
         // A zero extent would make a singular world matrix
         Eigen::Vector3f usable_scale(const Eigen::Vector3f& extent) noexcept
         {
@@ -38,11 +34,6 @@ namespace avis::visualizer::representation
             local.position = position;
             local.scale = usable_scale(extent);
             return local;
-        }
-
-        bool same(const scene::transform& a, const scene::transform& b) noexcept
-        {
-            return a.position == b.position && a.rotation.coeffs() == b.rotation.coeffs() && a.scale == b.scale;
         }
     } // namespace
 
@@ -117,7 +108,7 @@ namespace avis::visualizer::representation
 
         for (std::size_t index = 0; index < state.parts.size(); ++index)
         {
-            apply(scene, state.parts[index], (*specifications)[index]);
+            apply_part(scene, state.parts[index], (*specifications)[index]);
         }
         if (created.valid())
         {
@@ -135,7 +126,7 @@ namespace avis::visualizer::representation
         return found != states_.end() ? std::span<const entity>{ found->second.parts } : std::span<const entity>{};
     }
 
-    result<std::vector<shape_representation::part_specification>> shape_representation::specify(
+    result<std::vector<part_specification>> shape_representation::specify(
         scene::scene& scene,
         const display_shape& shape,
         const representation_settings& settings,
@@ -285,45 +276,5 @@ namespace avis::visualizer::representation
         }
         state.parts.clear();
         state.frustum.reset();
-    }
-
-    void shape_representation::apply(scene::scene& scene, const entity part, const part_specification& specification)
-    {
-        entt::registry& registry = scene.registry();
-
-        if (!same(scene.local(part), specification.local))
-        {
-            scene.set_local(part, specification.local);
-        }
-
-        if (const scene::components::mesh* current = registry.try_get<scene::components::mesh>(part);
-            current == nullptr || current->asset != specification.mesh)
-        {
-            registry.emplace_or_replace<scene::components::mesh>(
-                part, scene::components::mesh{ .asset = specification.mesh });
-        }
-
-        if (const material* current = registry.try_get<material>(part);
-            current == nullptr || current->materials != specification.materials)
-        {
-            registry.emplace_or_replace<material>(part, material{ .materials = specification.materials });
-        }
-
-        // The selection flag belongs to the simulation loop, which sets it after the representation
-        render_options wanted{ .layer = specification.layer, .flags = specification.flags };
-        if (const render_options* current = registry.try_get<render_options>(part))
-        {
-            if (current->flags.count(scene::instance_flags::selected) != 0)
-            {
-                wanted.flags |= scene::instance_flags::selected;
-            }
-            if (current->layer == wanted.layer && current->flags == wanted.flags &&
-                current->layer_priority == wanted.layer_priority &&
-                current->maximum_view_distance == wanted.maximum_view_distance)
-            {
-                return;
-            }
-        }
-        registry.emplace_or_replace<render_options>(part, wanted);
     }
 } // namespace avis::visualizer::representation

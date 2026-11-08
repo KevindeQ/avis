@@ -11,6 +11,7 @@
 // Each part is a helper child of the entity with `represents { entity }`, so picking it selects the entity and the
 // scene tree hides it. The extent is the part's scale, never the entity's (08 §4.3). Owned by the simulation thread.
 
+#include "representation/helper_parts.h"
 #include "representation/material_cache.h"
 #include "representation/representation_settings.h"
 #include "representation/shared_assets.h"
@@ -54,16 +55,6 @@ namespace avis::visualizer::representation
         }
 
     private:
-        struct part_specification
-        {
-            const char* name = "";
-            scene::mesh_handle mesh;
-            std::vector<scene::material_handle> materials;
-            scene::draw_layer layer = scene::draw_layer::world;
-            avis::flags<scene::instance_flags> flags = scene::default_instance_flags;
-            scene::transform local;
-        };
-
         struct frustum_parameters
         {
             float horizontal_fov = 0.0f;
@@ -90,9 +81,6 @@ namespace avis::visualizer::representation
             scene::mesh_handle& created);
 
         static void destroy_parts(scene::scene& scene, entity_state& state);
-
-        // Writes only what differs, so unchanged parts raise no update signals
-        static void apply(scene::scene& scene, scene::entity part, const part_specification& specification);
 
         const shared_assets& shared_;
         material_cache& materials_;

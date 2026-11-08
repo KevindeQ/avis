@@ -31,7 +31,9 @@ namespace avis::visualizer::ui
         // ---- gui_sink: the simulation thread ----
         void tree_changed(std::vector<scene::tree_change> changes) override;
         void selected_entity_changed(std::optional<scene::reflected_entity> entity) override;
-        void statistics_changed(const scene::scene_statistics& statistics) override;
+        void statistics_changed(
+            const scene::scene_statistics& statistics,
+            const representation::representation_statistics& representation) override;
         void follow_target_changed(const simulation::follow_target& target) override;
 
         // ---- GUI thread ----
@@ -49,6 +51,12 @@ namespace avis::visualizer::ui
             return statistics_;
         }
 
+        // The geometry budget's reduction level, posted with the statistics
+        const representation::representation_statistics& representation_statistics() const noexcept
+        {
+            return representation_statistics_;
+        }
+
         const simulation::follow_target& follow_target() const noexcept
         {
             return follow_;
@@ -64,6 +72,7 @@ namespace avis::visualizer::ui
         std::vector<scene::tree_change> tree_changes_;
         std::optional<scene::reflected_entity> selected_;
         scene::scene_statistics statistics_;
+        representation::representation_statistics representation_statistics_;
         simulation::follow_target follow_;
     };
 } // namespace avis::visualizer::ui

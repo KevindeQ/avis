@@ -471,32 +471,66 @@ flowchart LR
 ## 12.9 Representation: belief geometry, lidar, geometry budget
 12 §9, §9.1, D-41.
 
-- [ ] `geometry_representation`:
+- [x] `geometry_representation`:
   - one mesh per `belief_geometry` chunk, created or updated with `create_mesh` / `update_mesh` (topology, vertex colours, normals)
   - a material from the chunk `style` (colour, opacity, lit or unlit, line width, point size)
   - `points` chunks are progressive, so their vertices are shuffled once when the mesh is built (a fixed-seed shuffle, for reproducibility)
   - a removed chunk releases its mesh
-- [ ] `lidar_representation`:
+
+  *As implemented:* `representation/geometry_representation.h/.cpp`.
+  - **Each chunk is a helper child** of the entity at the chunk's origin, named `<owner> · chunk <id>`, in the style's layer (`world` or `overlay`), not casting shadows.
+  - **Changes are found by an XXH3 hash** of each chunk, since `belief_geometry`'s signals cover the whole component: a `geometry_update` that rewrites one chunk rebuilds only that one, and the same content again rebuilds nothing.
+  - **Topologies:** a line strip becomes a line list. Lit triangles without normals get smooth, area-weighted ones. Indexed points draw the vertices their indices name.
+  - **Vertex colours replace the style's colour** (its alpha still applies), so a Driver doesn't have to send white to get them.
+  - **The shuffle** is a Fisher–Yates on splitmix64 with a fixed seed (`dynamic_mesh.h`), the same on every platform, unlike `std::shuffle`.
+  - A chunk whose streams don't match (colours or normals of another count, an index out of range, an incomplete triangle) is logged and not drawn until it changes.
+  - The material cache gained a `geometry` role: lit or unlit, blended below full opacity, double-sided, vertex colours, line width and point size.
+- [x] `lidar_representation`:
   - one progressive point mesh per kept sweep, at the sweep's sensor pose (a helper node per sweep)
   - colour by `visualization.lidar.color_mode` (intensity, height, ring, uniform)
   - `lidar.maximum_points_per_sweep`, enforced by keeping a random prefix
   - a recolour on a mode change produces new mesh versions (presentation command)
-- [ ] A `geometry_budget` counts the current-version bytes of every dynamic mesh the representation owns (trails included, labels excluded). Before a create or update that would exceed `geometry.budget_mib`, it frees space in the order of 12 §9.1:
+
+  *As implemented:* `representation/lidar_representation.h/.cpp`.
+  - **Sweep helpers live under the `helpers` group**, not under the lidar, so a sweep stays where it was captured while the vehicle moves on. They still represent the lidar: picking a point selects it, hiding the lidar hides its sweeps, and *Reset* removes them.
+  - **Points are lit, face the camera and cast no shadows** (point shadows are the renderer's costliest pass, task 11.23).
+  - **Colours:** intensity and height (world z, −1 to 4 m) through a turbo-like map without its near-black ends, ring through an eight-colour palette. A sweep without the mode's channel is uniform.
+  - **`presentation_state::lidar`** (`lidar_view`: colour mode and point size) holds the scenario's `visualization.lidar`, and the new presentation command `set_lidar_view` changes it in any clock state. A new mode or maximum rebuilds every kept sweep (new versions of the same meshes); a new point size only swaps the material. `simulation_settings::lidar` sets it at startup, until a scenario does (12.20).
+- [x] A `geometry_budget` counts the current-version bytes of every dynamic mesh the representation owns (trails included, labels excluded). Before a create or update that would exceed `geometry.budget_mib`, it frees space in the order of 12 §9.1:
   1. drop the oldest sweeps per sensor, down to one
   2. truncate progressive meshes to a prefix, largest first, down to 25%
   3. skip the new geometry, with a rate-limited warning
 
   When room returns, the reduction is undone in reverse order. The current reduction level (sweeps dropped, prefix fraction, chunks skipped) is reported with the statistics.
 
+  *As implemented:* `representation/geometry_budget.h/.cpp`, a pure planner, and `dynamic_mesh.h/.cpp`.
+  - **Every change replans everything.** `representation_system` collects every chunk and sweep (full size, current version, changed or not), and `plan_geometry` says what to build, keep or release. Each plan starts from the full sizes, so the smallest reduction that fits is chosen, and undoing it in reverse order comes for free.
+  - **Step 1** drops the globally oldest sweep, keeping each lidar's newest. **Step 2** applies one vertex cap to every progressive mesh, so the largest shrink first; the cap moves in steps of 1024 vertices, so steady pressure doesn't re-version every mesh each tick.
+  - **Step 3 is decided first:** only when steps 1 and 2 taken all the way still don't fit, new versions are skipped (chunks newest first, then sweeps oldest first). Steps 1 and 2 then go only as far as the rest needs, rather than leaving everything at its minimum next to a skipped chunk. A skipped mesh that exists keeps its previous version; one that doesn't isn't created.
+  - **The order of execution** is releases, then builds that shrink, then builds that grow, so the bytes stay within the budget at every step. If the budget shrinks below what's there, previous versions are released too (counted as skipped).
+  - **Prefixes are rebuilt from the components**, which still hold the full data, so no second copy is kept. A new chunk or sweep is built once, and its data is used by the plan that follows.
+  - **The reduction level** (`geometry_reduction`) goes out through `scene_representation::statistics()` and a second argument of `gui_sink::statistics_changed`, which `simulation_bridge` keeps for the statistics overlay (12.14). A skip logs a warning at most every 5 s, naming `representation.geometry.budget_mib`.
+  - Trails (12.11) join as `budget_kind::trail`. Labels and frustum meshes stay outside.
+
 **Tests** (`test_representation_geometry.cpp`, `test_representation_budget.cpp`, `[visualizer][unit]`):
-- [ ] A triangle chunk becomes a mesh with its colours. A second update of the same chunk bumps the version, and removing the chunk releases the mesh.
-- [ ] A points chunk is progressive, and its shuffle is identical across two runs.
-- [ ] Lidar: `retention` sweeps are kept, each at its own pose, and a colour-mode change creates new versions.
-- [ ] Budget, with a 10 MiB budget fed by sweeps and chunks:
+- [x] A triangle chunk becomes a mesh with its colours. A second update of the same chunk bumps the version, and removing the chunk releases the mesh.
+
+  *As implemented:* also, the same content again makes no version, another chunk's change leaves this one alone, and removing the component or destroying the entity releases the meshes. A second case covers a line strip in `overlay` and a chunk with mismatched colours, which isn't drawn.
+- [x] A points chunk is progressive, and its shuffle is identical across two runs.
+
+  *As implemented:* both through `build_chunk_mesh` and through two separate scenes; the result is a permutation of the chunk's points.
+- [x] Lidar: `retention` sweeps are kept, each at its own pose, and a colour-mode change creates new versions.
+
+  *As implemented:* also, uniform drops the vertex colours, a point size change swaps only the material, `maximum_points_per_sweep` cuts the kept sweeps, a sweep without intensity is uniform, and destroying the lidar destroys its sweeps. A separate case checks the height map's ends against world z.
+- [x] Budget, with a 10 MiB budget fed by sweeps and chunks:
   - steps 1, 2 and 3 happen in order, and the budget is never exceeded
   - the reduction level is reported
   - freeing room restores the sweeps and the full prefixes
   - the asset cache's current geometry bytes match the budget's count
+
+  *As implemented:* two lidars of three 1.6 MB sweeps, then a 3.2 MB points chunk (the two globally oldest sweeps go), a 5 MB triangle chunk (down to one sweep per lidar, then the points chunk is cut to a prefix while the sweeps stay whole) and a 4 MB triangle chunk (skipped, and nothing else changes). Removing the chunks one by one brings the skipped chunk in, the full prefix back, then the sweeps. Every stage checks the bytes. Also: a budget lowered under what's there releases meshes, and raising it brings them back; and the planner alone executes releases, then shrinks, then growth.
+- [x] Not in the original list: 12.8's demo-scene test now also checks that the demo's sweeps and belief geometry are drawn, within the budget, with 12 materials.
+- [x] Manual (not in the original list): `--demo-scene` shows the drivable-area ring, the trajectory ahead of the shadow vehicle and the lidar's sweeps around the ego, with 12.8's shapes, and closes with exit code 0. The first colour map's near-black ends made the demo's points (all near or far) look black, so its ends were brightened. The points still look darker than their colours: they're lit and mostly below a pixel at that distance, so the renderer's shading and TAA decide what's left. Worth a look with the camera (12.12).
 
 ## 12.10 Representation: labels and the font atlas
 08 §8.1, §8.6, 12 §9, 13 §5.

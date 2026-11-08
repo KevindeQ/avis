@@ -45,7 +45,10 @@ apps/visualizer/
     representation_system.{h,cpp}  # change tracking, step 4 (scene_representation)
     shared_assets.{h,cpp}          # the shared meshes and base materials (procedural vehicle proxy, grid)
     material_cache.{h,cpp}         # materials per role, colour and opacity
+    helper_parts.{h,cpp}           # writing a helper's mesh, materials and options; the helpers group
     shape_representation.{h,cpp}   # box, vehicle, axes, frustum display shapes
+    geometry_budget.{h,cpp}        # the budget's planner (§9.1)
+    dynamic_mesh.{h,cpp}           # a budgeted mesh and its helper; the progressive shuffle
     geometry_representation.{h,cpp}  # belief geometry chunks
     lidar_representation.{h,cpp}   # lidar sweeps → point meshes
     label_representation.{h,cpp}   # labels → glyph-quad meshes on the font atlas (08 §8.1)
@@ -225,7 +228,7 @@ UI commands sent to the simulation thread are of two kinds:
 | Select / clear selection | Moves the `selected` instance flag (tree, inspector and viewport picking all send this) |
 | Entity visibility, category visibility (*View* menu) | Updates `visibility` and therefore the `visible` instance flag |
 | Helper toggles (grid, axes gizmo) | Adds or removes the helper instances |
-| Representation settings (lidar colour mode, point size, box edge width) | Re-runs the affected representations, which produces new mesh or material versions |
+| Representation settings (lidar colour mode, point size, box edge width) | Re-runs the affected representations, which produces new mesh or material versions. The lidar colour mode and point size are the scenario's `visualization.lidar`, sent as `set_lidar_view` (task 12.9). |
 | Labels on or off, per category (*View* menu) | Adds or removes `label` components and their helper entities ([08 §8.1](08-scene-management.md#81-labels)) |
 | Trail on or off, per category (*View* menu) or per entity (scene tree context menu) | Adds or removes `trail` components and their helper entities; a new trail starts empty ([08 §8.2](08-scene-management.md#82-trails)) |
 | Staleness on or off (*View* menu) | Switches stale entities to or from their dimmed materials ([08 §8.4](08-scene-management.md#84-update-stamps-and-staleness)) |
@@ -356,6 +359,11 @@ The **scene representation** (`avis::visualizer::representation`, `apps/visualiz
 > - **The vehicle proxy is procedural** (body, cabin, wheels), standing on the ground with its body 0.3 × length forward of the rear axle. `data/assets/vehicle_proxy.glb` doesn't exist yet.
 > - **The selection and visibility flags** are set by the simulation loop after step 4 (§4.1, task 12.6), not by the representation.
 > - The loop calls `scene_representation::detach` before its scene is destroyed, which drops the signal connections.
+>
+> **As implemented** (task 12.9, `representation/geometry_representation.h`, `lidar_representation.h`):
+> - **Belief geometry chunks** are helper children at the chunk's origin. Changes are found by an XXH3 hash of each chunk, so rewriting one chunk rebuilds only that one. Vertex colours replace the style's colour.
+> - **Lidar sweeps** are helpers under `helpers` at their capture pose, so they stay put while the vehicle moves, and represent the lidar. They're lit points without shadows.
+> - **The lidar colour mode and point size** are `presentation_state::lidar`, the scenario's `visualization.lidar`, changed by the `set_lidar_view` presentation command (§4.1) in any clock state.
 - All visual choices that the Driver doesn't specify (edge widths, lidar colouring, which helpers are visible from the *View* menu) live here, so changing how something looks never touches the renderer.
 - Configuration (`visualizer.yaml` → `representation`):
   ```yaml
@@ -388,6 +396,13 @@ The representation creates all dynamic geometry, so it is the place that knows w
   3. **Skip new geometry.** If that's still not enough, the new mesh or chunk isn't created (an update keeps the previous version), and a rate-limited warning goes to the log and the statistics overlay.
 - The current reduction level (sweeps dropped, prefix fraction, chunks skipped) is shown in the statistics overlay, so a thinned-out picture is never mistaken for missing Driver data.
 - These choices are presentation only: they never change what the Driver sends, so determinism is unaffected.
+
+> **As implemented** (task 12.9, `representation/geometry_budget.h`):
+> - **One plan for every dynamic mesh**, whenever one changes: a pure function that takes each mesh's full size and current version and returns what to build, keep or release. Each plan starts from the full sizes, so the reduction is always the smallest that fits, and it's undone in reverse order as room returns.
+> - **Step 2 is one vertex cap** for every progressive mesh (largest first), moving in steps of 1024 vertices so steady pressure doesn't re-version every mesh each tick.
+> - **Step 3 is decided first:** a new version is skipped only when steps 1 and 2 taken all the way still don't fit, and steps 1 and 2 then go only as far as the rest needs. Chunks and trails are skipped before sweeps.
+> - **Execution order** is releases, then shrinking builds, then growing builds, so the budget holds at every step. A budget lowered under what's there releases previous versions too.
+> - The reduction level goes to the GUI with the scene statistics (`gui_sink::statistics_changed`).
 
 ## 10. Shader loading
 

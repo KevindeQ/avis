@@ -5,6 +5,8 @@
 // the Qt side (ui/simulation_bridge) forwards each call to the GUI thread with a queued call, and tests record them.
 // Every call comes from the simulation thread and must not block.
 
+#include "representation/scene_representation.h"
+
 #include "avis/scene/bounds.h"
 #include "avis/scene/reflection.h"
 #include "avis/scene/scene.h"
@@ -36,8 +38,10 @@ namespace avis::visualizer::simulation
         // The selected entity, at up to 20 Hz while it changes, or nullopt once the selection is cleared
         virtual void selected_entity_changed(std::optional<scene::reflected_entity> entity) = 0;
 
-        // At 2 Hz (08 §8.5)
-        virtual void statistics_changed(const scene::scene_statistics& statistics) = 0;
+        // At 2 Hz (08 §8.5), with the representation's reduction level (12 §9.1)
+        virtual void statistics_changed(
+            const scene::scene_statistics& statistics,
+            const representation::representation_statistics& representation) = 0;
 
         // When the target changes, and when its extent changes
         virtual void follow_target_changed(const follow_target& target) = 0;

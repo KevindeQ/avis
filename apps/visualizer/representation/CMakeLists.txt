@@ -2,7 +2,12 @@
 # meshes and materials, as a Qt-free static library that AVIS_VISUALIZER and AVIS_TESTS link, like the renderer's.
 
 add_library(AVIS_VISUALIZER_REPRESENTATION STATIC
+	dynamic_mesh.cpp
+	geometry_budget.cpp
+	geometry_representation.cpp
 	helper_geometry.cpp
+	helper_parts.cpp
+	lidar_representation.cpp
 	material_cache.cpp
 	presentation_state.cpp
 	representation_settings.cpp
@@ -40,7 +45,11 @@ target_link_libraries(AVIS_VISUALIZER_REPRESENTATION
 	PUBLIC
 		AVIS_LIB
 		AVIS_VISUALIZER_RENDERING
-		yaml-cpp::yaml-cpp)
+		yaml-cpp::yaml-cpp
+
+	# The belief geometry chunks' content hashes
+	PRIVATE
+		xxHash::xxhash)
 
 # Defined by rendering/CMakeLists.txt: no Qt6:: target anywhere in the link dependencies
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _avis_check_no_qt_dependency AVIS_VISUALIZER_REPRESENTATION)

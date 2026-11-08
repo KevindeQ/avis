@@ -117,7 +117,9 @@ namespace
     public:
         void tree_changed(std::vector<scene::tree_change>) override {}
         void selected_entity_changed(std::optional<scene::reflected_entity>) override {}
-        void statistics_changed(const scene::scene_statistics&) override {}
+        void statistics_changed(
+            const scene::scene_statistics&, const representation::representation_statistics&) override
+        {}
         void follow_target_changed(const simulation::follow_target&) override {}
     };
 } // namespace
@@ -520,7 +522,8 @@ TEST_CASE("representation: the demo scene runs with every shape drawn", "[visual
             now += simulation::demo_scene::tick_interval;
         }
 
-        // Every display shape is drawn, and every part belongs to a live entity with one
+        // Every display shape is drawn, and every part belongs to a live entity with something to draw (task 12.9 adds
+        // the lidar's sweeps and the belief geometry)
         scene::scene& world = loop.scene();
         entt::registry& registry = world.registry();
         for (const auto [entity, shape] : registry.view<display_shape>().each())
@@ -529,13 +532,15 @@ TEST_CASE("representation: the demo scene runs with every shape drawn", "[visual
         }
         for (const auto [part, owner] : registry.view<represents>().each())
         {
-            CHECK(registry.all_of<display_shape>(owner.owner));
+            CHECK(registry.any_of<display_shape, belief_geometry, lidar_points>(owner.owner));
         }
+        CHECK_FALSE(system->reduction().reduced());
         CHECK(world.alive(system->grid()));
         CHECK(world.alive(system->axes_gizmo()));
 
-        // The boxes' three colours make three face and three edge materials; the vehicles, ghost and frustums 3 more
-        CHECK(system->materials().size() == 9);
+        // The boxes' three colours make three face and three edge materials; the vehicles, ghost and frustums 3 more;
+        // the drivable area, the trajectory and the lidar's points 3 more
+        CHECK(system->materials().size() == 12);
 
         // Reset keeps the grid and the gizmo, under the helpers group; the demo's next tick draws its entities again
         loop.handle(simulation::reset_scene{}, now);

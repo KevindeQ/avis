@@ -1,6 +1,6 @@
 #include "representation/helper_geometry.h"
 
-#include "representation/scene_representation.h"
+#include "representation/helper_parts.h"
 
 #include "avis/log.h"
 #include "avis/scene/components/identity.h"
@@ -40,25 +40,6 @@ namespace avis::visualizer::representation
             axes_gizmo_length);
     }
 
-    entity helper_geometry::find_group(scene::scene& scene)
-    {
-        if (group_ != entt::null && scene.alive(group_))
-        {
-            return group_;
-        }
-        group_ = entt::null;
-        for (const auto [candidate, who] : scene.registry().view<identity>().each())
-        {
-            if (who.category == scene::entity_category::helper && std::string_view{ who.name } == helpers_group_name &&
-                !scene.registry().all_of<represents>(candidate))
-            {
-                group_ = candidate;
-                break;
-            }
-        }
-        return group_;
-    }
-
     void helper_geometry::ensure(
         scene::scene& scene,
         entity& slot,
@@ -84,7 +65,10 @@ namespace avis::visualizer::representation
         scene::transform local;
         local.scale = Eigen::Vector3f::Constant(scale);
         const result<entity> created = scene.create_entity(
-            { .name = name, .category = scene::entity_category::helper, .parent = find_group(scene), .local = local });
+            { .name = name,
+              .category = scene::entity_category::helper,
+              .parent = find_helpers_group(scene, group_),
+              .local = local });
         if (!created)
         {
             log::get(logger_name)->error("representation: the {} could not be created: {}", name, created.error());

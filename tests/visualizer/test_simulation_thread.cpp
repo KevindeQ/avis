@@ -66,7 +66,8 @@ namespace
             selected.emplace_back(now_, std::move(entity));
         }
 
-        void statistics_changed(const scene::scene_statistics& values) override
+        void statistics_changed(
+            const scene::scene_statistics& values, const representation::representation_statistics&) override
         {
             statistics.emplace_back(now_, values);
         }
@@ -626,7 +627,8 @@ TEST_CASE("simulation thread: runs the loop on a pool thread", "[visualizer][uni
             note([&] { last_selected = entity ? entity->id : 0; });
         }
 
-        void statistics_changed(const scene::scene_statistics&) override
+        void statistics_changed(
+            const scene::scene_statistics&, const representation::representation_statistics&) override
         {
             note([this] { ++statistics; });
         }

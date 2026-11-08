@@ -85,7 +85,10 @@ namespace
     public:
         void tree_changed(std::vector<avis::scene::tree_change>) override {}
         void selected_entity_changed(std::optional<avis::scene::reflected_entity>) override {}
-        void statistics_changed(const avis::scene::scene_statistics&) override {}
+        void statistics_changed(
+            const avis::scene::scene_statistics&,
+            const avis::visualizer::representation::representation_statistics&) override
+        {}
         void follow_target_changed(const vsim::follow_target&) override {}
     };
 

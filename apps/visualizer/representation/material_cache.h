@@ -22,7 +22,8 @@ namespace avis::visualizer::representation
         box_edges, // unlit lines, opaque, with the edge width
         vehicle, // lit, opaque
         ghost_vehicle, // lit, blended with the opacity (a vehicle whose opacity is below 1)
-        lines // unlit lines, opaque, with the line width (frustums)
+        lines, // unlit lines, opaque, with the line width (frustums)
+        geometry // belief geometry and lidar points: lit or unlit, blended below full opacity, vertex colours or not
     };
 
     struct material_key
@@ -30,7 +31,10 @@ namespace avis::visualizer::representation
         material_role role = material_role::box_faces;
         scene::color base_color; // linear; its alpha multiplies the opacity
         float opacity = 1.0f;
-        float line_width = 1.0f; // pixels, for the line roles
+        float line_width = 1.0f; // pixels, for the line roles and line geometry
+        float point_size = 0.05f; // metres, for point geometry
+        bool lit = true; // geometry
+        bool vertex_colors = false; // geometry: the vertex colours multiply the base colour
 
         friend bool operator==(const material_key&, const material_key&) = default;
     };
@@ -60,7 +64,7 @@ namespace avis::visualizer::representation
         }
 
     private:
-        using key_tuple = std::tuple<std::uint8_t, float, float, float, float, float>;
+        using key_tuple = std::tuple<std::uint8_t, float, float, float, float, float, float, bool, bool>;
 
         static key_tuple to_tuple(const material_key& key) noexcept;
 

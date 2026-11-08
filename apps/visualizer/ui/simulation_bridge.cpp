@@ -40,13 +40,15 @@ namespace avis::visualizer::ui
             Qt::QueuedConnection);
     }
 
-    void simulation_bridge::statistics_changed(const scene::scene_statistics& statistics)
+    void simulation_bridge::statistics_changed(
+        const scene::scene_statistics& statistics, const representation::representation_statistics& representation)
     {
         QMetaObject::invokeMethod(
             this,
-            [this, statistics]
+            [this, statistics, representation]
             {
                 statistics_ = statistics;
+                representation_statistics_ = representation;
                 Q_EMIT statistics_updated();
             },
             Qt::QueuedConnection);

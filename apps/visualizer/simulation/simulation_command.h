@@ -108,6 +108,13 @@ namespace avis::visualizer::simulation
     struct reset_scene
     {};
 
+    // The scenario's visualization.lidar (colour mode, point size). Unlike the sun and the sky, it changes in every
+    // clock state: a new mode recolours the kept sweeps (new mesh versions).
+    struct set_lidar_view
+    {
+        representation::lidar_view view;
+    };
+
     using simulation_command = std::variant<
         start_simulation,
         pause_simulation,
@@ -126,7 +133,8 @@ namespace avis::visualizer::simulation
         set_entity_trail,
         set_staleness,
         set_visualization,
-        reset_scene>;
+        reset_scene,
+        set_lidar_view>;
 
     // True for the commands that drive the clock
     constexpr bool is_simulation_command(const simulation_command& command) noexcept

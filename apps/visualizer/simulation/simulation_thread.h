@@ -49,6 +49,7 @@ namespace avis::visualizer::simulation
     {
         representation::representation_settings representation; // visualizer.yaml's `representation`
         scene::environment_settings environment; // until a scenario sets its `visualization`
+        representation::lidar_view lidar; // the same section's lidar colouring
         bool demo_scene = false; // --demo-scene: the demo scene ticks at 10 Hz
     };
 
