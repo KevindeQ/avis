@@ -77,7 +77,8 @@ namespace avis::visualizer::rendering
             graphics::frame_scheduler::create(
                 rhi::synchronization{ hardware },
                 rhi::transient_objects{ hardware },
-                { .frames_in_flight = settings.frames_in_flight }),
+                { .frames_in_flight = settings.frames_in_flight,
+                  .upload_memory_per_frame = configuration.upload_memory_per_frame }),
             "the frame scheduler could not be created");
         if (!frames)
         {

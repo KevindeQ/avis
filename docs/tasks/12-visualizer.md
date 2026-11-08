@@ -239,7 +239,7 @@ flowchart LR
   - Closing the window detaches the renderer: a ring retired afterwards is released, and the item's wake does nothing.
 
   Every test also checks that neither the RHI's log nor the `ui` log has errors. The RHI's info queue covers Qt's objects too, since both share the device (12 §3.1). Two mutation checks: with the old vertex shader, the frame grabs failed on the halves, and with the `consumed` signal removed, every test failed waiting for Qt to show its first frame.
-- [ ] Manual checklist: these need the frame loop's output and pacing, so they move to 12.7. Until then the Visualizer creates the rings, and its viewport shows the clear colour.
+- [x] Manual checklist: these need the frame loop's output and pacing, so they move to 12.7. Until then the Visualizer creates the rings, and its viewport shows the clear colour. *Done with 12.7* (see its manual checklist).
   - the viewport shows the frame loop's output, with no tearing
   - resizing and maximising work without a `wait_idle`
   - minimising drops Avis to 5 fps (12.7), and restoring brings the rate back
@@ -331,29 +331,73 @@ flowchart LR
 ## 12.7 Frame loop
 12 §3.4, 17 §4, D-98, D-102.
 
-- [ ] `rendering/frame_loop.h/.cpp` runs the chain of 12 §3.4 in an `async_scope`:
+- [x] `rendering/frame_loop.h/.cpp` runs the chain of 12 §3.4 in an `async_scope`:
   1. `when_all(begin_frame(), next_frame_tick(), shared_slot_free())`
   2. `continues_on(parallel)`, then the prepare stage: `prepare_frame`, then `snapshot_buffer::acquire`, then `scene_renderer::render` with the main view (camera from the latest-value state, the ring slot as output) and any screenshot view
   3. `present_to_shared`, then signal `produced` with `n`, then `end_frame`
   4. re-arm the next frame
 
   In parallel, per frame, `when_reached(produced, n)` publishes `latest_completed` and posts `viewport_item::update()` once (`update_pending`).
-- [ ] `next_frame_tick()` is an `asio::steady_timer` sender on the IO context. Its rate is the screen's refresh rate (from the window, posted on change), or `render.maximum_fps`, or 5 fps when the window is minimised or occluded.
-- [ ] GUI → renderer state goes into a latest-value block written by the GUI and read once per frame at prepare: camera, viewport size, debug selection, render settings, picking request and screenshot request (12 §4).
-- [ ] Renderer → GUI: `scene_renderer::debug_information()` at about 4 Hz, plus pick results (task 11.19), pixel-inspector values and screenshot results, through a queued signal.
-- [ ] Errors:
+
+  *As implemented:* `avis::visualizer::rendering::frame_loop`, free of Qt. The controller creates it once the completion notifier exists, and starts it.
+  - **One frame at a time on the CPU.** The GPU still has up to F frames in flight, because `begin_frame` only waits for frame N − F. The tail of each frame spawns the next one into the scope, so there's no loop and no thread.
+  - **The prepare stage** runs on a parallel worker after the `when_all`. It calls `prepare_frame` and `retire(completed_index)`, reads the GUI's state, then calls `scene_renderer::render` with one view named `main`. The view has the ring's size and the reserved slot as its output.
+  - **The snapshot is held until the frame is submitted,** since the passes read its data while they record. Before the simulation thread's first publish, an empty snapshot is rendered.
+  - **Ending a frame:** `end_frame` with the frame's submissions comes first, then `signal_produced` on the graphics queue, which follows `present_to_shared`. Then comes the publish sender.
+  - **Without a ring** (the viewport hasn't reported a size yet), the chain only ticks and looks again on the next tick.
+  - **Retired rings** (12 §3.3 rule 8) are destroyed with `destroy_released()` at the start of a frame, instead of through a spawned `when_released()`. The chain ticks at least 5 times a second, so this check is enough. It runs only while no publish is in flight, because a publish completes on the completion driver's thread and uses its ring.
+- [x] `next_frame_tick()` is an `asio::steady_timer` sender on the IO context. Its rate is the screen's refresh rate (from the window, posted on change), or `render.maximum_fps`, or 5 fps when the window is minimised or occluded.
+
+  *As implemented:* the period is set by `frame_loop::tick_interval`:
+  - `render.maximum_fps` replaces the refresh rate when it's set (0 means "match the display", as 11 §14 says);
+  - 60 Hz until the window reports a rate;
+  - 5 fps while the window isn't visible.
+
+  Ticks are timed from the previous tick, so a frame's own work doesn't stretch the period. A chain that falls behind ticks at once, without a catch-up burst. The controller reports `QScreen::refreshRate` (following `screenChanged` and `refreshRateChanged`). It also reports visibility: a minimised or hidden window, or one Qt doesn't expose (from the window's `Expose` events), counts as not visible.
+- [x] GUI → renderer state goes into a latest-value block written by the GUI and read once per frame at prepare: camera, viewport size, debug selection, render settings, picking request and screenshot request (12 §4).
+
+  *As implemented:* setters on `frame_loop`, any thread, behind one mutex: `set_camera` (with the device pixel ratio), `set_debug_blits`, `set_render_options`, `set_display`, and the one-shot `request_pick`, `request_inspection` and `request_screenshot`.
+  - `render_options` holds the run-time renderer settings: AO, exposure, tonemapper, TAA and the outline colour. The renderer's setters are called only when they change.
+  - The viewport size isn't in the block: it already reaches the rings through `request_resize` (12.5).
+  - Until the camera controller (12.12), the controller sets a fixed camera above the demo scene's track. `rendering::look_at` builds it.
+- [x] Renderer → GUI: `scene_renderer::debug_information()` at about 4 Hz, plus pick results (task 11.19), pixel-inspector values and screenshot results, through a queued signal.
+
+  *As implemented:* through a `rendering::frame_sink` interface, which the Qt side implements as `ui::renderer_bridge` with queued calls, the same way `ui::simulation_bridge` does for the simulation thread. `frame_debug_information` copies the graph's passes and resources into owned strings, since `graph_debug_information` points into the graph's arena, and adds the loop's counters. The results are polled after each frame and posted only when there are some.
+- [x] Errors:
   - A `set_error` from device removal goes to the fatal path (12.16).
   - `transient_memory_exhausted` ends the frame with no submissions and re-arms, with a warning that names the budget (D-98).
   - A stop finishes the current frame. A dropped token ends itself (D-102).
-- [ ] `retire` on the renderer is called when `begin_frame` recycles a context (task 11.2).
+
+  *As implemented:*
+  - **Device loss** calls `frame_sink::fatal_error` once and stops re-arming. Until 12.16, the controller shows it in the startup-error dialog and exits.
+  - **A skipped frame** is counted, and at most one warning a second names `upload_memory_per_frame` and `descriptors_per_frame`. The scheduler's own warning has the high-water mark.
+  - **Any other error** (a frame that can't be built) is counted and logged at most once a second, and the chain goes on.
+  - **`stop()`** requests stop on the scope and waits for it to drain. It polls the RHI's completions itself while it waits, because the GUI thread that normally drives them is the one waiting. It then logs the counters (frames rendered, published, skipped, failed, ticks).
+- [x] `retire` on the renderer is called when `begin_frame` recycles a context (task 11.2).
 
 **Tests** (`test_frame_loop.cpp`, `[visualizer]` on WARP, with a fake Qt side driving `ring_protocol` from a test thread):
-- [ ] 100 frames render with a demo-scene snapshot, and the ring sees increasing `latest_completed` values.
-- [ ] The tick rate follows a configured `maximum_fps` within 10%.
-- [ ] A fake Qt side that stops picking doesn't stall the loop.
-- [ ] An injected `transient_memory_exhausted` (a tiny frame budget) skips frames and recovers.
-- [ ] Stopping drains the scope with no leaked tokens.
-- [ ] 12.5's manual checklist, now that the viewport shows the frame loop's output.
+- [x] 100 frames render with a demo-scene snapshot, and the ring sees increasing `latest_completed` values.
+- [x] The tick rate follows a configured `maximum_fps` within 10%.
+- [x] A fake Qt side that stops picking doesn't stall the loop.
+- [x] An injected `transient_memory_exhausted` (a tiny frame budget) skips frames and recovers.
+- [x] Stopping drains the scope with no leaked tokens.
+- [x] 12.5's manual checklist, now that the viewport shows the frame loop's output.
+
+*As implemented:*
+- **The test setup.** The tests run the real `render_system` on WARP, the demo scene on the real simulation thread, and a `gpu_completion_thread` in place of the Qt notifier. The fake Qt side is a test thread. On each wake it attaches to the current ring, picks the newest frame and signals `consumed` from the CPU. Five `[visualizer]` cases and one `[visualizer][unit]` case (`tick_interval`):
+  - 100 frames are published. `latest_completed` never goes back, and every pick is a newer frame. The debug information arrives with the passes and resources copied.
+  - The tick rate at `maximum_fps` 20 is measured over 2 s.
+  - **A debugger break on Qt's render thread:** Qt picks a frame and never signals its `consumed`. The loop renders 30 more frames on the other two slots, and Qt gets a new frame when it resumes. A Qt that holds *two* unconsumed picks while Avis's latest frame is in the third slot does stall the gate. That's the limit 12 §3.3 already gives (rule 6 holds for one Qt render that hasn't finished), and a stopped render thread can't cause it, since its earlier render's signal is already queued.
+  - **The tiny budget:** `render_system_configuration::upload_memory_per_frame`, a new field, set to 16 KiB. On WARP a frame of one view needs 12–14 KiB of constants, and with 64 debug blits it needs more than 20 KiB. Setting the blits skips every frame, each ending with no submissions; clearing them brings frames back. The warning names the budget.
+  - **Stopping**, both while frames render and while the gate waits on a Qt that holds every slot. Nothing re-arms afterwards, and `try_begin_frame` gets a frame, so no token was left open.
+- **An RHI fix these tests found.** About one run in seven stalled: GPU waits whose fence had already been reached stayed pending until something else woke the completion driver. `completion_tracker::process` gives up when it can't take its lock and leaves the work to the holder (`again_`), but the holder can be `add` or `remove`, which never look at `again_`. A `process` call that gives up now signals the completion event again ([09 §23.4](../design/09-rhi.md#234-d3d12completion_trackerh), step 4).
+- **The manual checklist,** run with `--demo-scene` on an RX 7800 XT:
+  - The viewport shows the frame loop's output, not Qt's clear colour. The frame is an empty sky until the representation (12.8) gives the demo scene meshes.
+  - About 59 frames a second on a 60 Hz display, all published.
+  - Four resizes, then maximise and restore: no warnings, no gap in the frames.
+  - Minimised for 10 s: 327 frames over about 16 s, against about 900 at full rate, so about 5 fps while minimised. The rate comes back on restore.
+  - The app closes in under 200 ms with exit code 0.
+  - A debugger break on the Qt render thread wasn't tried by hand. The stall test above covers the same rule.
 
 ## 12.8 Representation: system, shared meshes, display shapes, helpers
 12 §9, 08 §4.3, §9.2, §9.6 step 4.

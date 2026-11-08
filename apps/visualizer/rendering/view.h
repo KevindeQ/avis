@@ -34,6 +34,9 @@ namespace avis::visualizer::rendering
         Eigen::Matrix4f projection(float aspect_ratio) const;
     };
 
+    // A camera at `eye` looking at `target`, with `up` (not parallel to the view direction) as the top of the image
+    camera look_at(const Eigen::Vector3f& eye, const Eigen::Vector3f& target, const Eigen::Vector3f& up);
+
     // The texture a view's image is copied into (present_to_shared, pass 16, 11 §12): an RGBA8_UNORM texture of the
     // view's size that allows copy_destination, for example a slot of 12's shared texture ring
     struct output_target

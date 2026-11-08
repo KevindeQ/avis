@@ -359,6 +359,10 @@ namespace avis::rhi::d3d12
                 again_.store(true, std::memory_order_release);
                 if (!mutex_.try_lock())
                 {
+                    // The holder may be add() or remove(), which never look at again_: without a new wake, the event
+                    // this call consumed is lost, and due waits stay pending until something else signals it. Waking
+                    // the driver again costs at most one extra pass when the holder is another process().
+                    SetEvent(event_.get());
                     return completed;
                 }
             }

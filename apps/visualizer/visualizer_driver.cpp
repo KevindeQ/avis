@@ -1,6 +1,7 @@
 #include "visualizer_driver.h"
 
 #include "log_location.h"
+#include "rendering/frame_loop.h"
 #include "rendering/render_system.h"
 #include "rendering/renderer_shaders.h"
 #include "rendering/shared_frame_ring.h"
@@ -18,6 +19,8 @@
 #include <QMetaObject>
 #include <QQmlEngine>
 #include <QQuickWindow>
+#include <QScreen>
+#include <QWindow>
 #include <QWinEventNotifier>
 
 #include <cstdint>
@@ -86,9 +89,11 @@ visualizer_driver::visualizer_driver(
 visualizer_driver::~visualizer_driver()
 {
     // The shutdown order of 12 §3.4. The simulation thread stops first, with its scene, and the frame loop's scope
-    // (12.7) drains next; then the notifier goes, the shared frame rings (Qt left them with the window), and the render
-    // system destroys the graphics objects in reverse and the RHI last, waiting for the GPU.
+    // drains next (it polls the completions itself while it waits); then the notifier goes, the shared frame rings (Qt
+    // left them with the window), and the render system destroys the graphics objects in reverse and the RHI last,
+    // waiting for the GPU.
     simulation_.reset();
+    frame_loop_.reset();
     completion_notifier_.reset();
     frame_rings_.reset();
     graphics_.reset();
@@ -115,6 +120,7 @@ QString visualizer_driver::log_file() const
 void visualizer_driver::watch_window(QQuickWindow& window)
 {
     // Items declared in a QML Window are QObject children of the window, and visual children of its content item
+    window_ = &window;
     viewport_ = window.findChild<avis::visualizer::ui::viewport_item*>();
     if (viewport_ == nullptr)
     {
@@ -137,6 +143,22 @@ void visualizer_driver::watch_window(QQuickWindow& window)
             QMetaObject::invokeMethod(this, [this, adapter]() { start_graphics(adapter); }, Qt::QueuedConnection);
         },
         Qt::DirectConnection);
+
+    // The tick rate follows the screen's refresh rate, and drops while the window can't be seen (12 §3.4)
+    const auto watch_screen = [this](QScreen* const screen)
+    {
+        QObject::disconnect(refresh_rate_connection_);
+        if (screen != nullptr)
+        {
+            refresh_rate_connection_ =
+                QObject::connect(screen, &QScreen::refreshRateChanged, this, [this]() { update_display(); });
+        }
+        update_display();
+    };
+    QObject::connect(&window, &QWindow::screenChanged, this, watch_screen);
+    QObject::connect(&window, &QWindow::visibilityChanged, this, [this]() { update_display(); });
+    window.installEventFilter(this);
+    watch_screen(window.screen());
 }
 
 void visualizer_driver::start_graphics(const std::optional<avis::visualizer::ui::qt_adapter>& adapter)
@@ -190,6 +212,57 @@ void visualizer_driver::start_graphics(const std::optional<avis::visualizer::ui:
     completion_notifier_ = std::make_unique<QWinEventNotifier>(graphics_->completion_driver().completion_event());
     QObject::connect(completion_notifier_.get(), &QWinEventNotifier::activated, this, [this]() { poll_completions(); });
     completion_notifier_->setEnabled(true);
+
+    start_frame_loop();
+}
+
+void visualizer_driver::start_frame_loop()
+{
+    // A lost device is the fatal path (12 §7): for now the startup error's dialog, then exit (12.16 adds the autosave)
+    QObject::connect(
+        &renderer_updates_,
+        &avis::visualizer::ui::renderer_bridge::fatal_error_occurred,
+        this,
+        [this](const QString& message)
+        { set_startup_error(QStringLiteral("The graphics device was lost: ") + message); });
+
+    rendering::frame_loop_settings settings{ .maximum_fps = configuration_.render.maximum_fps };
+    frame_loop_ = std::make_unique<rendering::frame_loop>(
+        *graphics_,
+        *frame_rings_,
+        snapshots_,
+        avis::runtime::io_context(),
+        renderer_updates_,
+        viewport_ != nullptr ? viewport_->make_wake() : std::function<void()>{},
+        std::move(settings),
+        rendering::render_options::from_settings(configuration_.render));
+
+    // Above the demo scene's 25 m track, looking at its centre (Z up), until the camera controller (12.12)
+    frame_loop_->set_camera(
+        rendering::look_at({ -45.0f, -45.0f, 35.0f }, Eigen::Vector3f::Zero(), Eigen::Vector3f::UnitZ()));
+    update_display();
+    frame_loop_->start();
+}
+
+void visualizer_driver::update_display()
+{
+    if (frame_loop_ == nullptr || window_ == nullptr)
+    {
+        return;
+    }
+    const QScreen* const screen = window_->screen();
+    const QWindow::Visibility visibility = window_->visibility();
+    const bool visible = window_->isExposed() && visibility != QWindow::Minimized && visibility != QWindow::Hidden;
+    frame_loop_->set_display(screen != nullptr ? static_cast<float>(screen->refreshRate()) : 0.0f, visible);
+}
+
+bool visualizer_driver::eventFilter(QObject* const watched, QEvent* const event)
+{
+    if (watched == window_ && event->type() == QEvent::Expose)
+    {
+        update_display();
+    }
+    return QObject::eventFilter(watched, event);
 }
 
 void visualizer_driver::set_startup_error(const QString& message)

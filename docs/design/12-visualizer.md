@@ -64,6 +64,7 @@ apps/visualizer/
     viewport_item.{h,cpp}          # QQuickRhiItem subclass (replaces viewport.{h,cpp})
     viewport_renderer.{h,cpp}      # QQuickRhiItemRenderer: imports shared textures, blits
     simulation_bridge.{h,cpp}      # gui_sink on the GUI thread: queued calls, latest values, signals
+    renderer_bridge.{h,cpp}        # frame_sink on the GUI thread: debug information, picks, inspections, screenshots
     camera_controller.{h,cpp}
     scene_tree_model.{h,cpp}       # QAbstractItemModel
     inspector_model.{h,cpp}        # reflected component values + Driver properties
@@ -187,6 +188,17 @@ in parallel, per frame: when_reached(produced, n) → publish latest_completed �
 - **Who holds the RHI.** The renderer creates the `rhi::render_hardware_interface` and is its only holder (D-96): `rendering::render_system`, which the controller creates once Qt's adapter is known (§3.2). It builds the views each component takes ([09 §4.3](09-rhi.md#43-subsystem-views)): `completion_driver` for the notifier; `synchronization` and `transient_objects` for the frame scheduler; `transient_objects` and the queues for the GPU profiler; `resources`, `command_lists` and the queues for the render graph, which also gets the frame scheduler and the profiler; `memory` and `resources` for its transient pool; and the upload queue, readback queue and pipeline cache get theirs.
 - The chain keeps running while the simulation is paused, so camera motion stays fluid.
 - Errors (device lost) arrive on `set_error`, and `frame_loop` turns them into the fatal-error path (§7). The exception is `transient_memory_exhausted` from `render_graph::execute`: the frame's upload memory or descriptors ran out, so `frame_loop` ends the frame with no submissions, skips it and re-arms the next one ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh), D-98). The log warning names the budget to raise. Stopping requests stop on the scope's stop source; the chain finishes its current frame and completes with `set_stopped`. A frame stopped before anything was submitted, including one whose token is still inside the opening `when_all`, ends with no submissions: the dropped token ends itself ([17 §4](17-graphics-frames-and-transfers.md#4-graphicsframe_schedulerh), D-102). The controller then waits for the scope to drain at shutdown. After that the controller destroys the notifier, and `render_system` waits for the GPU (`render_hardware_interface::wait_idle`, D-93, which also completes the senders still waiting on it), destroys the graphics-layer objects in the reverse creation order (renderer, shaders, pipeline cache, root signature registry, readback and upload queues, render graph, transient pool, GPU profiler, frame scheduler), then the RHI.
+
+> **As implemented** (task 12.7, `rendering/frame_loop.h`):
+> - **One frame at a time on the CPU**, up to F on the GPU (`begin_frame` waits for frame N − F). Each frame's tail spawns the next into the scope.
+> - **Ending a frame:** `end_frame` with the frame's submissions, then `produced` is signalled on the graphics queue after `present_to_shared`. The snapshot is held until the frame is submitted.
+> - **Without a ring** (no viewport size yet), the chain only ticks.
+> - **Retired rings** are destroyed at the start of a frame (`destroy_released`) while no publish is in flight, not through a spawned `when_released`. The chain ticks at 5 fps or more, so polling is enough, and a publish completing on the completion driver's thread can't race with destroying its ring.
+> - **Tick period:** `render.maximum_fps` replaces the refresh rate when it's set, 60 Hz until the window reports one, and 5 fps while the window is minimised, hidden or not exposed. Ticks are timed from the previous tick.
+> - **GUI → renderer** is a set of setters on `frame_loop` behind one mutex. The pick, inspector and screenshot requests are one-shot. The viewport size goes through the rings (§3.3).
+> - **Renderer → GUI** is a `frame_sink` interface, implemented on the GUI thread by `ui::renderer_bridge`. Its debug information owns copies of the graph's passes and resources.
+> - **Errors other than device loss and exhausted transient memory** (a frame that can't be built) are counted and logged at most once a second, and the chain goes on.
+> - **`stop()` polls the RHI's completions itself** while it waits for the scope to drain, since the GUI thread that normally drives them is the one waiting.
 
 ## 4. Threads (Visualizer view)
 See [01 §4.1](01-system-architecture.md#41-visualizer). Communication paths:

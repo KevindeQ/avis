@@ -11,6 +11,7 @@ add_library(AVIS_VISUALIZER_RENDERING STATIC
 	environment_baker.cpp
 	extraction.cpp
 	frame_data.cpp
+	frame_loop.cpp
 	geometry_arena.cpp
 	material_table.cpp
 	passes/debug_blit_pass.cpp

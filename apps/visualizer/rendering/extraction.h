@@ -44,7 +44,7 @@ namespace avis::visualizer::rendering
     // Where the frame sits between the snapshot's two ticks (03 §5)
     struct frame_interpolation
     {
-        simulation::simulation_duration t_render{}; // in [time_previous, time_current]
+        avis::simulation::simulation_duration t_render{}; // in [time_previous, time_current]
         float alpha = 1.0f; // in [0, 1]; 1 while paused or stopped (rate 0)
     };
 

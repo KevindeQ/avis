@@ -4,6 +4,21 @@
 
 namespace avis::visualizer::rendering
 {
+    camera look_at(const Eigen::Vector3f& eye, const Eigen::Vector3f& target, const Eigen::Vector3f& up)
+    {
+        // View space looks down -Z with +Y up and +X right
+        const Eigen::Vector3f forward = (target - eye).normalized();
+        const Eigen::Vector3f right = forward.cross(up).normalized();
+        const Eigen::Vector3f top = right.cross(forward);
+
+        camera made;
+        made.world_from_view.linear().col(0) = right;
+        made.world_from_view.linear().col(1) = top;
+        made.world_from_view.linear().col(2) = -forward;
+        made.world_from_view.translation() = eye;
+        return made;
+    }
+
     Eigen::Matrix4f camera::view_from_world() const
     {
         return world_from_view.inverse(Eigen::Affine).matrix();

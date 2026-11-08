@@ -43,6 +43,10 @@ namespace avis::visualizer::rendering
 
         // Where the renderer's shaders are (resolve_shader_directory)
         std::filesystem::path shader_directory;
+
+        // Each frame context's upload memory (graphics::frame_scheduler_configuration); the frame loop's tests make
+        // it small to exhaust it (D-98)
+        std::size_t upload_memory_per_frame = graphics::frame_scheduler_configuration{}.upload_memory_per_frame;
     };
 
     // Created on the GUI thread once Qt's adapter is known, and destroyed there. Not copyable or movable: the

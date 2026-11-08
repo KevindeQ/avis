@@ -2,6 +2,7 @@
 #define VISUALIZER_VISUALIZER_DRIVER_H
 
 #include "simulation/simulation_thread.h"
+#include "ui/renderer_bridge.h"
 #include "ui/simulation_bridge.h"
 #include "visualizer_configuration.h"
 
@@ -13,6 +14,7 @@
 #include <QObject>
 #include <QPointer>
 #include <qqmlintegration.h>
+#include <QQuickWindow>
 #include <QString>
 
 #include <filesystem>
@@ -21,11 +23,11 @@
 
 class QJSEngine;
 class QQmlEngine;
-class QQuickWindow;
 class QWinEventNotifier;
 
 namespace avis::visualizer::rendering
 {
+    class frame_loop;
     class render_system;
     class shared_frame_rings;
 } // namespace avis::visualizer::rendering
@@ -38,9 +40,9 @@ namespace avis::visualizer::ui
 
 // The application controller (12 §2). main() creates the one instance on the GUI thread, before the QML engine, and
 // QML reaches it as the VisualizerDriver singleton. It owns, in this order: the configuration, the asset cache, the
-// snapshot buffer, the simulation thread (which owns the scene, 12.6), then (from 12.7) the frame loop. The graphics
-// objects (rendering::render_system, the RHI's only holder), the shared frame rings and the completion notifier follow
-// once Qt's adapter is known (12 §3.2).
+// snapshot buffer and the simulation thread (which owns the scene, 12.6). The graphics objects
+// (rendering::render_system, the RHI's only holder), the shared frame rings, the completion notifier and the frame loop
+// (12.7) follow once Qt's adapter is known (12 §3.2).
 class visualizer_driver : public QObject
 {
     Q_OBJECT
@@ -90,6 +92,22 @@ public:
         return simulation_updates_;
     }
 
+    // What the frame loop sends the GUI: debug information, picks, inspections, screenshots
+    avis::visualizer::ui::renderer_bridge& renderer_updates() noexcept
+    {
+        return renderer_updates_;
+    }
+
+    // GUI → renderer (12 §4): null until graphics started, and when they couldn't
+    avis::visualizer::rendering::frame_loop* frames() noexcept
+    {
+        return frame_loop_.get();
+    }
+
+protected:
+    // The window's Expose events: an occluded window ticks at the hidden rate (12 §3.4)
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 Q_SIGNALS:
     void startup_error_changed();
 
@@ -107,6 +125,13 @@ private:
 
     // Starts the simulation thread on the runtime's thread pool; a failure is the startup error
     void start_simulation(bool demo_scene);
+
+    // After start_graphics: the frame chain that renders into the rings (12 §3.4), with a default camera until the
+    // camera controller (12.12)
+    void start_frame_loop();
+
+    // Tells the frame loop the window's refresh rate and whether it can be seen
+    void update_display();
 
     // visualizer.yaml, as loaded (12.1), and where it's written back
     avis::visualizer::visualizer_configuration configuration_;
@@ -142,8 +167,18 @@ private:
     // The window's Viewport, found by watch_window; null when the QML has none
     QPointer<avis::visualizer::ui::viewport_item> viewport_;
 
+    // The window watch_window was given, for the display state
+    QPointer<QQuickWindow> window_;
+    QMetaObject::Connection refresh_rate_connection_;
+
+    // Where the frame loop's results arrive on the GUI thread; outlives the loop
+    avis::visualizer::ui::renderer_bridge renderer_updates_;
+
     // In the GUI event loop, on the RHI's completion event; destroyed before graphics_
     std::unique_ptr<QWinEventNotifier> completion_notifier_;
+
+    // The frame chain (12 §3.4); stopped before the notifier, the rings and graphics_. Null without graphics.
+    std::unique_ptr<avis::visualizer::rendering::frame_loop> frame_loop_;
 };
 
 #endif
