@@ -402,11 +402,18 @@ flowchart LR
 ## 12.8 Representation: system, shared meshes, display shapes, helpers
 12 §9, 08 §4.3, §9.2, §9.6 step 4.
 
-- [ ] `representation/representation_system.h/.cpp` runs at step 4 of the tick sequence (08 §9.6) and on presentation commands:
+- [x] `representation/representation_system.h/.cpp` runs at step 4 of the tick sequence (08 §9.6) and on presentation commands:
   - It visits entities with changed semantic components. It tracks them with EnTT `on_construct`/`on_update` observers on `display_shape`, `belief_geometry`, `lidar_points`, `label`, `trail` and `visibility`, and in the meantime re-runs everything when a setting changes.
   - It creates or updates helper child entities with `mesh`, `material`, `render_options` and `represents { owner }` (task 10). Helpers are created with `represents` up front (task 10's Open points recommend an `entity_description::represents` field).
   - It applies the selection and visibility flags to every instance the entity owns, its helpers included.
-- [ ] A shared library, created once through the asset cache:
+
+  *As implemented:*
+  - **Change tracking.** EnTT 4 has no `observer`, so the system connects to the registry's `on_construct`, `on_update` and `on_destroy` signals for `display_shape` and records the entities, deduplicated at the next update. It attaches to the scene on its first `update` and visits every entity that already has a shape. Only `display_shape` is tracked for now; 12.9–12.11 add their components the same way. Writes must go through `emplace`, `replace` or `patch`. A change of `representation.boxes` clears the material cache and re-runs every shape.
+  - **`entity_description::represents`** was added (task 10's Open point): `create_entity` emplaces `represents` with the `added` change, so the scene tree never shows the helper.
+  - **The flags stay with the simulation loop.** 12.6's loop already sets `selected` and `visible` after step 4 on every helper that represents an entity, so the representation sets neither. It keeps a part's `selected` bit when it rewrites the part's `render_options`.
+  - **Detach.** `scene_representation` gained `detach(scene)`, which the loop's destructor calls before its scene goes, so the signal connections never outlive the registry. `simulation_thread` creates a `representation_system` on its thread before the loop; if it can't, it logs an error and runs without one.
+  - **`helpers_group_name`** moved to `representation/scene_representation.h`. The loop's `helpers_name` is that constant, and the representation finds the group by it.
+- [x] A shared library, created once through the asset cache:
   - the unit cube
   - the unit-cube edge lines
   - the axes lines
@@ -415,22 +422,51 @@ flowchart LR
   - the base materials
 
   The shared meshes are excluded from the budget (12 §9.1).
-- [ ] `shape_representation` follows 12 §9's table:
+
+  *As implemented:* `representation/shared_assets.h/.cpp`. The meshes are procedural (`meshes::unit_cube`, `cube_edges`, `axes`, `grid`, `vehicle_proxy`, `frustum`), so tests can build them without a cache.
+  - **The vehicle proxy is procedural**, as the Open point recommends: a body box and a cabin narrowing to the roof (primitive 0), and four wheels (primitive 1, with a shared dark material). It spans [-0.5, 0.5] × [-0.5, 0.5] × [0, 1] and stands on the ground. The part sits 0.3 × length forward of the entity's origin, which is the rear axle (00 §4.1). No glTF asset was added.
+  - **The grid** has 1 m lines out to 50 m and 10 m lines out to 200 m on z = 0. Each line is split at every crossing, so the vertex alpha fades smoothly with the distance from the origin. Unlit, vertex colours, blended.
+  - **Base materials:** the axes (unlit vertex colours, 2 px), the grid and the wheels. The per-colour materials are in the material cache.
+- [x] `shape_representation` follows 12 §9's table:
   - `box`: faces in `world` with a translucent material (blend) in the entity's colour and opacity, plus edges in `overlay` with an unlit material and `boxes.edge_width`
   - `vehicle`: the proxy, with a ghost material when its opacity is below 1
   - `axes` and `frustum` in `overlay`, the frustum built from the angles and range
 
   The extent is applied to a representation-owned child node, never to the entity's node (08 §4.3).
-- [ ] `helper_geometry`: the grid and the axes gizmo as Visualizer helpers under `helpers`. The sun light comes from `visualization.environment`, through `scene::set_environment` (task 10).
-- [ ] Materials per colour and opacity are cached by value, so 30 boxes of three colours make three materials.
+
+  *As implemented:* `representation/shape_representation.h/.cpp`.
+  - Each part is a helper child named `<owner> · faces` (or edges, body, axes, frustum), with the extent as its scale, clamped to 1 mm.
+  - Unchanged parts aren't written, so they raise no update signals. Another shape kind replaces the parts, and `none` or a removed `display_shape` destroys them.
+  - A frustum has its own mesh, held only by its part. A change of its angles or range is an `update_mesh`: a new version of the same handle. It looks along +X.
+  - Lines, translucent boxes and the ghost don't cast shadows. Boxes are centred on the entity's origin, as the demo places them.
+- [x] `helper_geometry`: the grid and the axes gizmo as Visualizer helpers under `helpers`. The sun light comes from `visualization.environment`, through `scene::set_environment` (task 10).
+
+  *As implemented:* `representation/helper_geometry.h/.cpp`. The grid (`overlay`) and a 2 m axes gizmo at the origin (`overlay_on_top`) are created and destroyed with `presentation_state::grid` and `axes_gizmo`. Neither is pickable. *Reset* keeps them, since they don't represent anything. 12.6's loop already sets the sun through `scene::set_environment`.
+- [x] Materials per colour and opacity are cached by value, so 30 boxes of three colours make three materials.
+
+  *As implemented:* `representation/material_cache.h/.cpp`, keyed by role (box faces, box edges, vehicle, ghost vehicle, lines), linear colour, the opacity where the material is blended, and the line width where it draws lines. The cache keeps one reference per material. It only shrinks when the box settings change.
 
 **Tests** (`test_representation_shapes.cpp`, `[visualizer][unit]` on a `scene` and `asset_cache`):
-- [ ] A box entity gets a face instance and an edge instance, both with `represents`. The face is in `world` with `alpha_mode = blend`, and the edges are in `overlay`.
-- [ ] Changing the extent changes the child node's scale, never the entity's (unit-scale check from task 10).
-- [ ] A vehicle with opacity 0.5 uses the ghost material.
-- [ ] Hiding an entity clears `visible` on all its instances. Selecting it sets `selected` on all of them.
-- [ ] Destroying the entity destroys its helpers.
-- [ ] The material cache gives three materials for three colours.
+- [x] A box entity gets a face instance and an edge instance, both with `represents`. The face is in `world` with `alpha_mode = blend`, and the edges are in `overlay`.
+
+  *As implemented:* also, both parts are hidden in the tree changes, are helpers whose selection target is the box, and are the snapshot's only instances.
+- [x] Changing the extent changes the child node's scale, never the entity's (unit-scale check from task 10).
+
+  *As implemented:* the same parts are rescaled, and the box's world bounds follow.
+- [x] A vehicle with opacity 0.5 uses the ghost material.
+
+  *As implemented:* the body and wheels are both ghost, blended at 0.5 and casting no shadows; the solid vehicle keeps its wheel material. Also in this test: axes scale with the extent; a frustum's range change bumps its mesh version on the same handle, and an update with no change doesn't; another kind replaces the parts; removing the shape removes them.
+- [x] Hiding an entity clears `visible` on all its instances. Selecting it sets `selected` on all of them.
+
+  *As implemented:* through a `simulation_loop` with the real representation, as the Visualizer runs it. Selecting a box flags both its instances. Selecting a vehicle's part selects the vehicle (both its instances) and unflags the box. Hiding the box clears `visible` on its two instances only.
+- [x] Destroying the entity destroys its helpers.
+- [x] The material cache gives three materials for three colours.
+
+  *As implemented:* 30 boxes give three face and three edge materials. Another opacity adds one face material, and a new edge width rebuilds the edges with it.
+- [x] Not in the original list:
+  - The grid and the gizmo follow their toggles and sit in their layers, and the grid's vertex alpha fades from the centre to the edge.
+  - The demo scene runs 200 ticks with the representation. Every display shape has its parts, every part's owner has a shape, there are 9 materials, *Reset* keeps the grid and the gizmo, and no debug check, scene error or Visualizer warning fires.
+- [x] Manual (not in the original list): `--demo-scene` shows the grid, the gizmo, the boxes with their edges, the ego, the ghost and the camera frustums, and closes with exit code 0. With the default automatic exposure, lit surfaces look dark: the sky fills most of the frame, as there's no ground yet. With `render.exposure: {mode: manual, ev100: 14.5}` they show their colours.
 
 ## 12.9 Representation: belief geometry, lidar, geometry budget
 12 §9, §9.1, D-41.

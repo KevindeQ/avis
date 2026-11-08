@@ -2,8 +2,13 @@
 # meshes and materials, as a Qt-free static library that AVIS_VISUALIZER and AVIS_TESTS link, like the renderer's.
 
 add_library(AVIS_VISUALIZER_REPRESENTATION STATIC
+	helper_geometry.cpp
+	material_cache.cpp
 	presentation_state.cpp
-	representation_settings.cpp)
+	representation_settings.cpp
+	representation_system.cpp
+	shape_representation.cpp
+	shared_assets.cpp)
 
 target_compile_features(AVIS_VISUALIZER_REPRESENTATION
 	PUBLIC cxx_std_${AVIS_REQUIRED_CXX_STANDARD})

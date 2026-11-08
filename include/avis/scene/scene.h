@@ -53,6 +53,10 @@ namespace avis::scene
         entity parent = entt::null; // null = a root
         transform local;
         bool spatial = true; // false: no node (scenario settings, environment, §2)
+
+        // A helper the representation creates for this entity (box edges, a label, a trail): the new entity gets
+        // `represents { owner }` with its `added` change, so the scene tree never shows it. null = none.
+        entity represents = entt::null;
     };
 
     struct destroyed_entity
@@ -94,8 +98,8 @@ namespace avis::scene
         // ---- entities ----
 
         // Fails with duplicate_id when the id is taken, and invalid_parent when the parent isn't alive, has no node,
-        // or the entity isn't spatial. Spatial entities get a node with `local`, but no previous_world until the
-        // tick ends (§6.3).
+        // or the entity isn't spatial, or when the owner in `represents` isn't alive. Spatial entities get a node with
+        // `local`, but no previous_world until the tick ends (§6.3).
         result<entity> create_entity(const entity_description& description);
 
         // The whole subtree, root included, children before parents (§2). A non-spatial entity destroys only itself.

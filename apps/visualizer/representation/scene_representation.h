@@ -5,6 +5,8 @@
 // components into meshes and materials. The simulation thread calls it on every tick and every presentation republish.
 // Task 12.8's representation_system implements it; tests use fakes.
 
+#include "avis/scene/types.h"
+
 namespace avis::scene
 {
     class scene;
@@ -13,6 +15,10 @@ namespace avis::scene
 namespace avis::visualizer::representation
 {
     struct presentation_state;
+
+    // The root entity the Visualizer's own helpers (grid, axes gizmo, trails) live under (08 §4.2). The simulation
+    // loop creates it; the representation finds it by this name.
+    inline constexpr const char* helpers_group_name = "helpers";
 
     class scene_representation
     {
@@ -23,6 +29,13 @@ namespace avis::visualizer::representation
         // the last tick. May create, change and destroy helper entities and call set_local on them; the caller
         // updates the transforms after it (step 5).
         virtual void update(scene::scene& scene, const presentation_state& state) = 0;
+
+        // The scene is about to be destroyed: drop whatever ties this object to it (signal connections). The scene
+        // destroys the helpers itself. update() isn't called after this.
+        virtual void detach(scene::scene& scene) noexcept
+        {
+            static_cast<void>(scene);
+        }
 
     protected:
         scene_representation() = default;

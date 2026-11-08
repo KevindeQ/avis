@@ -1,5 +1,6 @@
 #include "simulation/simulation_thread.h"
 
+#include "representation/representation_system.h"
 #include "representation/scene_representation.h"
 
 #include "avis/detail/check.h"
@@ -70,7 +71,13 @@ namespace avis::visualizer::simulation
         republish();
     }
 
-    simulation_loop::~simulation_loop() = default;
+    simulation_loop::~simulation_loop()
+    {
+        if (representation_ != nullptr)
+        {
+            representation_->detach(scene_);
+        }
+    }
 
     void simulation_loop::handle(const simulation_command& command, const clock::time_point now)
     {
@@ -526,7 +533,20 @@ namespace avis::visualizer::simulation
             "simulation",
             [self, &assets, &snapshots, &sink, settings = std::move(settings)](const std::stop_token& stop)
             {
-                simulation_loop loop{ assets, snapshots, sink, settings, simulation_loop::clock::now() };
+                // Before the loop, which detaches it when it goes. Without one, nothing semantic is drawn.
+                std::unique_ptr<representation::representation_system> representation;
+                if (result<std::unique_ptr<representation::representation_system>> created =
+                        representation::representation_system::create(assets))
+                {
+                    representation = std::move(*created);
+                }
+                else
+                {
+                    log::get(logger_name)->error("the scene representation could not be created: {}", created.error());
+                }
+                simulation_loop loop{
+                    assets, snapshots, sink, settings, simulation_loop::clock::now(), representation.get()
+                };
                 std::vector<simulation_command> commands;
                 for (;;)
                 {

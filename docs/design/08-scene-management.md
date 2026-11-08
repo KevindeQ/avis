@@ -815,6 +815,7 @@ namespace avis::scene
         entity parent = entt::null;                      // null = a root
         transform local;
         bool spatial = true;                             // false: no node (scenario settings, environment, §2)
+        entity represents = entt::null;                  // a helper's owner: `represents` comes with the added change
     };
 
     struct destroyed_entity

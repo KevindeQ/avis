@@ -11,6 +11,7 @@
 // - simulation_thread runs a simulation_loop on a thread from a thread pool, fed by a command_queue.
 
 #include "representation/presentation_state.h"
+#include "representation/scene_representation.h"
 #include "simulation/command_queue.h"
 #include "simulation/demo_scene.h"
 #include "simulation/gui_sink.h"
@@ -63,10 +64,10 @@ namespace avis::visualizer::simulation
         static constexpr std::chrono::milliseconds statistics_interval{ 500 }; // 2 Hz
 
         // The name of the group the Visualizer's helpers live under (08 §4.2)
-        static constexpr const char* helpers_name = "helpers";
+        static constexpr const char* helpers_name = representation::helpers_group_name;
 
         // Creates the scene with its helpers and publishes the first snapshot. Everything given must outlive the
-        // loop; `representation` may be null (no meshes for the semantic components, until task 12.8).
+        // loop; `representation` may be null (no meshes for the semantic components).
         simulation_loop(
             scene::asset_cache& assets,
             scene::snapshot_buffer& snapshots,
@@ -74,7 +75,7 @@ namespace avis::visualizer::simulation
             const simulation_settings& settings,
             clock::time_point now,
             representation::scene_representation* representation = nullptr);
-        ~simulation_loop();
+        ~simulation_loop(); // detaches the representation before the scene goes
 
         simulation_loop(const simulation_loop&) = delete;
         simulation_loop& operator=(const simulation_loop&) = delete;

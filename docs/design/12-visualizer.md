@@ -42,7 +42,9 @@ apps/visualizer/
   representation/                  # streamed content → meshes + materials (§9); runs on the simulation thread
     scene_representation.h         # the step-4 interface the simulation thread calls
     presentation_state.{h,cpp}     # what the presentation commands set (§4.1)
-    representation_system.{h,cpp}
+    representation_system.{h,cpp}  # change tracking, step 4 (scene_representation)
+    shared_assets.{h,cpp}          # the shared meshes and base materials (procedural vehicle proxy, grid)
+    material_cache.{h,cpp}         # materials per role, colour and opacity
     shape_representation.{h,cpp}   # box, vehicle, axes, frustum display shapes
     geometry_representation.{h,cpp}  # belief geometry chunks
     lidar_representation.{h,cpp}   # lidar sweeps → point meshes
@@ -347,6 +349,13 @@ The **scene representation** (`avis::visualizer::representation`, `apps/visualiz
 | Selection | The `selected` instance flag on the selected entity's instances | — |
 
 - The representation owns a small library of shared meshes (unit cube, unit-cube edges, axes, vehicle proxy) and materials, created once through the asset cache.
+
+> **As implemented** (task 12.8, `representation/representation_system.h`):
+> - **Change tracking** uses the registry's `on_construct`, `on_update` and `on_destroy` signals for `display_shape` (EnTT 4 has no `observer`), so a tick visits only what changed. A change of the box settings re-runs every shape.
+> - **Every shape is drawn by helper children** with `represents { entity }`, created through `entity_description::represents` (08 §9.5), so the extent is the child's scale. A box has two (faces, edges), the other shapes one.
+> - **The vehicle proxy is procedural** (body, cabin, wheels), standing on the ground with its body 0.3 × length forward of the rear axle. `data/assets/vehicle_proxy.glb` doesn't exist yet.
+> - **The selection and visibility flags** are set by the simulation loop after step 4 (§4.1, task 12.6), not by the representation.
+> - The loop calls `scene_representation::detach` before its scene is destroyed, which drops the signal connections.
 - All visual choices that the Driver doesn't specify (edge widths, lidar colouring, which helpers are visible from the *View* menu) live here, so changing how something looks never touches the renderer.
 - Configuration (`visualizer.yaml` → `representation`):
   ```yaml

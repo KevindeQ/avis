@@ -220,6 +220,12 @@ namespace avis::scene
             }
             parent_node = parent_reference->node;
         }
+        if (description.represents != entt::null && !alive(description.represents))
+        {
+            return std::unexpected(make_error(
+                error_kind::invalid_parent,
+                std::format("create_entity: the owner that {:#x} represents isn't alive", id)));
+        }
 
         ids_.reserve(ids_.size() + 1);
         const entity created = registry_.create();
@@ -236,6 +242,11 @@ namespace avis::scene
         ids_.emplace(id, created);
 
         record_change(tree_change_kind::added, created);
+        if (description.represents != entt::null)
+        {
+            // After the added change, which on_represents_construct marks hidden
+            registry_.emplace<components::represents>(created, description.represents);
+        }
         ++scene_version_;
         tick_active_ = true;
         if (description.spatial)

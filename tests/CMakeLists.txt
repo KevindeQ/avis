@@ -165,6 +165,7 @@ target_sources(AVIS_TESTS
 		visualizer/rendering/test_shared_frame_ring.cpp
 		visualizer/rendering/test_sort_key.cpp
 		visualizer/rendering/test_view.cpp
+		visualizer/test_representation_shapes.cpp
 		visualizer/test_simulation_thread.cpp
 		visualizer/test_visualizer_configuration.cpp)
 
