@@ -435,6 +435,15 @@ namespace
                         event_set,
                         polled,
                         loop->statistics().frames_rendered);
+                    // What the RHI and the renderer reported (a removed device, the debug layer's errors)
+                    for (const std::string& line : rhi_errors.lines())
+                    {
+                        ring_state += std::format("\n  rhi: {}", line);
+                    }
+                    for (const std::string& line : render_warnings.lines())
+                    {
+                        ring_state += std::format("\n  render: {}", line);
+                    }
                     FAIL(
                         std::format(
                             "timed out waiting for {}: {} ticks, {} rendered, {} published, {} skipped, {} failed, {} "

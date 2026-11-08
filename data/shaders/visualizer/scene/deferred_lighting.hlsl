@@ -46,10 +46,10 @@ float gtao_occlusion(uint2 pixel, float view_depth)
         return gtao.Load(int3(pixel, 0));
     }
     Texture2D<float> linear_depth = ResourceDescriptorHeap[constants.linear_depth];
-    uint width;
-    uint height;
-    gtao.GetDimensions(width, height);
-    const int2 last = int2(width, height) - 1;
+    // The AO texture's size, rounded up as gtao_extent does. Not from GetDimensions: WARP faults on it in the -O3 build
+    // (an access violation in its shader code, then a removed device).
+    const uint2 ao_size = (constants.size + scale - 1) / scale;
+    const int2 last = int2(ao_size) - 1;
     const int2 last_pixel = int2(constants.size) - 1;
     const float2 position = float2(pixel) / float(scale);
     const int2 base = int2(floor(position));
