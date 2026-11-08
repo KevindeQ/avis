@@ -534,7 +534,10 @@ TEST_CASE("frame loop: 100 frames of the demo scene reach the ring in order", "[
 
 TEST_CASE("frame loop: the tick rate follows render.maximum_fps", "[visualizer]")
 {
-    constexpr float fps = 20.0f;
+    // A tick waits for its frame, so the lower bound holds only while a frame fits the period. A Debug frame of the
+    // demo scene on WARP with the debug layer takes about 50 ms; 10 fps leaves it twice that, and is still apart from
+    // the hidden viewport's 5 fps.
+    constexpr float fps = 10.0f;
     loop_fixture fixture{ { .maximum_fps = fps } };
     fixture.loop->start();
     fixture.wait_for_frames(5); // past the first frames' environment bake
